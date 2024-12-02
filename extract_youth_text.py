@@ -11,8 +11,9 @@ from datetime import datetime, timedelta
 from utils.utils import extract_single_7z_file
 from configs.configs import ORIGIN_DATA_DIR
 
-def log(text):
-    with open("logs/log.txt", "a") as f:
+def log(text, lid=None):
+    output = f"logs/log_{lid}.txt" if lid is not None else "logs/log.txt"
+    with open(output, "a") as f:
         f.write(f"{text}\n")
 
 def get_zipped_fresh_data_file(year, date):
@@ -125,7 +126,6 @@ def append_to_parquet(date, userids, results):
     # if not os.path.exists(output_parquet_path):
     #     # 如果文件不存在，直接写入（新建文件）
     df.to_parquet(output_parquet_path, engine="fastparquet", index=False)
-    log(f"创建新文件：{output_parquet_path}")
     # else:
     #     # 如果文件存在，以追加模式写入
     #     df.to_parquet(output_parquet_path, engine="fastparquet", index=False, append=True)
@@ -154,7 +154,7 @@ def process_year(year, mode):
         userids, results = process_file(file_path, all_matched_ids)
         append_to_parquet(date_str, userids, results)
 
-        log(f"处理 {date_str} 完成，耗时 {int(time.time()) - start_timestamp} 秒。")
+        log(f"处理 {date_str} 完成，耗时 {int(time.time()) - start_timestamp} 秒。", year)
 
         delete_unzipped_fresh_data_file(year, date_str)
 

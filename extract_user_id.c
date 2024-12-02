@@ -1716,9 +1716,6 @@ static CYTHON_INLINE PyObject* __Pyx_PyObject_FastCallDict(PyObject *func, PyObj
 /* RaiseUnexpectedTypeError.proto */
 static int __Pyx_RaiseUnexpectedTypeError(const char *expected, PyObject *obj);
 
-/* PyObjectCallOneArg.proto */
-static CYTHON_INLINE PyObject* __Pyx_PyObject_CallOneArg(PyObject *func, PyObject *arg);
-
 /* PySequenceContains.proto */
 static CYTHON_INLINE int __Pyx_PySequence_ContainsTF(PyObject* item, PyObject* seq, int eq) {
     int result = PySequence_Contains(seq, item);
@@ -2335,7 +2332,7 @@ static int __pyx_m_traverse(PyObject *m, visitproc visit, void *arg) {
 #define __pyx_codeobj__2 __pyx_mstate_global->__pyx_codeobj__2
 /* #### Code section: module_code ### */
 
-/* "youth_analysis/extract_user_id.pyx":6
+/* "youth_analysis/extract_user_id.pyx":5
  * from libc.stdlib cimport malloc, free
  * 
  * def extract_user_ids(list_of_lines, set_of_user_ids):             # <<<<<<<<<<<<<<
@@ -2400,7 +2397,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
           (void)__Pyx_Arg_NewRef_FASTCALL(values[0]);
           kw_args--;
         }
-        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 6, __pyx_L3_error)
+        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 5, __pyx_L3_error)
         else goto __pyx_L5_argtuple_error;
         CYTHON_FALLTHROUGH;
         case  1:
@@ -2408,14 +2405,14 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
           (void)__Pyx_Arg_NewRef_FASTCALL(values[1]);
           kw_args--;
         }
-        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 6, __pyx_L3_error)
+        else if (unlikely(PyErr_Occurred())) __PYX_ERR(0, 5, __pyx_L3_error)
         else {
-          __Pyx_RaiseArgtupleInvalid("extract_user_ids", 1, 2, 2, 1); __PYX_ERR(0, 6, __pyx_L3_error)
+          __Pyx_RaiseArgtupleInvalid("extract_user_ids", 1, 2, 2, 1); __PYX_ERR(0, 5, __pyx_L3_error)
         }
       }
       if (unlikely(kw_args > 0)) {
         const Py_ssize_t kwd_pos_args = __pyx_nargs;
-        if (unlikely(__Pyx_ParseOptionalKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values + 0, kwd_pos_args, "extract_user_ids") < 0)) __PYX_ERR(0, 6, __pyx_L3_error)
+        if (unlikely(__Pyx_ParseOptionalKeywords(__pyx_kwds, __pyx_kwvalues, __pyx_pyargnames, 0, values + 0, kwd_pos_args, "extract_user_ids") < 0)) __PYX_ERR(0, 5, __pyx_L3_error)
       }
     } else if (unlikely(__pyx_nargs != 2)) {
       goto __pyx_L5_argtuple_error;
@@ -2428,7 +2425,7 @@ PyObject *__pyx_args, PyObject *__pyx_kwds
   }
   goto __pyx_L6_skip;
   __pyx_L5_argtuple_error:;
-  __Pyx_RaiseArgtupleInvalid("extract_user_ids", 1, 2, 2, __pyx_nargs); __PYX_ERR(0, 6, __pyx_L3_error)
+  __Pyx_RaiseArgtupleInvalid("extract_user_ids", 1, 2, 2, __pyx_nargs); __PYX_ERR(0, 5, __pyx_L3_error)
   __pyx_L6_skip:;
   goto __pyx_L4_argument_unpacking_done;
   __pyx_L3_error:;
@@ -2483,41 +2480,41 @@ static PyObject *__pyx_pf_14youth_analysis_15extract_user_id_extract_user_ids(CY
   int __pyx_clineno = 0;
   __Pyx_RefNannySetupContext("extract_user_ids", 1);
 
-  /* "youth_analysis/extract_user_id.pyx":13
+  /* "youth_analysis/extract_user_id.pyx":12
  *     :return:  JSON
  *     """
  *     cdef list results = []             # <<<<<<<<<<<<<<
  *     cdef list userids = []
  *     cdef bytes line_bytes, user_id
  */
-  __pyx_t_1 = PyList_New(0); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 13, __pyx_L1_error)
+  __pyx_t_1 = PyList_New(0); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 12, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_v_results = ((PyObject*)__pyx_t_1);
   __pyx_t_1 = 0;
 
-  /* "youth_analysis/extract_user_id.pyx":14
+  /* "youth_analysis/extract_user_id.pyx":13
  *     """
  *     cdef list results = []
  *     cdef list userids = []             # <<<<<<<<<<<<<<
  *     cdef bytes line_bytes, user_id
  *     cdef const char *c_line, *start, *end
  */
-  __pyx_t_1 = PyList_New(0); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 14, __pyx_L1_error)
+  __pyx_t_1 = PyList_New(0); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 13, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __pyx_v_userids = ((PyObject*)__pyx_t_1);
   __pyx_t_1 = 0;
 
-  /* "youth_analysis/extract_user_id.pyx":20
+  /* "youth_analysis/extract_user_id.pyx":19
  * 
  *     #  key_len
  *     key_len = len('"user_id":"')             # <<<<<<<<<<<<<<
  * 
  *     for line in list_of_lines:
  */
-  __pyx_t_2 = __Pyx_PyUnicode_GET_LENGTH(__pyx_kp_u_user_id); if (unlikely(__pyx_t_2 == ((Py_ssize_t)-1))) __PYX_ERR(0, 20, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_PyUnicode_GET_LENGTH(__pyx_kp_u_user_id); if (unlikely(__pyx_t_2 == ((Py_ssize_t)-1))) __PYX_ERR(0, 19, __pyx_L1_error)
   __pyx_v_key_len = __pyx_t_2;
 
-  /* "youth_analysis/extract_user_id.pyx":22
+  /* "youth_analysis/extract_user_id.pyx":21
  *     key_len = len('"user_id":"')
  * 
  *     for line in list_of_lines:             # <<<<<<<<<<<<<<
@@ -2529,9 +2526,9 @@ static PyObject *__pyx_pf_14youth_analysis_15extract_user_id_extract_user_ids(CY
     __pyx_t_2 = 0;
     __pyx_t_3 = NULL;
   } else {
-    __pyx_t_2 = -1; __pyx_t_1 = PyObject_GetIter(__pyx_v_list_of_lines); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 22, __pyx_L1_error)
+    __pyx_t_2 = -1; __pyx_t_1 = PyObject_GetIter(__pyx_v_list_of_lines); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 21, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_1);
-    __pyx_t_3 = __Pyx_PyObject_GetIterNextFunc(__pyx_t_1); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 22, __pyx_L1_error)
+    __pyx_t_3 = __Pyx_PyObject_GetIterNextFunc(__pyx_t_1); if (unlikely(!__pyx_t_3)) __PYX_ERR(0, 21, __pyx_L1_error)
   }
   for (;;) {
     if (likely(!__pyx_t_3)) {
@@ -2539,28 +2536,28 @@ static PyObject *__pyx_pf_14youth_analysis_15extract_user_id_extract_user_ids(CY
         {
           Py_ssize_t __pyx_temp = __Pyx_PyList_GET_SIZE(__pyx_t_1);
           #if !CYTHON_ASSUME_SAFE_MACROS
-          if (unlikely((__pyx_temp < 0))) __PYX_ERR(0, 22, __pyx_L1_error)
+          if (unlikely((__pyx_temp < 0))) __PYX_ERR(0, 21, __pyx_L1_error)
           #endif
           if (__pyx_t_2 >= __pyx_temp) break;
         }
         #if CYTHON_ASSUME_SAFE_MACROS && !CYTHON_AVOID_BORROWED_REFS
-        __pyx_t_4 = PyList_GET_ITEM(__pyx_t_1, __pyx_t_2); __Pyx_INCREF(__pyx_t_4); __pyx_t_2++; if (unlikely((0 < 0))) __PYX_ERR(0, 22, __pyx_L1_error)
+        __pyx_t_4 = PyList_GET_ITEM(__pyx_t_1, __pyx_t_2); __Pyx_INCREF(__pyx_t_4); __pyx_t_2++; if (unlikely((0 < 0))) __PYX_ERR(0, 21, __pyx_L1_error)
         #else
-        __pyx_t_4 = __Pyx_PySequence_ITEM(__pyx_t_1, __pyx_t_2); __pyx_t_2++; if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 22, __pyx_L1_error)
+        __pyx_t_4 = __Pyx_PySequence_ITEM(__pyx_t_1, __pyx_t_2); __pyx_t_2++; if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 21, __pyx_L1_error)
         __Pyx_GOTREF(__pyx_t_4);
         #endif
       } else {
         {
           Py_ssize_t __pyx_temp = __Pyx_PyTuple_GET_SIZE(__pyx_t_1);
           #if !CYTHON_ASSUME_SAFE_MACROS
-          if (unlikely((__pyx_temp < 0))) __PYX_ERR(0, 22, __pyx_L1_error)
+          if (unlikely((__pyx_temp < 0))) __PYX_ERR(0, 21, __pyx_L1_error)
           #endif
           if (__pyx_t_2 >= __pyx_temp) break;
         }
         #if CYTHON_ASSUME_SAFE_MACROS && !CYTHON_AVOID_BORROWED_REFS
-        __pyx_t_4 = PyTuple_GET_ITEM(__pyx_t_1, __pyx_t_2); __Pyx_INCREF(__pyx_t_4); __pyx_t_2++; if (unlikely((0 < 0))) __PYX_ERR(0, 22, __pyx_L1_error)
+        __pyx_t_4 = PyTuple_GET_ITEM(__pyx_t_1, __pyx_t_2); __Pyx_INCREF(__pyx_t_4); __pyx_t_2++; if (unlikely((0 < 0))) __PYX_ERR(0, 21, __pyx_L1_error)
         #else
-        __pyx_t_4 = __Pyx_PySequence_ITEM(__pyx_t_1, __pyx_t_2); __pyx_t_2++; if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 22, __pyx_L1_error)
+        __pyx_t_4 = __Pyx_PySequence_ITEM(__pyx_t_1, __pyx_t_2); __pyx_t_2++; if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 21, __pyx_L1_error)
         __Pyx_GOTREF(__pyx_t_4);
         #endif
       }
@@ -2570,7 +2567,7 @@ static PyObject *__pyx_pf_14youth_analysis_15extract_user_id_extract_user_ids(CY
         PyObject* exc_type = PyErr_Occurred();
         if (exc_type) {
           if (likely(__Pyx_PyErr_GivenExceptionMatches(exc_type, PyExc_StopIteration))) PyErr_Clear();
-          else __PYX_ERR(0, 22, __pyx_L1_error)
+          else __PYX_ERR(0, 21, __pyx_L1_error)
         }
         break;
       }
@@ -2579,14 +2576,14 @@ static PyObject *__pyx_pf_14youth_analysis_15extract_user_id_extract_user_ids(CY
     __Pyx_XDECREF_SET(__pyx_v_line, __pyx_t_4);
     __pyx_t_4 = 0;
 
-    /* "youth_analysis/extract_user_id.pyx":24
+    /* "youth_analysis/extract_user_id.pyx":23
  *     for line in list_of_lines:
  *         #  Python  bytes
  *         line_bytes = line.encode('utf-8')  #  bytes             # <<<<<<<<<<<<<<
  *         c_line = line_bytes  #  bytes  C
  * 
  */
-    __pyx_t_5 = __Pyx_PyObject_GetAttrStr(__pyx_v_line, __pyx_n_s_encode); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 24, __pyx_L1_error)
+    __pyx_t_5 = __Pyx_PyObject_GetAttrStr(__pyx_v_line, __pyx_n_s_encode); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 23, __pyx_L1_error)
     __Pyx_GOTREF(__pyx_t_5);
     __pyx_t_6 = NULL;
     __pyx_t_7 = 0;
@@ -2606,15 +2603,15 @@ static PyObject *__pyx_pf_14youth_analysis_15extract_user_id_extract_user_ids(CY
       PyObject *__pyx_callargs[2] = {__pyx_t_6, __pyx_kp_u_utf_8};
       __pyx_t_4 = __Pyx_PyObject_FastCall(__pyx_t_5, __pyx_callargs+1-__pyx_t_7, 1+__pyx_t_7);
       __Pyx_XDECREF(__pyx_t_6); __pyx_t_6 = 0;
-      if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 24, __pyx_L1_error)
+      if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 23, __pyx_L1_error)
       __Pyx_GOTREF(__pyx_t_4);
       __Pyx_DECREF(__pyx_t_5); __pyx_t_5 = 0;
     }
-    if (!(likely(PyBytes_CheckExact(__pyx_t_4))||((__pyx_t_4) == Py_None) || __Pyx_RaiseUnexpectedTypeError("bytes", __pyx_t_4))) __PYX_ERR(0, 24, __pyx_L1_error)
+    if (!(likely(PyBytes_CheckExact(__pyx_t_4))||((__pyx_t_4) == Py_None) || __Pyx_RaiseUnexpectedTypeError("bytes", __pyx_t_4))) __PYX_ERR(0, 23, __pyx_L1_error)
     __Pyx_XDECREF_SET(__pyx_v_line_bytes, ((PyObject*)__pyx_t_4));
     __pyx_t_4 = 0;
 
-    /* "youth_analysis/extract_user_id.pyx":25
+    /* "youth_analysis/extract_user_id.pyx":24
  *         #  Python  bytes
  *         line_bytes = line.encode('utf-8')  #  bytes
  *         c_line = line_bytes  #  bytes  C             # <<<<<<<<<<<<<<
@@ -2623,12 +2620,12 @@ static PyObject *__pyx_pf_14youth_analysis_15extract_user_id_extract_user_ids(CY
  */
     if (unlikely(__pyx_v_line_bytes == Py_None)) {
       PyErr_SetString(PyExc_TypeError, "expected bytes, NoneType found");
-      __PYX_ERR(0, 25, __pyx_L1_error)
+      __PYX_ERR(0, 24, __pyx_L1_error)
     }
-    __pyx_t_8 = __Pyx_PyBytes_AsString(__pyx_v_line_bytes); if (unlikely((!__pyx_t_8) && PyErr_Occurred())) __PYX_ERR(0, 25, __pyx_L1_error)
+    __pyx_t_8 = __Pyx_PyBytes_AsString(__pyx_v_line_bytes); if (unlikely((!__pyx_t_8) && PyErr_Occurred())) __PYX_ERR(0, 24, __pyx_L1_error)
     __pyx_v_c_line = __pyx_t_8;
 
-    /* "youth_analysis/extract_user_id.pyx":28
+    /* "youth_analysis/extract_user_id.pyx":27
  * 
  *         #  "user_id":"
  *         start = strstr(c_line, b'"user_id":"')             # <<<<<<<<<<<<<<
@@ -2637,7 +2634,7 @@ static PyObject *__pyx_pf_14youth_analysis_15extract_user_id_extract_user_ids(CY
  */
     __pyx_v_start = strstr(__pyx_v_c_line, ((char const *)"\"user_id\":\""));
 
-    /* "youth_analysis/extract_user_id.pyx":29
+    /* "youth_analysis/extract_user_id.pyx":28
  *         #  "user_id":"
  *         start = strstr(c_line, b'"user_id":"')
  *         if start:             # <<<<<<<<<<<<<<
@@ -2647,7 +2644,7 @@ static PyObject *__pyx_pf_14youth_analysis_15extract_user_id_extract_user_ids(CY
     __pyx_t_9 = (__pyx_v_start != 0);
     if (__pyx_t_9) {
 
-      /* "youth_analysis/extract_user_id.pyx":30
+      /* "youth_analysis/extract_user_id.pyx":29
  *         start = strstr(c_line, b'"user_id":"')
  *         if start:
  *             start += key_len  #  "user_id":"             # <<<<<<<<<<<<<<
@@ -2656,78 +2653,79 @@ static PyObject *__pyx_pf_14youth_analysis_15extract_user_id_extract_user_ids(CY
  */
       __pyx_v_start = (__pyx_v_start + __pyx_v_key_len);
 
-      /* "youth_analysis/extract_user_id.pyx":31
+      /* "youth_analysis/extract_user_id.pyx":30
  *         if start:
  *             start += key_len  #  "user_id":"
  *             end = strstr(start, b'"')  #             # <<<<<<<<<<<<<<
  *             if end:
- *                 #  user_id malloc
+ *                 #  user_id Python  bytes  malloc
  */
       __pyx_v_end = strstr(__pyx_v_start, ((char const *)"\""));
 
-      /* "youth_analysis/extract_user_id.pyx":32
+      /* "youth_analysis/extract_user_id.pyx":31
  *             start += key_len  #  "user_id":"
  *             end = strstr(start, b'"')  #
  *             if end:             # <<<<<<<<<<<<<<
- *                 #  user_id malloc
+ *                 #  user_id Python  bytes  malloc
  *                 user_id_len = end - start
  */
       __pyx_t_9 = (__pyx_v_end != 0);
       if (__pyx_t_9) {
 
-        /* "youth_analysis/extract_user_id.pyx":34
+        /* "youth_analysis/extract_user_id.pyx":33
  *             if end:
- *                 #  user_id malloc
+ *                 #  user_id Python  bytes  malloc
  *                 user_id_len = end - start             # <<<<<<<<<<<<<<
- *                 user_id = bytes(start[:user_id_len])
+ *                 user_id = line_bytes[start - c_line : start - c_line + user_id_len]
  * 
  */
         __pyx_v_user_id_len = (__pyx_v_end - __pyx_v_start);
 
-        /* "youth_analysis/extract_user_id.pyx":35
- *                 #  user_id malloc
+        /* "youth_analysis/extract_user_id.pyx":34
+ *                 #  user_id Python  bytes  malloc
  *                 user_id_len = end - start
- *                 user_id = bytes(start[:user_id_len])             # <<<<<<<<<<<<<<
+ *                 user_id = line_bytes[start - c_line : start - c_line + user_id_len]             # <<<<<<<<<<<<<<
  * 
  *                 #  user_id
  */
-        __pyx_t_4 = __Pyx_PyBytes_FromStringAndSize(__pyx_v_start + 0, __pyx_v_user_id_len - 0); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 35, __pyx_L1_error)
+        if (unlikely(__pyx_v_line_bytes == Py_None)) {
+          PyErr_SetString(PyExc_TypeError, "'NoneType' object is not subscriptable");
+          __PYX_ERR(0, 34, __pyx_L1_error)
+        }
+        __pyx_t_4 = PySequence_GetSlice(__pyx_v_line_bytes, (__pyx_v_start - __pyx_v_c_line), ((__pyx_v_start - __pyx_v_c_line) + __pyx_v_user_id_len)); if (unlikely(!__pyx_t_4)) __PYX_ERR(0, 34, __pyx_L1_error)
         __Pyx_GOTREF(__pyx_t_4);
-        __pyx_t_5 = __Pyx_PyObject_CallOneArg(((PyObject *)(&PyBytes_Type)), __pyx_t_4); if (unlikely(!__pyx_t_5)) __PYX_ERR(0, 35, __pyx_L1_error)
-        __Pyx_GOTREF(__pyx_t_5);
-        __Pyx_DECREF(__pyx_t_4); __pyx_t_4 = 0;
-        __Pyx_XDECREF_SET(__pyx_v_user_id, ((PyObject*)__pyx_t_5));
-        __pyx_t_5 = 0;
+        __Pyx_XDECREF_SET(__pyx_v_user_id, ((PyObject*)__pyx_t_4));
+        __pyx_t_4 = 0;
 
-        /* "youth_analysis/extract_user_id.pyx":38
+        /* "youth_analysis/extract_user_id.pyx":37
  * 
  *                 #  user_id
  *                 if user_id in set_of_user_ids:             # <<<<<<<<<<<<<<
  *                     results.append(line)
  *                     userids.append(user_id)
  */
-        __pyx_t_9 = (__Pyx_PySequence_ContainsTF(__pyx_v_user_id, __pyx_v_set_of_user_ids, Py_EQ)); if (unlikely((__pyx_t_9 < 0))) __PYX_ERR(0, 38, __pyx_L1_error)
+        __pyx_t_9 = (__Pyx_PySequence_ContainsTF(__pyx_v_user_id, __pyx_v_set_of_user_ids, Py_EQ)); if (unlikely((__pyx_t_9 < 0))) __PYX_ERR(0, 37, __pyx_L1_error)
         if (__pyx_t_9) {
 
-          /* "youth_analysis/extract_user_id.pyx":39
+          /* "youth_analysis/extract_user_id.pyx":38
  *                 #  user_id
  *                 if user_id in set_of_user_ids:
  *                     results.append(line)             # <<<<<<<<<<<<<<
  *                     userids.append(user_id)
  * 
  */
-          __pyx_t_10 = __Pyx_PyList_Append(__pyx_v_results, __pyx_v_line); if (unlikely(__pyx_t_10 == ((int)-1))) __PYX_ERR(0, 39, __pyx_L1_error)
+          __pyx_t_10 = __Pyx_PyList_Append(__pyx_v_results, __pyx_v_line); if (unlikely(__pyx_t_10 == ((int)-1))) __PYX_ERR(0, 38, __pyx_L1_error)
 
-          /* "youth_analysis/extract_user_id.pyx":40
+          /* "youth_analysis/extract_user_id.pyx":39
  *                 if user_id in set_of_user_ids:
  *                     results.append(line)
  *                     userids.append(user_id)             # <<<<<<<<<<<<<<
  * 
  *     return userids, results
  */
-          __pyx_t_10 = __Pyx_PyList_Append(__pyx_v_userids, __pyx_v_user_id); if (unlikely(__pyx_t_10 == ((int)-1))) __PYX_ERR(0, 40, __pyx_L1_error)
+          __pyx_t_10 = __Pyx_PyList_Append(__pyx_v_userids, __pyx_v_user_id); if (unlikely(__pyx_t_10 == ((int)-1))) __PYX_ERR(0, 39, __pyx_L1_error)
 
-          /* "youth_analysis/extract_user_id.pyx":38
+          /* "youth_analysis/extract_user_id.pyx":37
  * 
  *                 #  user_id
  *                 if user_id in set_of_user_ids:             # <<<<<<<<<<<<<<
@@ -2736,16 +2734,16 @@ static PyObject *__pyx_pf_14youth_analysis_15extract_user_id_extract_user_ids(CY
  */
         }
 
-        /* "youth_analysis/extract_user_id.pyx":32
+        /* "youth_analysis/extract_user_id.pyx":31
  *             start += key_len  #  "user_id":"
  *             end = strstr(start, b'"')  #
  *             if end:             # <<<<<<<<<<<<<<
- *                 #  user_id malloc
+ *                 #  user_id Python  bytes  malloc
  *                 user_id_len = end - start
  */
       }
 
-      /* "youth_analysis/extract_user_id.pyx":29
+      /* "youth_analysis/extract_user_id.pyx":28
  *         #  "user_id":"
  *         start = strstr(c_line, b'"user_id":"')
  *         if start:             # <<<<<<<<<<<<<<
@@ -2754,7 +2752,7 @@ static PyObject *__pyx_pf_14youth_analysis_15extract_user_id_extract_user_ids(CY
  */
     }
 
-    /* "youth_analysis/extract_user_id.pyx":22
+    /* "youth_analysis/extract_user_id.pyx":21
  *     key_len = len('"user_id":"')
  * 
  *     for line in list_of_lines:             # <<<<<<<<<<<<<<
@@ -2764,25 +2762,25 @@ static PyObject *__pyx_pf_14youth_analysis_15extract_user_id_extract_user_ids(CY
   }
   __Pyx_DECREF(__pyx_t_1); __pyx_t_1 = 0;
 
-  /* "youth_analysis/extract_user_id.pyx":42
+  /* "youth_analysis/extract_user_id.pyx":41
  *                     userids.append(user_id)
  * 
  *     return userids, results             # <<<<<<<<<<<<<<
  */
   __Pyx_XDECREF(__pyx_r);
-  __pyx_t_1 = PyTuple_New(2); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 42, __pyx_L1_error)
+  __pyx_t_1 = PyTuple_New(2); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 41, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_1);
   __Pyx_INCREF(__pyx_v_userids);
   __Pyx_GIVEREF(__pyx_v_userids);
-  if (__Pyx_PyTuple_SET_ITEM(__pyx_t_1, 0, __pyx_v_userids)) __PYX_ERR(0, 42, __pyx_L1_error);
+  if (__Pyx_PyTuple_SET_ITEM(__pyx_t_1, 0, __pyx_v_userids)) __PYX_ERR(0, 41, __pyx_L1_error);
   __Pyx_INCREF(__pyx_v_results);
   __Pyx_GIVEREF(__pyx_v_results);
-  if (__Pyx_PyTuple_SET_ITEM(__pyx_t_1, 1, __pyx_v_results)) __PYX_ERR(0, 42, __pyx_L1_error);
+  if (__Pyx_PyTuple_SET_ITEM(__pyx_t_1, 1, __pyx_v_results)) __PYX_ERR(0, 41, __pyx_L1_error);
   __pyx_r = __pyx_t_1;
   __pyx_t_1 = 0;
   goto __pyx_L0;
 
-  /* "youth_analysis/extract_user_id.pyx":6
+  /* "youth_analysis/extract_user_id.pyx":5
  * from libc.stdlib cimport malloc, free
  * 
  * def extract_user_ids(list_of_lines, set_of_user_ids):             # <<<<<<<<<<<<<<
@@ -2864,17 +2862,17 @@ static CYTHON_SMALL_CODE int __Pyx_InitCachedConstants(void) {
   __Pyx_RefNannyDeclarations
   __Pyx_RefNannySetupContext("__Pyx_InitCachedConstants", 0);
 
-  /* "youth_analysis/extract_user_id.pyx":6
+  /* "youth_analysis/extract_user_id.pyx":5
  * from libc.stdlib cimport malloc, free
  * 
  * def extract_user_ids(list_of_lines, set_of_user_ids):             # <<<<<<<<<<<<<<
  *     """
  *      Cython  JSON  user_id
  */
-  __pyx_tuple_ = PyTuple_Pack(12, __pyx_n_s_list_of_lines, __pyx_n_s_set_of_user_ids, __pyx_n_s_results, __pyx_n_s_userids, __pyx_n_s_line_bytes, __pyx_n_s_user_id_2, __pyx_n_s_c_line, __pyx_n_s_start, __pyx_n_s_end, __pyx_n_s_key_len, __pyx_n_s_user_id_len, __pyx_n_s_line); if (unlikely(!__pyx_tuple_)) __PYX_ERR(0, 6, __pyx_L1_error)
+  __pyx_tuple_ = PyTuple_Pack(12, __pyx_n_s_list_of_lines, __pyx_n_s_set_of_user_ids, __pyx_n_s_results, __pyx_n_s_userids, __pyx_n_s_line_bytes, __pyx_n_s_user_id_2, __pyx_n_s_c_line, __pyx_n_s_start, __pyx_n_s_end, __pyx_n_s_key_len, __pyx_n_s_user_id_len, __pyx_n_s_line); if (unlikely(!__pyx_tuple_)) __PYX_ERR(0, 5, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_tuple_);
   __Pyx_GIVEREF(__pyx_tuple_);
-  __pyx_codeobj__2 = (PyObject*)__Pyx_PyCode_New(2, 0, 0, 12, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple_, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_extract_user_id_pyx, __pyx_n_s_extract_user_ids, 6, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__2)) __PYX_ERR(0, 6, __pyx_L1_error)
+  __pyx_codeobj__2 = (PyObject*)__Pyx_PyCode_New(2, 0, 0, 12, 0, CO_OPTIMIZED|CO_NEWLOCALS, __pyx_empty_bytes, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_tuple_, __pyx_empty_tuple, __pyx_empty_tuple, __pyx_kp_s_extract_user_id_pyx, __pyx_n_s_extract_user_ids, 5, __pyx_empty_bytes); if (unlikely(!__pyx_codeobj__2)) __PYX_ERR(0, 5, __pyx_L1_error)
   __Pyx_RefNannyFinishContext();
   return 0;
   __pyx_L1_error:;
@@ -2884,7 +2882,7 @@ static CYTHON_SMALL_CODE int __Pyx_InitCachedConstants(void) {
 /* #### Code section: init_constants ### */
 
 static CYTHON_SMALL_CODE int __Pyx_InitConstants(void) {
-  if (__Pyx_CreateStringTabAndInitStrings() < 0) __PYX_ERR(0, 2, __pyx_L1_error);
+  if (__Pyx_CreateStringTabAndInitStrings() < 0) __PYX_ERR(0, 1, __pyx_L1_error);
   return 0;
   __pyx_L1_error:;
   return -1;
@@ -3143,26 +3141,26 @@ static CYTHON_SMALL_CODE int __pyx_pymod_exec_extract_user_id(PyObject *__pyx_py
   #else
   #if PY_MAJOR_VERSION < 3
   __pyx_m = Py_InitModule4("extract_user_id", __pyx_methods, 0, 0, PYTHON_API_VERSION); Py_XINCREF(__pyx_m);
-  if (unlikely(!__pyx_m)) __PYX_ERR(0, 2, __pyx_L1_error)
+  if (unlikely(!__pyx_m)) __PYX_ERR(0, 1, __pyx_L1_error)
   #elif CYTHON_USE_MODULE_STATE
-  __pyx_t_1 = PyModule_Create(&__pyx_moduledef); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 2, __pyx_L1_error)
+  __pyx_t_1 = PyModule_Create(&__pyx_moduledef); if (unlikely(!__pyx_t_1)) __PYX_ERR(0, 1, __pyx_L1_error)
   {
     int add_module_result = PyState_AddModule(__pyx_t_1, &__pyx_moduledef);
     __pyx_t_1 = 0; /* transfer ownership from __pyx_t_1 to "extract_user_id" pseudovariable */
-    if (unlikely((add_module_result < 0))) __PYX_ERR(0, 2, __pyx_L1_error)
+    if (unlikely((add_module_result < 0))) __PYX_ERR(0, 1, __pyx_L1_error)
     pystate_addmodule_run = 1;
   }
   #else
   __pyx_m = PyModule_Create(&__pyx_moduledef);
-  if (unlikely(!__pyx_m)) __PYX_ERR(0, 2, __pyx_L1_error)
+  if (unlikely(!__pyx_m)) __PYX_ERR(0, 1, __pyx_L1_error)
   #endif
   #endif
   CYTHON_UNUSED_VAR(__pyx_t_1);
-  __pyx_d = PyModule_GetDict(__pyx_m); if (unlikely(!__pyx_d)) __PYX_ERR(0, 2, __pyx_L1_error)
+  __pyx_d = PyModule_GetDict(__pyx_m); if (unlikely(!__pyx_d)) __PYX_ERR(0, 1, __pyx_L1_error)
   Py_INCREF(__pyx_d);
-  __pyx_b = __Pyx_PyImport_AddModuleRef(__Pyx_BUILTIN_MODULE_NAME); if (unlikely(!__pyx_b)) __PYX_ERR(0, 2, __pyx_L1_error)
-  __pyx_cython_runtime = __Pyx_PyImport_AddModuleRef((const char *) "cython_runtime"); if (unlikely(!__pyx_cython_runtime)) __PYX_ERR(0, 2, __pyx_L1_error)
-  if (PyObject_SetAttrString(__pyx_m, "__builtins__", __pyx_b) < 0) __PYX_ERR(0, 2, __pyx_L1_error)
+  __pyx_b = __Pyx_PyImport_AddModuleRef(__Pyx_BUILTIN_MODULE_NAME); if (unlikely(!__pyx_b)) __PYX_ERR(0, 1, __pyx_L1_error)
+  __pyx_cython_runtime = __Pyx_PyImport_AddModuleRef((const char *) "cython_runtime"); if (unlikely(!__pyx_cython_runtime)) __PYX_ERR(0, 1, __pyx_L1_error)
+  if (PyObject_SetAttrString(__pyx_m, "__builtins__", __pyx_b) < 0) __PYX_ERR(0, 1, __pyx_L1_error)
   #if CYTHON_REFNANNY
 __Pyx_RefNanny = __Pyx_RefNannyImportAPI("refnanny");
 if (!__Pyx_RefNanny) {
@@ -3173,30 +3171,30 @@ if (!__Pyx_RefNanny) {
 }
 #endif
   __Pyx_RefNannySetupContext("__Pyx_PyMODINIT_FUNC PyInit_extract_user_id(void)", 0);
-  if (__Pyx_check_binary_version(__PYX_LIMITED_VERSION_HEX, __Pyx_get_runtime_version(), CYTHON_COMPILING_IN_LIMITED_API) < 0) __PYX_ERR(0, 2, __pyx_L1_error)
+  if (__Pyx_check_binary_version(__PYX_LIMITED_VERSION_HEX, __Pyx_get_runtime_version(), CYTHON_COMPILING_IN_LIMITED_API) < 0) __PYX_ERR(0, 1, __pyx_L1_error)
   #ifdef __Pxy_PyFrame_Initialize_Offsets
   __Pxy_PyFrame_Initialize_Offsets();
   #endif
-  __pyx_empty_tuple = PyTuple_New(0); if (unlikely(!__pyx_empty_tuple)) __PYX_ERR(0, 2, __pyx_L1_error)
-  __pyx_empty_bytes = PyBytes_FromStringAndSize("", 0); if (unlikely(!__pyx_empty_bytes)) __PYX_ERR(0, 2, __pyx_L1_error)
-  __pyx_empty_unicode = PyUnicode_FromStringAndSize("", 0); if (unlikely(!__pyx_empty_unicode)) __PYX_ERR(0, 2, __pyx_L1_error)
+  __pyx_empty_tuple = PyTuple_New(0); if (unlikely(!__pyx_empty_tuple)) __PYX_ERR(0, 1, __pyx_L1_error)
+  __pyx_empty_bytes = PyBytes_FromStringAndSize("", 0); if (unlikely(!__pyx_empty_bytes)) __PYX_ERR(0, 1, __pyx_L1_error)
+  __pyx_empty_unicode = PyUnicode_FromStringAndSize("", 0); if (unlikely(!__pyx_empty_unicode)) __PYX_ERR(0, 1, __pyx_L1_error)
   #ifdef __Pyx_CyFunction_USED
-  if (__pyx_CyFunction_init(__pyx_m) < 0) __PYX_ERR(0, 2, __pyx_L1_error)
+  if (__pyx_CyFunction_init(__pyx_m) < 0) __PYX_ERR(0, 1, __pyx_L1_error)
   #endif
   #ifdef __Pyx_FusedFunction_USED
-  if (__pyx_FusedFunction_init(__pyx_m) < 0) __PYX_ERR(0, 2, __pyx_L1_error)
+  if (__pyx_FusedFunction_init(__pyx_m) < 0) __PYX_ERR(0, 1, __pyx_L1_error)
   #endif
   #ifdef __Pyx_Coroutine_USED
-  if (__pyx_Coroutine_init(__pyx_m) < 0) __PYX_ERR(0, 2, __pyx_L1_error)
+  if (__pyx_Coroutine_init(__pyx_m) < 0) __PYX_ERR(0, 1, __pyx_L1_error)
   #endif
   #ifdef __Pyx_Generator_USED
-  if (__pyx_Generator_init(__pyx_m) < 0) __PYX_ERR(0, 2, __pyx_L1_error)
+  if (__pyx_Generator_init(__pyx_m) < 0) __PYX_ERR(0, 1, __pyx_L1_error)
   #endif
   #ifdef __Pyx_AsyncGen_USED
-  if (__pyx_AsyncGen_init(__pyx_m) < 0) __PYX_ERR(0, 2, __pyx_L1_error)
+  if (__pyx_AsyncGen_init(__pyx_m) < 0) __PYX_ERR(0, 1, __pyx_L1_error)
   #endif
   #ifdef __Pyx_StopAsyncIteration_USED
-  if (__pyx_StopAsyncIteration_init(__pyx_m) < 0) __PYX_ERR(0, 2, __pyx_L1_error)
+  if (__pyx_StopAsyncIteration_init(__pyx_m) < 0) __PYX_ERR(0, 1, __pyx_L1_error)
   #endif
   /*--- Library function declarations ---*/
   /*--- Threads initialization code ---*/
@@ -3204,27 +3202,27 @@ if (!__Pyx_RefNanny) {
   PyEval_InitThreads();
   #endif
   /*--- Initialize various global constants etc. ---*/
-  if (__Pyx_InitConstants() < 0) __PYX_ERR(0, 2, __pyx_L1_error)
+  if (__Pyx_InitConstants() < 0) __PYX_ERR(0, 1, __pyx_L1_error)
   stringtab_initialized = 1;
-  if (__Pyx_InitGlobals() < 0) __PYX_ERR(0, 2, __pyx_L1_error)
+  if (__Pyx_InitGlobals() < 0) __PYX_ERR(0, 1, __pyx_L1_error)
   #if PY_MAJOR_VERSION < 3 && (__PYX_DEFAULT_STRING_ENCODING_IS_ASCII || __PYX_DEFAULT_STRING_ENCODING_IS_DEFAULT)
-  if (__Pyx_init_sys_getdefaultencoding_params() < 0) __PYX_ERR(0, 2, __pyx_L1_error)
+  if (__Pyx_init_sys_getdefaultencoding_params() < 0) __PYX_ERR(0, 1, __pyx_L1_error)
   #endif
   if (__pyx_module_is_main_youth_analysis__extract_user_id) {
-    if (PyObject_SetAttr(__pyx_m, __pyx_n_s_name, __pyx_n_s_main) < 0) __PYX_ERR(0, 2, __pyx_L1_error)
+    if (PyObject_SetAttr(__pyx_m, __pyx_n_s_name, __pyx_n_s_main) < 0) __PYX_ERR(0, 1, __pyx_L1_error)
   }
   #if PY_MAJOR_VERSION >= 3
   {
-    PyObject *modules = PyImport_GetModuleDict(); if (unlikely(!modules)) __PYX_ERR(0, 2, __pyx_L1_error)
+    PyObject *modules = PyImport_GetModuleDict(); if (unlikely(!modules)) __PYX_ERR(0, 1, __pyx_L1_error)
     if (!PyDict_GetItemString(modules, "youth_analysis.extract_user_id")) {
-      if (unlikely((PyDict_SetItemString(modules, "youth_analysis.extract_user_id", __pyx_m) < 0))) __PYX_ERR(0, 2, __pyx_L1_error)
+      if (unlikely((PyDict_SetItemString(modules, "youth_analysis.extract_user_id", __pyx_m) < 0))) __PYX_ERR(0, 1, __pyx_L1_error)
     }
   }
   #endif
   /*--- Builtin init code ---*/
-  if (__Pyx_InitCachedBuiltins() < 0) __PYX_ERR(0, 2, __pyx_L1_error)
+  if (__Pyx_InitCachedBuiltins() < 0) __PYX_ERR(0, 1, __pyx_L1_error)
   /*--- Constants init code ---*/
-  if (__Pyx_InitCachedConstants() < 0) __PYX_ERR(0, 2, __pyx_L1_error)
+  if (__Pyx_InitCachedConstants() < 0) __PYX_ERR(0, 1, __pyx_L1_error)
   /*--- Global type/function init code ---*/
   (void)__Pyx_modinit_global_init_code();
   (void)__Pyx_modinit_variable_export_code();
@@ -3235,30 +3233,29 @@ if (!__Pyx_RefNanny) {
   (void)__Pyx_modinit_function_import_code();
   /*--- Execution code ---*/
   #if defined(__Pyx_Generator_USED) || defined(__Pyx_Coroutine_USED)
-  if (__Pyx_patch_abc() < 0) __PYX_ERR(0, 2, __pyx_L1_error)
+  if (__Pyx_patch_abc() < 0) __PYX_ERR(0, 1, __pyx_L1_error)
   #endif
 
-  /* "youth_analysis/extract_user_id.pyx":6
+  /* "youth_analysis/extract_user_id.pyx":5
  * from libc.stdlib cimport malloc, free
  * 
  * def extract_user_ids(list_of_lines, set_of_user_ids):             # <<<<<<<<<<<<<<
  *     """
  *      Cython  JSON  user_id
  */
-  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_14youth_analysis_15extract_user_id_1extract_user_ids, 0, __pyx_n_s_extract_user_ids, NULL, __pyx_n_s_youth_analysis_extract_user_id, __pyx_d, ((PyObject *)__pyx_codeobj__2)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 6, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_CyFunction_New(&__pyx_mdef_14youth_analysis_15extract_user_id_1extract_user_ids, 0, __pyx_n_s_extract_user_ids, NULL, __pyx_n_s_youth_analysis_extract_user_id, __pyx_d, ((PyObject *)__pyx_codeobj__2)); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 5, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (PyDict_SetItem(__pyx_d, __pyx_n_s_extract_user_ids, __pyx_t_2) < 0) __PYX_ERR(0, 6, __pyx_L1_error)
+  if (PyDict_SetItem(__pyx_d, __pyx_n_s_extract_user_ids, __pyx_t_2) < 0) __PYX_ERR(0, 5, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
-  /* "youth_analysis/extract_user_id.pyx":2
- * 
+  /* "youth_analysis/extract_user_id.pyx":1
  * # distutils: language=c             # <<<<<<<<<<<<<<
  * from libc.string cimport strstr, strlen
  * from libc.stdlib cimport malloc, free
  */
-  __pyx_t_2 = __Pyx_PyDict_NewPresized(0); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 2, __pyx_L1_error)
+  __pyx_t_2 = __Pyx_PyDict_NewPresized(0); if (unlikely(!__pyx_t_2)) __PYX_ERR(0, 1, __pyx_L1_error)
   __Pyx_GOTREF(__pyx_t_2);
-  if (PyDict_SetItem(__pyx_d, __pyx_n_s_test, __pyx_t_2) < 0) __PYX_ERR(0, 2, __pyx_L1_error)
+  if (PyDict_SetItem(__pyx_d, __pyx_n_s_test, __pyx_t_2) < 0) __PYX_ERR(0, 1, __pyx_L1_error)
   __Pyx_DECREF(__pyx_t_2); __pyx_t_2 = 0;
 
   /*--- Wrapped vars code ---*/
@@ -4024,12 +4021,6 @@ __Pyx_RaiseUnexpectedTypeError(const char *expected, PyObject *obj)
                  expected, obj_type_name);
     __Pyx_DECREF_TypeName(obj_type_name);
     return 0;
-}
-
-/* PyObjectCallOneArg */
-static CYTHON_INLINE PyObject* __Pyx_PyObject_CallOneArg(PyObject *func, PyObject *arg) {
-    PyObject *args[2] = {NULL, arg};
-    return __Pyx_PyObject_FastCall(func, args+1, 1 | __Pyx_PY_VECTORCALL_ARGUMENTS_OFFSET);
 }
 
 /* FixUpExtensionType */

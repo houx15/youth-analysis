@@ -1,4 +1,3 @@
-
 # distutils: language=c
 from libc.string cimport strstr, strlen
 from libc.stdlib cimport malloc, free
@@ -30,9 +29,9 @@ def extract_user_ids(list_of_lines, set_of_user_ids):
             start += key_len  # 跳过 "user_id":" 的长度
             end = strstr(start, b'"')  # 查找结束引号
             if end:
-                # 提取 user_id（使用 malloc 分配内存）
+                # 提取 user_id（直接使用 Python 的 bytes 对象，无需 malloc）
                 user_id_len = end - start
-                user_id = bytes(start[:user_id_len])
+                user_id = line_bytes[start - c_line : start - c_line + user_id_len]
                 
                 # 检查 user_id 是否在目标集合中
                 if user_id in set_of_user_ids:
