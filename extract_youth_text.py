@@ -5,6 +5,7 @@ import json
 import pandas as pd
 
 from extract_user_id import extract_user_ids
+from extract_user_id_old import extract_user_ids_old
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -66,7 +67,7 @@ def unzip_one_fresh_data_file(year, date):
     return None
 
 
-def process_file(file_path, matched_ids):
+def process_file(file_path, matched_ids, year):
     """
     从大文件中逐块提取 user_id 和 JSON 数据，直接存储 bytes 数据到 Parquet 文件。
     :param file_path: 输入文件路径
@@ -74,6 +75,7 @@ def process_file(file_path, matched_ids):
     :param output_parquet_path: 输出 Parquet 文件路径
     """
     # 定义每块的大小（行数）
+    extract_function = extract_user_ids if year > 2019 else extract_user_ids_old
     chunk_size = 5000000
     all_userids = []
     all_results = []
@@ -89,7 +91,7 @@ def process_file(file_path, matched_ids):
             # 当块大小达到限制时，处理该块
             if len(chunk) == chunk_size:
                 # 调用 Cython 函数
-                userids, results = extract_user_ids(chunk, matched_ids)
+                userids, results = extract_function(chunk, matched_ids)
                 # 直接存储 bytes 数据
                 all_userids.extend(userids)
                 all_results.extend(results)
@@ -97,7 +99,7 @@ def process_file(file_path, matched_ids):
 
         # 处理最后一块（如果有剩余）
         if chunk:
-            userids, results = extract_user_ids(chunk, matched_ids)
+            userids, results = extract_function(chunk, matched_ids)
             all_userids.extend(userids)
             all_results.extend(results)
 
@@ -144,21 +146,24 @@ def process_year(year, mode):
     current_date = start_date
 
     date_range = [start_date + timedelta(days=n) for n in range((end_date - start_date).days + 1)]
+    # date_range = ["test"]
     for current_date in date_range:
         date_str = current_date.strftime("%Y-%m-%d")
 
         file_path = unzip_one_fresh_data_file(year, date_str)
+        # file_path = f"text_working_data/{year}/weibo_freshdata.test"
         if file_path is None:
             continue
         start_timestamp = int(time.time())
-        userids, results = process_file(file_path, all_matched_ids)
+        userids, results = process_file(file_path, all_matched_ids, year)
         append_to_parquet(date_str, userids, results)
 
-        log(f"处理 {date_str} 完成，耗时 {int(time.time()) - start_timestamp} 秒。", year)
+        log(f"处理 {date_str} 完成，耗时 {int(time.time()) - start_timestamp} 秒。", f"{year}_{mode}")
 
         delete_unzipped_fresh_data_file(year, date_str)
 
 
 if __name__ == "__main__":
-    process_year(2023, 1)
+    # for y in [2016, 2017, 2018, 2019]:
+    process_year(2016, 0)
     log("处理完毕。")
