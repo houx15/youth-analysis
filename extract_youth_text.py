@@ -165,5 +165,5 @@ def process_year(year, mode):
 
 if __name__ == "__main__":
     # for y in [2016, 2017, 2018, 2019]:
-    process_year(2016, 0)
+    process_year(2019, 1)
     log("处理完毕。")

@@ -45,10 +45,6 @@ def extract_user_ids_old(list_of_lines, set_of_user_ids):
             col_index += 1
             start = end + 1  # 跳过 \t
         
-        # 打印提取的 user_id
-        if user_id:
-            print(f"Extracted user_id: {user_id.decode('utf-8')}")  # 将 bytes 转换为字符串打印
-        
         # 检查 user_id 是否在目标集合中
         if user_id and user_id in set_of_user_ids:
             results.append(line)
