@@ -5,7 +5,7 @@ from user_id_counter import count_user_ids
 from collections import defaultdict
 
 OUTPUT_DIR = "user_count"
-SOURCE_DIR = "youth_text_data"
+SOURCE_DIR = "youth_text_data_dedup"
 
 if not os.path.exists(OUTPUT_DIR):
     os.makedirs(OUTPUT_DIR)
@@ -22,6 +22,9 @@ current_date = start_date
 date_range = [start_date + timedelta(days=n) for n in range((end_date - start_date).days + 1)]
 
 for current_date in date_range:
+    year_output_dir = os.path.join(OUTPUT_DIR, f"count-{str(current_date.year)}")
+    if not os.path.exists(year_output_dir):
+        os.makedirs(year_output_dir)
     file_path = os.path.join(SOURCE_DIR, f"{current_date.strftime('%Y-%m-%d')}.parquet")
     
     if os.path.exists(file_path):
@@ -33,7 +36,7 @@ for current_date in date_range:
             [(current_date, user_id, count) for user_id, count in daily_counts.items()],
             columns=['date', 'user_id', 'count']
         )
-        daily_output_path = os.path.join(OUTPUT_DIR, f"{current_date.strftime('%Y-%m-%d')}.parquet")
+        daily_output_path = os.path.join(year_output_dir, f"{current_date.strftime('%Y-%m-%d')}.parquet")
         daily_df.to_parquet(daily_output_path, engine='fastparquet', index=False)
         
         # 累加到 yearly_counts 中
@@ -46,5 +49,5 @@ yearly_df = pd.DataFrame(
     columns=['year', 'user_id', 'count']
 )
 
-yearly_output_path = os.path.join(OUTPUT_DIR, "yearly_user_counts.parquet")
+yearly_output_path = os.path.join(OUTPUT_DIR, "yearly_user_counts_2020.parquet")
 yearly_df.to_parquet(yearly_output_path, engine='fastparquet', index=False)
