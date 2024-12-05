@@ -9,6 +9,9 @@ cimport cython
 def count_user_ids(str file_path):
     # 读取 Parquet 文件
     df = pd.read_parquet(file_path, engine="fastparquet")
+
+    if df.empty:
+        return None
     
     # 转换 user_id_binary 到字符串
     user_ids = df['user_id_binary'].apply(lambda x: x.decode('utf-8')).values
