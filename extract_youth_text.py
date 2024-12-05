@@ -6,6 +6,7 @@ import pandas as pd
 
 from extract_user_id import extract_user_ids
 from extract_user_id_old import extract_user_ids_old
+from extract_user_id_special import extract_user_ids_special
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -29,6 +30,8 @@ def get_unzipped_fresh_data_folder(year):
 
 
 def get_unzipped_fresh_data_file(year, date):
+    if date == "2020-06-30":
+        return f"text_working_data/{year}/weibo_2020-06-30.csv"
     return f"text_working_data/{year}/weibo_freshdata.{date}"
 
 
@@ -146,6 +149,8 @@ def process_year(year, mode):
     current_date = start_date
 
     date_range = [start_date + timedelta(days=n) for n in range((end_date - start_date).days + 1)]
+    # date_range = [datetime(2021, 1, 19), datetime(2021, 1, 28), datetime(2021, 2, 2), datetime(2021, 2, 22), datetime(2021, 3, 13), datetime(2021, 5, 31), datetime(2021, 9, 2), datetime(2021, 9, 12), datetime(2021, 10, 6), datetime(2021, 10, 22), datetime(2021, 12, 22), datetime(2021, 12, 23)]
+    date_range = [datetime(2022, 1, 2), datetime(2022, 1, 3)]
     # date_range = ["test"]
     for current_date in date_range:
         date_str = current_date.strftime("%Y-%m-%d")
@@ -166,5 +171,5 @@ def process_year(year, mode):
 
 if __name__ == "__main__":
     # for y in [2016, 2017, 2018, 2019]:
-    process_year(2019, 1)
+    process_year(2022, 1)
     log("处理完毕。")
