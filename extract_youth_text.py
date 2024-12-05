@@ -161,6 +161,7 @@ def process_year(year, mode):
         log(f"处理 {date_str} 完成，耗时 {int(time.time()) - start_timestamp} 秒。", f"{year}_{mode}")
 
         delete_unzipped_fresh_data_file(year, date_str)
+        print(f"finished {date_str} with {len(results)} records")
 
 
 if __name__ == "__main__":
