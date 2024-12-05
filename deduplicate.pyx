@@ -13,8 +13,11 @@ def deduplicate_by_weibo_id(list_of_lines):
     is_unique = [1] * n  # 使用 Python 列表
 
     for i in range(n):
+        # 将字符串编码为字节串
+        line_bytes = list_of_lines[i].encode('utf-8')
+        
         # 提取 weibo_id
-        weibo_id = extract_weibo_id(list_of_lines[i])
+        weibo_id = extract_weibo_id(line_bytes)
         
         if weibo_id == "":
             continue  # 跳过空字符串
