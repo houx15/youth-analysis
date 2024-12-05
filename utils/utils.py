@@ -31,5 +31,6 @@ def extract_single_7z_file(file_path, target_folder):
                 archive.extractall(path=target_folder)
                 print(f"Extracted: {file_path}")
                 return "success"
-    except:
+    except Exception as e:
+        print(f"Error extracting {file_path}: {e}")
         return None

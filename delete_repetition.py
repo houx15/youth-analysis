@@ -16,6 +16,22 @@ end_date = datetime(2023, 12, 31)
 # 生成日期范围
 date_range = [start_date + timedelta(days=n) for n in range((end_date - start_date).days + 1)]
 
+
+def deduplicate_special(lines):
+    seen_weibo_ids = set()
+    n = len(lines)
+    is_unique = [1] * n
+
+    for i in range(n):
+        line = lines[i]
+        weibo_id = line.split(",")[8].strip('"')
+        if weibo_id in seen_weibo_ids:
+            is_unique[i] = 0
+        else:
+            seen_weibo_ids.add(weibo_id)
+    return is_unique
+
+
 for current_date in date_range:
     file_path = os.path.join(SOURCE_DIR, f"{current_date.strftime('%Y-%m-%d')}.parquet")
     
@@ -25,7 +41,10 @@ for current_date in date_range:
         
         # 提取 line_binary 列并调用去重函数
         lines = df['line_binary'].tolist()
-        unique_flags = deduplicate_by_weibo_id(lines)
+        if current_date == datetime(2020, 6, 30):
+            unique_flags = deduplicate_special(lines)
+        else:
+            unique_flags = deduplicate_by_weibo_id(lines)
         
         # 过滤掉重复的行
         df_unique = df[[flag == 1 for flag in unique_flags]]
