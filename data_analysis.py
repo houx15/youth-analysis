@@ -15,6 +15,20 @@ import seaborn as sns
 
 start_time = int(time.time())
 
+    # 定义省份到区域的映射
+region_to_province = {
+    'East': ['北京', '天津', '河北', '上海', '江苏', '浙江', '福建', '山东', '广东', '海南'],
+    'Central': ['山西', '安徽', '江西', '河南', '湖北', '湖南'],
+    'West': ['内蒙古', '广西', '重庆', '四川', '贵州', '云南', '西藏', '陕西', '甘肃', '青海', '宁夏', '新疆'],
+    'Northeast': ['辽宁', '吉林', '黑龙江']
+}
+
+province_to_region = {}
+
+for region, provinces in region_to_province.items():
+    for province in provinces:
+        province_to_region[province] = region
+
 def log(text):
     with open("log.txt", "a") as f:
         f.write(f"{text}\n")
@@ -197,11 +211,15 @@ def gender_analysis():
     axes[1].legend(loc='upper left')
 
     # 绝对数量变化的面积图
-    axes[2].stackplot(absolute_counts['year'], 
-                      absolute_counts['female'], 
-                      absolute_counts['male'], 
-                      absolute_counts['missing'], 
-                      labels=['Female', 'Male', 'Missing'])
+    axes[2].plot(absolute_counts['year'], 
+                 absolute_counts['female'], 
+                 label='Female')
+    axes[2].plot(absolute_counts['year'], 
+                 absolute_counts['male'], 
+                 label='Male')
+    axes[2].plot(absolute_counts['year'], 
+                 absolute_counts['missing'], 
+                 label='Missing')
     axes[2].set_title('Absolute Gender Counts Over Years')
     axes[2].legend(loc='upper left')
 
@@ -214,20 +232,6 @@ def gender_analysis():
 def province_analysis():
     yearly_df = pd.read_parquet("user_count2/yearly_user_counts.parquet", engine='fastparquet')
     year_range = range(2016, 2024)
-
-    # 定义省份到区域的映射
-    region_to_province = {
-        'East': ['北京', '天津', '河北', '上海', '江苏', '浙江', '福建', '山东', '广东', '海南'],
-        'Central': ['山西', '安徽', '江西', '河南', '湖北', '湖南'],
-        'West': ['内蒙古', '广西', '重庆', '四川', '贵州', '云南', '西藏', '陕西', '甘肃', '青海', '宁夏', '新疆'],
-        'Northeast': ['辽宁', '吉林', '黑龙江']
-    }
-
-    province_to_region = {}
-
-    for region, provinces in region_to_province.items():
-        for province in provinces:
-            province_to_region[province] = region
     
     year_data = []
 
@@ -300,6 +304,250 @@ def age_analysis():
     plt.savefig("images/age_trend.pdf", format='pdf')
 
 
+def female_ratio_by_region():
+    yearly_df = pd.read_parquet("user_count2/yearly_user_counts.parquet", engine='fastparquet')
+    year_range = range(2016, 2024)
+
+    year_data = {region: [] for region in region_to_province}
+
+    for year in year_range:
+        year_data_year = yearly_df[yearly_df["year"] == year]
+        for region in region_to_province:
+            region_data = year_data_year[year_data_year['province'].map(province_to_region) == region]
+            female_ratio = region_data[region_data['gender'] == '女'].shape[0] / region_data.shape[0] if region_data.shape[0] > 0 else 0
+            year_data[region].append(female_ratio)
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    for region in region_to_province:
+        ax.plot(year_range, year_data[region], label=region)
+
+    ax.axhline(0.5, color='gray', linestyle='--', label='50% Reference Line')
+    ax.set_title('Female Ratio by Region Over Years')
+    ax.set_xlabel('Year')
+    ax.set_ylabel('Female Ratio')
+    ax.legend(loc='upper right')
+    plt.tight_layout()
+    plt.savefig("images/female_ratio_by_region.pdf", format='pdf')
+
+
+def average_age_by_region():
+    yearly_df = pd.read_parquet("user_count2/yearly_user_counts.parquet", engine='fastparquet')
+    year_range = range(2016, 2024)
+
+    year_data = {region: [] for region in region_to_province}
+    overall_avg_age = []
+
+    for year in year_range:
+        year_data_year = yearly_df[yearly_df["year"] == year]
+        overall_avg_age.append(year_data_year['age'].mean())
+        for region in region_to_province:
+            region_data = year_data_year[year_data_year['province'].map(province_to_region) == region]
+            avg_age = region_data['age'].mean() if not region_data['age'].isnull().all() else 0
+            year_data[region].append(avg_age)
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    for region in region_to_province:
+        ax.plot(year_range, year_data[region], label=region)
+
+    ax.plot(year_range, overall_avg_age, color='gray', linestyle='--', label='Overall Average Age')
+    ax.set_title('Average Age by Region Over Years')
+    ax.set_xlabel('Year')
+    ax.set_ylabel('Average Age')
+    ax.legend(loc='upper right')
+    plt.tight_layout()
+    plt.savefig("images/average_age_by_region.pdf", format='pdf')
+
+
+def average_age_by_gender():
+    yearly_df = pd.read_parquet("user_count2/yearly_user_counts.parquet", engine='fastparquet')
+    year_range = range(2016, 2024)
+
+    male_avg_age = []
+    female_avg_age = []
+    overall_avg_age = []
+
+    for year in year_range:
+        year_data_year = yearly_df[yearly_df["year"] == year]
+        overall_avg_age.append(year_data_year['age'].mean())
+        male_avg_age.append(year_data_year[year_data_year['gender'] == '男']['age'].mean())
+        female_avg_age.append(year_data_year[year_data_year['gender'] == '女']['age'].mean())
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.plot(year_range, male_avg_age, label='Male')
+    ax.plot(year_range, female_avg_age, label='Female')
+    ax.plot(year_range, overall_avg_age, color='gray', linestyle='--', label='Overall Average Age')
+
+    ax.set_title('Average Age by Gender Over Years')
+    ax.set_xlabel('Year')
+    ax.set_ylabel('Average Age')
+    ax.legend(loc='upper right')
+    plt.tight_layout()
+    plt.savefig("images/average_age_by_gender.pdf", format='pdf')
+
+def gender_activity_analysis():
+    yearly_df = pd.read_parquet("user_count2/yearly_user_counts.parquet", engine='fastparquet')
+    year_range = range(2016, 2024)
+
+    absolute_counts = []
+    ratio_counts = []
+
+    for year in year_range:
+        year_data_year = yearly_df[yearly_df["year"] == year]
+        total_activity = year_data_year['count'].sum()
+        
+        female_activity = year_data_year[year_data_year["gender"] == "女"]['count'].sum()
+        male_activity = year_data_year[year_data_year["gender"] == "男"]['count'].sum()
+        missing_activity = total_activity - female_activity - male_activity
+        
+        absolute_counts.append({
+            "year": year,
+            "male": male_activity,
+            "female": female_activity,
+            "missing": missing_activity
+        })
+        
+        ratio_counts.append({
+            "year": year,
+            "male": male_activity / total_activity if total_activity > 0 else 0,
+            "female": female_activity / total_activity if total_activity > 0 else 0,
+            "missing": missing_activity / total_activity if total_activity > 0 else 0
+        })
+
+    absolute_df = pd.DataFrame(absolute_counts)
+    ratio_df = pd.DataFrame(ratio_counts)
+
+    # 绘制绝对数值的面积图
+    fig, axes = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
+
+    axes[0].plot(absolute_df['year'], 
+                 absolute_df['female'], 
+                 label='Female')
+    axes[0].plot(absolute_df['year'], 
+                 absolute_df['male'], 
+                 label='Male')
+    axes[0].plot(absolute_df['year'], 
+                 absolute_df['missing'], 
+                 label='Missing')
+    axes[0].set_title('Gender Activity Counts Over Years')
+    axes[0].legend(loc='upper left')
+
+    # 绘制比例的面积图
+    axes[1].stackplot(ratio_df['year'], 
+                      ratio_df['female'], 
+                      ratio_df['male'], 
+                      ratio_df['missing'], 
+                      labels=['Female', 'Male', 'Missing'])
+    axes[1].set_title('Gender Activity Ratio Over Years')
+    axes[1].legend(loc='upper left')
+
+    plt.xlabel('Year')
+    plt.tight_layout()
+    plt.savefig("images/gender_activity_trend.pdf", format='pdf')
+
+
+def region_activity_analysis():
+    yearly_df = pd.read_parquet("user_count2/yearly_user_counts.parquet", engine='fastparquet')
+    year_range = range(2016, 2024)
+
+    absolute_counts = {region: [] for region in region_to_province}
+    ratio_counts = []
+
+    for year in year_range:
+        year_data_year = yearly_df[yearly_df["year"] == year]
+        total_activity = year_data_year['count'].sum()
+
+        year_ratio = {"year": year}
+
+        for region in region_to_province:
+            region_data = year_data_year[year_data_year['province'].map(province_to_region) == region]
+            region_activity = region_data['count'].sum()
+            absolute_counts[region].append(region_activity)
+
+            year_ratio[region] = region_activity / total_activity if total_activity > 0 else 0
+        
+        # 给ratio加上一个missing
+        missing_activity_ratio = 1 - sum(year_ratio[region] for region in region_to_province)
+        year_ratio['Missing'] = missing_activity_ratio
+        ratio_counts.append(year_ratio)
+
+    fig, axes = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
+
+    for region in region_to_province:
+        axes[0].plot(year_range, absolute_counts[region], label=region)
+        # axes[1].stackplot(year_range, ratio_counts[region], label=region)
+    
+    ratio_data = pd.DataFrame(ratio_counts)
+    axes[1].stackplot(ratio_data['year'], ratio_data['East'], ratio_data['West'], ratio_data['Central'], ratio_data['Northeast'], ratio_data['Missing'], labels=['East', 'West', 'Central', 'Northeast', 'Missing'])
+
+    axes[0].set_title('Region Activity Counts Over Years')
+    axes[0].legend(loc='upper left')
+
+    axes[1].set_title('Region Activity Ratio Over Years')
+    axes[1].legend(loc='upper left')
+
+    plt.xlabel('Year')
+    plt.tight_layout()
+    plt.savefig("images/region_activity_trend.pdf", format='pdf')
+
+
+def age_activity_analysis():
+    yearly_df = pd.read_parquet("user_count2/yearly_user_counts.parquet", engine='fastparquet')
+    year_range = range(2016, 2024)
+
+    bins = [0, 4, 8, 12, 16]
+    labels = ['0-4', '4-8', '8-12', '12-16']
+
+    absolute_counts = {label: [] for label in labels}
+    ratio_counts = []
+
+    for year in year_range:
+        year_data_year = yearly_df[yearly_df["year"] == year]
+        total_activity = year_data_year['count'].sum()
+
+        year_ratio = {"year": year}
+
+        age_groups = pd.cut(year_data_year['age'], bins=bins, labels=labels, right=False)
+
+        for label in labels:
+            age_group_data = year_data_year[age_groups == label]
+            age_group_activity = age_group_data['count'].sum()
+            absolute_counts[label].append(age_group_activity)
+
+            year_ratio[label] = age_group_activity / total_activity if total_activity > 0 else 0
+        
+        # 给ratio加上一个missing
+        missing_activity_ratio = 1 - sum(year_ratio[label] for label in labels)
+        year_ratio['Missing'] = missing_activity_ratio
+        ratio_counts.append(year_ratio)
+
+    fig, axes = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
+
+    for label in labels:
+        axes[0].plot(year_range, absolute_counts[label], label=label)
+        # axes[1].stackplot(year_range, ratio_counts[label], label=label)
+
+    ratio_data = pd.DataFrame(ratio_counts)
+    axes[1].stackplot(ratio_data['year'], ratio_data['0-4'], ratio_data['4-8'], ratio_data['8-12'], ratio_data['12-16'], ratio_data['Missing'], labels=['0-4', '4-8', '8-12', '12-16', 'Missing'])
+
+    axes[0].set_title('Age Group Activity Counts Over Years')
+    axes[0].legend(loc='upper left')
+
+    axes[1].set_title('Age Group Activity Ratio Over Years')
+    axes[1].legend(loc='upper left')
+
+    plt.xlabel('Year')
+    plt.tight_layout()
+    plt.savefig("images/age_activity_trend.pdf", format='pdf')
+
+
 
 if __name__ == "__main__":
-    add_demographic_for_all()
+    gender_analysis()
+    province_analysis()
+    age_analysis()
+    female_ratio_by_region()
+    average_age_by_region()
+    average_age_by_gender()
+    gender_activity_analysis()
+    region_activity_analysis()
+    age_activity_analysis()

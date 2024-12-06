@@ -11,8 +11,8 @@ if not os.path.exists(OUTPUT_DIR):
     os.makedirs(OUTPUT_DIR)
 
 # 初始化日期
-start_date = datetime(2016, 1, 1)
-end_date = datetime(2019, 12, 31)
+start_date = datetime(2020, 1, 1)
+end_date = datetime(2023, 12, 31)
 
 # 存储每年 user_id 出现次数
 yearly_counts = defaultdict(int)
@@ -55,5 +55,5 @@ yearly_df = pd.DataFrame(
     columns=["year", "user_id", "count"],
 )
 
-yearly_output_path = os.path.join(OUTPUT_DIR, "yearly_user_counts_2016.parquet")
+yearly_output_path = os.path.join(OUTPUT_DIR, "yearly_user_counts_2020.parquet")
 yearly_df.to_parquet(yearly_output_path, engine="fastparquet", index=False)
