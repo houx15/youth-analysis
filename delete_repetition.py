@@ -15,7 +15,7 @@ end_date = datetime(2023, 12, 31)
 
 # 生成日期范围
 date_range = [start_date + timedelta(days=n) for n in range((end_date - start_date).days + 1)]
-
+date_range = [datetime(2020, 6, 30)]
 
 def deduplicate_special(lines):
     seen_weibo_ids = set()
@@ -24,7 +24,7 @@ def deduplicate_special(lines):
 
     for i in range(n):
         line = lines[i]
-        weibo_id = line.split(",")[8].strip('"')
+        weibo_id = line.split('","')[8].strip('"')
         if weibo_id in seen_weibo_ids:
             is_unique[i] = 0
         else:

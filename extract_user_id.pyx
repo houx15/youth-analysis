@@ -1,16 +1,21 @@
 # distutils: language=c
 from libc.string cimport strstr, strlen
 from libc.stdlib cimport malloc, free
+cimport numpy as np
+import numpy as np
 
-def extract_user_ids(list_of_lines, set_of_user_ids):
+def extract_user_ids_optimized(list_of_lines, set_of_user_ids):
     """
     使用 Cython 加速从 JSON 文本中提取 user_id 并匹配
+    使用 NumPy 数组预分配存储结果，避免 append 操作
     :param list_of_lines: 输入的 JSON 文本列表
     :param set_of_user_ids: 目标 user_id 集合
-    :return: 匹配的 JSON 文本列表
+    :return: 匹配的 JSON 文本列表和 user_id 列表
     """
-    cdef list results = []
-    cdef list userids = []
+    cdef int num_lines = len(list_of_lines)
+    cdef np.ndarray results = np.empty(num_lines, dtype=object)  # 用于存储匹配的 JSON 文本
+    cdef np.ndarray userids = np.empty(num_lines, dtype=object)  # 用于存储匹配的 user_id
+    cdef int result_idx = 0  # 当前存储索引
     cdef bytes line_bytes, user_id
     cdef const char *c_line, *start, *end
     cdef int key_len, user_id_len
@@ -35,7 +40,9 @@ def extract_user_ids(list_of_lines, set_of_user_ids):
                 
                 # 检查 user_id 是否在目标集合中
                 if user_id in set_of_user_ids:
-                    results.append(line)
-                    userids.append(user_id)
+                    results[result_idx] = line  # 存储匹配的 JSON 文本
+                    userids[result_idx] = user_id  # 存储匹配的 user_id
+                    result_idx += 1
 
-    return userids, results
+    # 使用 NumPy 的切片操作去掉多余的空值
+    return userids[:result_idx].tolist(), results[:result_idx].tolist()

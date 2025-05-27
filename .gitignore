@@ -180,3 +180,6 @@ bert-*/*
 *.pdf
 
 data/*
+user_count*/
+*_dedup/
+*.c
