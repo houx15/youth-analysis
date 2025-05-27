@@ -36,8 +36,8 @@ import orjson
 
 
 def log(text, lid=None):
-    output = f"logs/log_{lid}.txt" if lid is not None else "logs/log.txt"
-    with open(output, "a") as f:
+    """Write log to user_profile_match.log"""
+    with open("user_profile_match.log", "a") as f:
         f.write(f"{text}\n")
 
 
@@ -143,7 +143,7 @@ def process_profile_file(file_path, matched_ids):
                     save_to_parquet(results, file_path)
 
     except Exception as e:
-        print(f"Error processing file {file_path}: {str(e)}")
+        log(f"Error processing file {file_path}: {str(e)}")
         return []
 
     return results
@@ -170,7 +170,7 @@ def save_to_parquet(results, file_path):
         df = pd.concat([existing_df, df], ignore_index=True)
 
     df.to_parquet(output_path, engine="fastparquet", index=False)
-    print(f"Saved {len(results)} profiles to {output_path}")
+    log(f"Saved {len(results)} profiles to {output_path}")
 
 
 def process_year(year):
@@ -187,11 +187,11 @@ def process_year(year):
 
     while current_date <= end_date:
         date_str = current_date.strftime("%Y-%m-%d")
-        print(f"Processing date: {date_str}")
+        log(f"Processing date: {date_str}")
 
         file_path = get_zipped_profile_file(year, date_str)
         if not os.path.exists(file_path):
-            print(f"File not found: {file_path}")
+            log(f"File not found: {file_path}")
             current_date += timedelta(days=1)
             continue
 
@@ -203,7 +203,7 @@ def process_year(year):
             f"{year}",
         )
 
-        print(f"Finished {date_str}")
+        log(f"Finished {date_str}")
         current_date += timedelta(days=1)
 
 
