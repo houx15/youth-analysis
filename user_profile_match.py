@@ -166,7 +166,7 @@ def save_to_parquet(results, year, date):
 def process_year(year):
     """Process all profile files for a given year"""
     # Load user IDs to match
-    with open(f"data/youth_user_ids_list_{year}.json", "r") as f:
+    with open(f"data/youth_user_ids_{year}.json", "r") as f:
         year_match_ids = json.load(f)
         # Convert to set for faster lookups
         all_matched_ids = set(year_match_ids)
