@@ -56,7 +56,10 @@ def create_automaton(user_ids):
     return A
 
 
-def process_line(line, automaton, processed_ids):
+def process_line(
+    line,
+    automaton,
+):
     """Process a single line and return result if matched"""
     # Use Aho-Corasick to find matches
     matches = []
@@ -70,12 +73,6 @@ def process_line(line, automaton, processed_ids):
         # Get the JSON part (after the tab)
         json_part = line.split("\t")[1]
         profile_data = orjson.loads(json_part)
-
-        # 检查是否已经处理过这个用户
-        user_id = profile_data.get("user_id", "")
-        if user_id in processed_ids:
-            return None
-        processed_ids.add(user_id)
 
         # Extract required fields
         return {
@@ -113,7 +110,6 @@ def process_profile_file(file_path, matched_ids):
 
     # Create automaton for fast matching
     automaton = create_automaton(matched_ids)
-    processed_ids = set()  # 用于去重
     results = []
     batch_size = 10000  # 每1000条记录保存一次
 
@@ -121,26 +117,25 @@ def process_profile_file(file_path, matched_ids):
         with py7zr.SevenZipFile(file_path, mode="r") as z:
             # Get the first file in the archive (there should be only one)
             file_name = z.getnames()[0]
+            file_obj = z.read([file_name])[file_name]
+            # 如果 file_obj 是 BytesIO，需要 getvalue
+            if hasattr(file_obj, "getvalue"):
+                text_content = file_obj.getvalue().decode("utf-8", errors="replace")
+            else:
+                text_content = file_obj.decode("utf-8", errors="replace")
 
-            # 使用流式读取
-            with z.open(file_name) as f:
-                # 使用 TextIOWrapper 来处理文本
-                import io
+            for line in text_content.splitlines():
+                result = process_line(line, automaton)
+                if result:
+                    results.append(result)
+                    # 当结果达到一定数量时，保存到parquet文件
+                    if len(results) >= batch_size:
+                        save_to_parquet(results, file_path)
+                        results = []  # 清空结果列表
 
-                text_file = io.TextIOWrapper(f, encoding="utf-8", errors="replace")
-
-                for line in text_file:
-                    result = process_line(line, automaton, processed_ids)
-                    if result:
-                        results.append(result)
-                        # 当结果达到一定数量时，保存到parquet文件
-                        if len(results) >= batch_size:
-                            save_to_parquet(results, file_path)
-                            results = []  # 清空结果列表
-
-                # 保存剩余的结果
-                if results:
-                    save_to_parquet(results, file_path)
+            # 保存剩余的结果
+            if results:
+                save_to_parquet(results, file_path)
 
     except Exception as e:
         log(f"Error processing file {file_path}: {str(e)}")
