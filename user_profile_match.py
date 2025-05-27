@@ -32,8 +32,6 @@ import py7zr
 from datetime import datetime, timedelta
 from io import StringIO
 from ahocorasick import Automaton
-import multiprocessing as mp
-from itertools import islice
 import orjson
 
 
@@ -52,64 +50,60 @@ def create_automaton(user_ids):
     """Create Aho-Corasick automaton for fast string matching"""
     A = Automaton()
     for user_id in user_ids:
-        # Add the pattern with quotes to match the JSON format
         pattern = user_id
         A.add_word(pattern, user_id)
     A.make_automaton()
     return A
 
 
-def process_chunk(chunk, automaton):
-    """Process a chunk of lines using the automaton"""
-    results = []
-    for line in chunk:
-        # Use Aho-Corasick to find matches
-        matches = []
-        for end_index, user_id in automaton.iter(line):
-            matches.append(user_id)
+def process_line(line, automaton, processed_ids):
+    """Process a single line and return result if matched"""
+    # Use Aho-Corasick to find matches
+    matches = []
+    for end_index, user_id in automaton.iter(line):
+        matches.append(user_id)
 
-        if matches:  # If we found any matches
-            try:
-                # Get the JSON part (after the tab)
-                json_part = line.split("\t")[1]
-                profile_data = orjson.loads(json_part)
+    if not matches:  # If no matches found
+        return None
 
-                # Extract required fields
-                result = {
-                    "date": profile_data.get("crawler_date", ""),
-                    "user_id": profile_data.get("user_id", ""),
-                    "nick_name": profile_data.get("nick_name", ""),
-                    "user_type": profile_data.get("user_type", ""),
-                    "gender": profile_data.get("gender", ""),
-                    "verified_type": profile_data.get("verified_type", ""),
-                    "verified_reason": profile_data.get("verified_reason", ""),
-                    "description": profile_data.get("description", ""),
-                    "fans_number": profile_data.get("fans_number", ""),
-                    "weibo_number": profile_data.get("weibo_number", ""),
-                    "type": profile_data.get("type", ""),
-                    "friends_count": profile_data.get("friends_count", ""),
-                    "favourites_count": profile_data.get("favourites_count", ""),
-                    "created_at": profile_data.get("created_at", ""),
-                    "allow_all_comment": profile_data.get("allow_all_comment", ""),
-                    "bi_followers_count": profile_data.get("bi_followers_count", ""),
-                    "location": profile_data.get("location", ""),
-                    "province": profile_data.get("province", ""),
-                    "city": profile_data.get("city", ""),
-                    "ip_location": orjson.loads(profile_data.get("ext", "{}")).get(
-                        "ip_location", ""
-                    ),
-                }
-                results.append(result)
-            except (orjson.JSONDecodeError, IndexError):
-                continue
-    return results
+    try:
+        # Get the JSON part (after the tab)
+        json_part = line.split("\t")[1]
+        profile_data = orjson.loads(json_part)
 
+        # 检查是否已经处理过这个用户
+        user_id = profile_data.get("user_id", "")
+        if user_id in processed_ids:
+            return None
+        processed_ids.add(user_id)
 
-def chunk_generator(file_content, chunk_size=100000):
-    """Generate chunks of lines from file content"""
-    lines = file_content.splitlines()
-    for i in range(0, len(lines), chunk_size):
-        yield lines[i : i + chunk_size]
+        # Extract required fields
+        return {
+            "date": profile_data.get("crawler_date", ""),
+            "user_id": user_id,
+            "nick_name": profile_data.get("nick_name", ""),
+            "user_type": profile_data.get("user_type", ""),
+            "gender": profile_data.get("gender", ""),
+            "verified_type": profile_data.get("verified_type", ""),
+            "verified_reason": profile_data.get("verified_reason", ""),
+            "description": profile_data.get("description", ""),
+            "fans_number": profile_data.get("fans_number", ""),
+            "weibo_number": profile_data.get("weibo_number", ""),
+            "type": profile_data.get("type", ""),
+            "friends_count": profile_data.get("friends_count", ""),
+            "favourites_count": profile_data.get("favourites_count", ""),
+            "created_at": profile_data.get("created_at", ""),
+            "allow_all_comment": profile_data.get("allow_all_comment", ""),
+            "bi_followers_count": profile_data.get("bi_followers_count", ""),
+            "location": profile_data.get("location", ""),
+            "province": profile_data.get("province", ""),
+            "city": profile_data.get("city", ""),
+            "ip_location": orjson.loads(profile_data.get("ext", "{}")).get(
+                "ip_location", ""
+            ),
+        }
+    except (orjson.JSONDecodeError, IndexError):
+        return None
 
 
 def process_profile_file(file_path, matched_ids):
@@ -119,33 +113,35 @@ def process_profile_file(file_path, matched_ids):
 
     # Create automaton for fast matching
     automaton = create_automaton(matched_ids)
+    processed_ids = set()  # 用于去重
     results = []
+    batch_size = 10000  # 每1000条记录保存一次
 
     try:
         with py7zr.SevenZipFile(file_path, mode="r") as z:
             # Get the first file in the archive (there should be only one)
             file_name = z.getnames()[0]
-            # Read the file content
-            file_obj = z.read([file_name])[file_name]
-            # 如果 file_obj 是 BytesIO，需要 getvalue
-            if hasattr(file_obj, "getvalue"):
-                content = file_obj.getvalue().decode("utf-8", errors="replace")
-            else:
-                content = file_obj.decode("utf-8", errors="replace")
 
-            # Create a pool of workers
-            num_cores = mp.cpu_count()
-            chunk_size = 100000  # Process 100k lines at a time
+            # 使用流式读取
+            with z.open(file_name) as f:
+                # 使用 TextIOWrapper 来处理文本
+                import io
 
-            # Process chunks in parallel
-            with mp.Pool(num_cores) as pool:
-                # Create chunks and process them
-                chunks = chunk_generator(content, chunk_size)
-                # Process chunks in parallel
-                for chunk_results in pool.imap_unordered(
-                    lambda chunk: process_chunk(chunk, automaton), chunks
-                ):
-                    results.extend(chunk_results)
+                text_file = io.TextIOWrapper(f, encoding="utf-8", errors="replace")
+
+                for line in text_file:
+                    result = process_line(line, automaton, processed_ids)
+                    if result:
+                        results.append(result)
+                        # 当结果达到一定数量时，保存到parquet文件
+                        if len(results) >= batch_size:
+                            save_to_parquet(results, file_path)
+                            results = []  # 清空结果列表
+
+                # 保存剩余的结果
+                if results:
+                    save_to_parquet(results, file_path)
+
     except Exception as e:
         print(f"Error processing file {file_path}: {str(e)}")
         return []
@@ -153,16 +149,25 @@ def process_profile_file(file_path, matched_ids):
     return results
 
 
-def save_to_parquet(results, year, date):
-    """Save results to parquet file by date"""
+def save_to_parquet(results, file_path):
+    """Save results to parquet file"""
     if not results:
         return
+
+    # 从文件路径中提取日期
+    date = file_path.split(".")[-2]  # 获取文件名中的日期部分
+    year = date.split("-")[0]
 
     output_dir = f"youth_profile_data/{year}"
     os.makedirs(output_dir, exist_ok=True)
 
     df = pd.DataFrame(results)
     output_path = f"{output_dir}/user_profiles_{date}.parquet"
+
+    # 如果文件已存在，追加数据
+    if os.path.exists(output_path):
+        existing_df = pd.read_parquet(output_path)
+        df = pd.concat([existing_df, df], ignore_index=True)
 
     df.to_parquet(output_path, engine="fastparquet", index=False)
     print(f"Saved {len(results)} profiles to {output_path}")
@@ -191,15 +196,14 @@ def process_year(year):
             continue
 
         start_timestamp = int(time.time())
-        results = process_profile_file(file_path, all_matched_ids)
-        save_to_parquet(results, year, date_str)
+        process_profile_file(file_path, all_matched_ids)
 
         log(
             f"处理 {date_str} 完成，耗时 {int(time.time()) - start_timestamp} 秒。",
             f"{year}",
         )
 
-        print(f"Finished {date_str} with {len(results)} records")
+        print(f"Finished {date_str}")
         current_date += timedelta(days=1)
 
 
