@@ -126,7 +126,12 @@ def process_profile_file(file_path, matched_ids):
             # Get the first file in the archive (there should be only one)
             file_name = z.getnames()[0]
             # Read the file content
-            content = z.read([file_name])[file_name].decode("utf-8", errors="replace")
+            file_obj = z.read([file_name])[file_name]
+            # 如果 file_obj 是 BytesIO，需要 getvalue
+            if hasattr(file_obj, "getvalue"):
+                content = file_obj.getvalue().decode("utf-8", errors="replace")
+            else:
+                content = file_obj.decode("utf-8", errors="replace")
 
             # Create a pool of workers
             num_cores = mp.cpu_count()
