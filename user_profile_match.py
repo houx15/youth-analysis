@@ -31,7 +31,7 @@ import pandas as pd
 import py7zr
 from datetime import datetime, timedelta
 from io import StringIO
-from pyahocorasick import Automaton
+from ahocorasick import Automaton
 import multiprocessing as mp
 from itertools import islice
 import orjson
