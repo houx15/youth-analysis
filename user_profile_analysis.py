@@ -90,7 +90,7 @@ def merge_user_profiles():
     Also adds birthday and region information from demographic data.
     """
     # Get all parquet files
-    parquet_files = glob.glob("youth_profile_data/*.parquet")
+    parquet_files = glob.glob("youth_profile_data/2020/*.parquet")
 
     if not parquet_files:
         print("No parquet files found in youth_profile_data directory")
@@ -108,7 +108,9 @@ def merge_user_profiles():
     all_profiles = pd.concat(dfs, ignore_index=True)
 
     # Convert timestamp to datetime for sorting
-    all_profiles["timestamp"] = pd.to_datetime(all_profiles["timestamp"], unit="ms")
+    # all_profiles["timestamp"] = pd.to_datetime(all_profiles["timestamp"], unit="ms")
+    # crawler_date 2023-10-04
+    all_profiles["crawler_date"] = pd.to_datetime(all_profiles["crawler_date"])
 
     # Group by user_id
     grouped = all_profiles.groupby("user_id")
@@ -119,7 +121,7 @@ def merge_user_profiles():
     # Process each user's profiles
     for user_id, group in grouped:
         # Sort by timestamp to get the latest values
-        group = group.sort_values("timestamp", ascending=False)
+        group = group.sort_values("crawler_date", ascending=False)
 
         # Get the latest values for most fields
         latest_profile = group.iloc[0].copy()
@@ -149,8 +151,8 @@ def merge_user_profiles():
     merged_df = pd.DataFrame(merged_profiles)
 
     # Drop the timestamp column as it's no longer needed
-    if "timestamp" in merged_df.columns:
-        merged_df = merged_df.drop("timestamp", axis=1)
+    # if "timestamp" in merged_df.columns:
+    #     merged_df = merged_df.drop("timestamp", axis=1)
 
     # Create output directory if it doesn't exist
     os.makedirs("merged_profiles", exist_ok=True)
