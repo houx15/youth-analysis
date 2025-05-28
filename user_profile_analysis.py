@@ -110,7 +110,7 @@ def merge_user_profiles():
     # Convert timestamp to datetime for sorting
     # all_profiles["timestamp"] = pd.to_datetime(all_profiles["timestamp"], unit="ms")
     # crawler_date 2023-10-04
-    all_profiles["crawler_date"] = pd.to_datetime(all_profiles["crawler_date"])
+    all_profiles["date"] = pd.to_datetime(all_profiles["date"])
 
     # Group by user_id
     grouped = all_profiles.groupby("user_id")
@@ -121,7 +121,7 @@ def merge_user_profiles():
     # Process each user's profiles
     for user_id, group in grouped:
         # Sort by timestamp to get the latest values
-        group = group.sort_values("crawler_date", ascending=False)
+        group = group.sort_values("date", ascending=False)
 
         # Get the latest values for most fields
         latest_profile = group.iloc[0].copy()
