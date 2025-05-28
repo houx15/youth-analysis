@@ -32,6 +32,8 @@ import py7zr
 from datetime import datetime, timedelta
 from io import StringIO
 from ahocorasick import Automaton
+
+from utils.utils import extract_single_7z_file
 import orjson
 
 
@@ -46,126 +48,148 @@ def get_zipped_profile_file(year, date):
     return f"/gpfs/share/home/1706188064/group/data/weibo-2020/{year}/user_profile/weibo_user_profile.{date}.7z"
 
 
-def create_automaton(user_ids):
-    """Create Aho-Corasick automaton for fast string matching"""
-    A = Automaton()
-    for user_id in user_ids:
-        pattern = user_id
-        A.add_word(pattern, user_id)
-    A.make_automaton()
-    return A
+def get_unzipped_profile_folder(year):
+    """Get the path of unzipped profile folder for a given year"""
+    return f"user_profile_data/{year}"
 
 
-def process_line(
-    line,
-    automaton,
-):
-    """Process a single line and return result if matched"""
-    # Use Aho-Corasick to find matches
-    matches = []
-    for end_index, user_id in automaton.iter(line):
-        matches.append(user_id)
+def get_unzipped_profile_file(year, date):
+    """Get the path of unzipped profile file for a given date"""
+    return f"user_profile_data/{year}/weibo_user_profile.{date}"
 
-    if not matches:  # If no matches found
-        return None
 
-    try:
-        # Get the JSON part (after the tab)
-        json_part = line.split("\t")[1]
-        profile_data = orjson.loads(json_part)
+def delete_unzipped_profile_file(year, date):
+    """Delete the unzipped profile file for a given date"""
+    file_path = get_unzipped_profile_file(year, date)
+    if os.path.exists(file_path):
+        os.remove(file_path)
 
-        # Extract required fields
-        return {
-            "date": profile_data.get("crawler_date", ""),
-            "user_id": user_id,
-            "nick_name": profile_data.get("nick_name", ""),
-            "user_type": profile_data.get("user_type", ""),
-            "gender": profile_data.get("gender", ""),
-            "verified_type": profile_data.get("verified_type", ""),
-            "verified_reason": profile_data.get("verified_reason", ""),
-            "description": profile_data.get("description", ""),
-            "fans_number": profile_data.get("fans_number", ""),
-            "weibo_number": profile_data.get("weibo_number", ""),
-            "type": profile_data.get("type", ""),
-            "friends_count": profile_data.get("friends_count", ""),
-            "favourites_count": profile_data.get("favourites_count", ""),
-            "created_at": profile_data.get("created_at", ""),
-            "allow_all_comment": profile_data.get("allow_all_comment", ""),
-            "bi_followers_count": profile_data.get("bi_followers_count", ""),
-            "location": profile_data.get("location", ""),
-            "province": profile_data.get("province", ""),
-            "city": profile_data.get("city", ""),
-            "ip_location": orjson.loads(profile_data.get("ext", "{}")).get(
-                "ip_location", ""
-            ),
-        }
-    except (orjson.JSONDecodeError, IndexError):
+
+def unzip_one_profile_file(year, date):
+    """Unzip the profile file for a given date"""
+    unzipped_file_path = get_unzipped_profile_file(year, date)
+    if os.path.exists(unzipped_file_path):
+        return unzipped_file_path
+    zipped_file_path = get_zipped_profile_file(year, date)
+    unzipped_dir = get_unzipped_profile_folder(year)
+    result = extract_single_7z_file(
+        file_path=zipped_file_path, target_folder=unzipped_dir
+    )
+    if os.path.exists(unzipped_file_path):
+        return unzipped_file_path
+    else:
         return None
 
 
-def process_profile_file(file_path, matched_ids):
-    """Process profile file and extract matching profiles directly from 7z file"""
-    if not os.path.exists(file_path):
-        return []
-
-    # Create automaton for fast matching
-    automaton = create_automaton(matched_ids)
+def process_lines(list_of_lines, set_of_user_ids):
     results = []
-    batch_size = 10000  # 每1000条记录保存一次
-
-    try:
-        with py7zr.SevenZipFile(file_path, mode="r") as z:
-            # Get the first file in the archive (there should be only one)
-            file_name = z.getnames()[0]
-            file_obj = z.read([file_name])[file_name]
-            # 如果 file_obj 是 BytesIO，需要 getvalue
-            if hasattr(file_obj, "getvalue"):
-                text_content = file_obj.getvalue().decode("utf-8", errors="replace")
-            else:
-                text_content = file_obj.decode("utf-8", errors="replace")
-
-            for line in text_content.splitlines():
-                result = process_line(line, automaton)
-                if result:
-                    results.append(result)
-                    # 当结果达到一定数量时，保存到parquet文件
-                    if len(results) >= batch_size:
-                        save_to_parquet(results, file_path)
-                        results = []  # 清空结果列表
-
-            # 保存剩余的结果
-            if results:
-                save_to_parquet(results, file_path)
-
-    except Exception as e:
-        log(f"Error processing file {file_path}: {str(e)}")
-        return []
-
+    for line in list_of_lines:
+        """
+        13512066647	{"id":"13512066647","crawler_date":"2023-10-04","crawler_time_stamp":"1696348800875","user_id":"7841605551","nick_name":"雨语昕馨","tou_xiang":"https:\/\/tvax4.sinaimg.cn\/crop.0.0.1040.1040.50\/008yGzOTly8hfjm9mv2hmj30sw0sw0tx.jpg?KID=imgbed,tva&Expires=1696359600&ssig=GUM0MPgbZv","user_type":"普通用户","gender":"m","verified_type":"-1","verified_reason":"","description":"","fans_number":"1","weibo_number":"11","type":"1","friends_count":"36","favourites_count":"0","created_at":"2023-05-27 20:41:15","allow_all_comment":"1","bi_followers_count":"0","location":"IP属地：山东","province":"100","city":"1000","domain":"","ext":"{\"ip_location\":\"山东\"}","d":"2023-10-04"}
+        """
+        try:
+            user_id = line.split('"user_id":"')[1].split('","')[0]
+        except:
+            continue
+        if user_id in set_of_user_ids:
+            results.append(line)
     return results
 
 
-def save_to_parquet(results, file_path):
+def single_line_formatter(line):
+    """
+    13512066647	{"id":"13512066647","crawler_date":"2023-10-04","crawler_time_stamp":"1696348800875","user_id":"7841605551","nick_name":"雨语昕馨","tou_xiang":"https:\/\/tvax4.sinaimg.cn\/crop.0.0.1040.1040.50\/008yGzOTly8hfjm9mv2hmj30sw0sw0tx.jpg?KID=imgbed,tva&Expires=1696359600&ssig=GUM0MPgbZv","user_type":"普通用户","gender":"m","verified_type":"-1","verified_reason":"","description":"","fans_number":"1","weibo_number":"11","type":"1","friends_count":"36","favourites_count":"0","created_at":"2023-05-27 20:41:15","allow_all_comment":"1","bi_followers_count":"0","location":"IP属地：山东","province":"100","city":"1000","domain":"","ext":"{\"ip_location\":\"山东\"}","d":"2023-10-04"}
+
+    return dict {
+    "timestamp": 1696348800875,
+    "user_id": 7841605551,
+    "nick_name": "雨语昕馨",
+    "user_type": "普通用户",
+    "gender": "m",
+    "verified_type": "-1",
+    "verified_reason": "",
+    "description": "",
+    "fans_number": 1,
+    "weibo_number": 11,
+    "type": 1,
+    "friends_count": 36,
+    "favourites_count": 0,
+    "created_at": "2023-05-27 20:41:15",
+    "allow_all_comment": 1,
+    "bi_followers_count": 0,
+    "location": "IP属地：山东",
+    "province": 100,
+    "city": 1000,
+    "ip_location": "山东"
+    }
+    """
+    try:
+        parts = line.strip().split("\t")
+        if len(parts) != 2:
+            return
+        data = orjson.loads(parts[1])
+        result = {
+            "timestamp": data.get("crawler_time_stamp", ""),
+            "user_id": data.get("user_id", ""),
+            "nick_name": data.get("nick_name", ""),
+            "user_type": data.get("user_type", ""),
+            "gender": data.get("gender", ""),
+            "verified_type": data.get("verified_type", ""),
+            "verified_reason": data.get("verified_reason", ""),
+            "description": data.get("description", ""),
+            "fans_number": data.get("fans_number", ""),
+            "weibo_number": data.get("weibo_number", ""),
+            "type": data.get("type", ""),
+            "friends_count": data.get("friends_count", ""),
+            "favourites_count": data.get("favourites_count", ""),
+            "created_at": data.get("created_at", ""),
+            "allow_all_comment": data.get("allow_all_comment", ""),
+            "bi_followers_count": data.get("bi_followers_count", ""),
+            "location": data.get("location", ""),
+            "province": data.get("province", ""),
+            "city": data.get("city", ""),
+            "ip_location": data.get("ip_location", ""),
+        }
+        return result
+    except (orjson.JSONDecodeError, IndexError) as e:
+        return
+
+
+def save_to_parquet(date, results):
     """Save results to parquet file"""
     if not results:
         return
 
-    # 从文件路径中提取日期
-    date = file_path.split(".")[-2]  # 获取文件名中的日期部分
-    year = date.split("-")[0]
+    formatted_results = []
+    for result in results:
+        formatted_result = single_line_formatter(result)
+        if formatted_result:
+            formatted_results.append(formatted_result)
 
-    output_dir = f"youth_profile_data/{year}"
-    os.makedirs(output_dir, exist_ok=True)
+    if formatted_results:
+        df = pd.DataFrame(formatted_results)
+        output_parquet_path = f"youth_profile_data/{date}.parquet"
+        df.to_parquet(output_parquet_path, engine="fastparquet", index=False)
+        log(f"Saved {len(formatted_results)} profiles to {output_parquet_path}")
 
-    df = pd.DataFrame(results)
-    output_path = f"{output_dir}/user_profiles_{date}.parquet"
 
-    # 如果文件已存在，追加数据
-    if os.path.exists(output_path):
-        existing_df = pd.read_parquet(output_path)
-        df = pd.concat([existing_df, df], ignore_index=True)
-
-    df.to_parquet(output_path, engine="fastparquet", index=False)
-    log(f"Saved {len(results)} profiles to {output_path}")
+def process_file(file_path, matched_ids):
+    all_results = []
+    chunk_size = 50000
+    if not os.path.exists(file_path):
+        return all_results
+    with open(file_path, "r", encoding="utf-8", errors="replace") as file:
+        chunk = []
+        for line in file:
+            chunk.append(line.strip())
+            if len(chunk) == chunk_size:
+                results = process_lines(chunk, matched_ids)
+                all_results.extend(results)
+                chunk = []
+        if chunk:
+            results = process_lines(chunk, matched_ids)
+            all_results.extend(results)
+        return all_results
 
 
 def process_year(year):
@@ -184,21 +208,23 @@ def process_year(year):
         date_str = current_date.strftime("%Y-%m-%d")
         log(f"Processing date: {date_str}")
 
-        file_path = get_zipped_profile_file(year, date_str)
-        if not os.path.exists(file_path):
+        start_timestamp = int(time.time())
+
+        file_path = unzip_one_profile_file(year, date_str)
+        if file_path is None:
             log(f"File not found: {file_path}")
             current_date += timedelta(days=1)
             continue
 
-        start_timestamp = int(time.time())
-        process_profile_file(file_path, all_matched_ids)
+        results = process_file(file_path, all_matched_ids)
+        save_to_parquet(date_str, results)
 
         log(
             f"处理 {date_str} 完成，耗时 {int(time.time()) - start_timestamp} 秒。",
             f"{year}",
         )
+        delete_unzipped_profile_file(year, date_str)
 
-        log(f"Finished {date_str}")
         current_date += timedelta(days=1)
 
 
