@@ -272,6 +272,13 @@ def log(text):
         f.write(f"{text}\n")
 
 
+def get_month_files(year, month):
+    """Get all parquet files for a specific month"""
+    month_str = f"{month:02d}"
+    pattern = f"youth_weibo_stat/{year}-{month_str}-*.parquet"
+    return sorted(glob.glob(pattern))
+
+
 def analyze_tweet_basic(year):
     """Basic analysis of tweet data"""
     # Load tweet data
@@ -280,7 +287,10 @@ def analyze_tweet_basic(year):
     if not parquet_files:
         log(f"No parquet files found for year {year}")
         return
-    df = pd.concat([pd.read_parquet(f) for f in parquet_files])
+
+    # Only read necessary columns
+    needed_columns = ["lat", "lon", "device"]
+    df = pd.concat([pd.read_parquet(f, columns=needed_columns) for f in parquet_files])
 
     # 1. Location data analysis
     total_tweets = len(df)
@@ -308,7 +318,10 @@ def analyze_tweet_temporal(year):
     if not parquet_files:
         log(f"No parquet files found for year {year}")
         return
-    df = pd.concat([pd.read_parquet(f) for f in parquet_files])
+
+    # Only read necessary columns
+    needed_columns = ["time_stamp"]
+    df = pd.concat([pd.read_parquet(f, columns=needed_columns) for f in parquet_files])
 
     # Convert timestamp to datetime
     df["time_stamp"] = pd.to_datetime(df["time_stamp"])
@@ -336,34 +349,27 @@ def analyze_tweet_temporal(year):
 
 def analyze_tweet_content(year):
     """Analyze tweet content and generate word clouds"""
-    # Load tweet data
-    parquet_files = glob.glob(f"youth_weibo_stat/{year}-*.parquet")
-    if not parquet_files:
-        log(f"No parquet files found for year {year}")
-        return
-    df = pd.concat([pd.read_parquet(f) for f in parquet_files])
-
-    # Convert timestamp to datetime
-    df["time_stamp"] = pd.to_datetime(df["time_stamp"])
-    df["month"] = df["time_stamp"].dt.month
-
-    # Process content for each month
+    # Process each month
     for month in range(1, 13):
-        month_data = df[df["month"] == month]
-        if len(month_data) == 0:
+        month_files = get_month_files(year, month)
+        if not month_files:
             continue
 
-        # Clean and process text
+        # Only read necessary columns
+        needed_columns = ["weibo_content"]
         all_words = []
-        for content in month_data["weibo_content"].dropna():
-            cleaned_content = sentence_cleaner(content)
-            words = pseg.cut(cleaned_content)
-            meaningful_words = [
-                word
-                for word, flag in words
-                if flag.startswith(("n", "v")) and len(word) > 1
-            ]
-            all_words.extend(meaningful_words)
+
+        for file in month_files:
+            df = pd.read_parquet(file, columns=needed_columns)
+            for content in df["weibo_content"].dropna():
+                cleaned_content = sentence_cleaner(content)
+                words = pseg.cut(cleaned_content)
+                meaningful_words = [
+                    word
+                    for word, flag in words
+                    if flag.startswith(("n", "v")) and len(word) > 1
+                ]
+                all_words.extend(meaningful_words)
 
         if not all_words:
             continue
@@ -394,7 +400,12 @@ def analyze_tweet_profile_merge(year):
     if not parquet_files:
         log(f"No parquet files found for year {year}")
         return
-    tweets_df = pd.concat([pd.read_parquet(f) for f in parquet_files])
+
+    # Only read necessary columns
+    needed_columns = ["user_id", "time_stamp"]
+    tweets_df = pd.concat(
+        [pd.read_parquet(f, columns=needed_columns) for f in parquet_files]
+    )
     profiles_df = pd.read_parquet("merged_profiles/merged_user_profiles.parquet")
 
     # Convert timestamps
@@ -481,6 +492,7 @@ def analyze_tweet_profile_merge(year):
 
 
 def analyze_all(year):
+    analyze_profiles()
     analyze_tweet_basic(year)
     analyze_tweet_temporal(year)
     analyze_tweet_content(year)
