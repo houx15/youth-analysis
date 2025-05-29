@@ -5,6 +5,16 @@ from collections import Counter
 import os
 import json
 import time
+import fire
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime
+import jieba.posseg as pseg
+from wordcloud import WordCloud
+import numpy as np
+from utils.utils import sentence_cleaner
+import geopandas as gpd
+from shapely.geometry import Point
 
 # Region mapping
 region_to_province = {
@@ -51,6 +61,15 @@ def get_region_from_province(province):
     return province_to_region.get(province)
 
 
+def get_region_from_location(location):
+    """Get region from location string"""
+    if pd.isna(location):
+        return None
+    # Split by space and get first element
+    province = location.split()[0]
+    return province_to_region.get(province)
+
+
 def load_demographic_data():
     """Load demographic data from COV-Weibo dataset"""
     print("Loading demographic data...")
@@ -81,6 +100,88 @@ def load_demographic_data():
 
     print("Demographic data loaded successfully")
     return demographic_data
+
+
+def analyze_profiles():
+    """Analyze merged user profiles"""
+    # Load merged profiles
+    df = pd.read_parquet("merged_profiles/merged_user_profiles.parquet")
+
+    # Create figures directory
+    os.makedirs("figures", exist_ok=True)
+
+    # 1. Calculate age and filter
+    df["birthday"] = pd.to_datetime(df["birthday"])
+    df["age"] = 2020 - df["birthday"].dt.year
+
+    # Count before filtering
+    total_users = len(df)
+
+    # Filter age range
+    df_filtered = df[(df["age"] >= 10) & (df["age"] <= 18)]
+    filtered_users = len(df_filtered)
+
+    print(f"\n1. Age Filtering Results:")
+    print(f"Total users: {total_users}")
+    print(f"Users in age range 10-18: {filtered_users}")
+    print(
+        f"Percentage filtered out: {((total_users - filtered_users) / total_users * 100):.2f}%"
+    )
+
+    # 2. Age distribution
+    plt.figure(figsize=(10, 6))
+    sns.histplot(data=df_filtered, x="age", bins=9)
+    plt.title("Age Distribution (10-18 years)")
+    plt.xlabel("Age")
+    plt.ylabel("Count")
+    plt.savefig("figures/age_distribution.pdf", bbox_inches="tight", dpi=300)
+    plt.close()
+
+    # 3. Gender ratio (pie chart)
+    gender_counts = df_filtered["gender"].value_counts()
+    plt.figure(figsize=(8, 8))
+    plt.pie(gender_counts, labels=gender_counts.index, autopct="%1.1f%%")
+    plt.title("Gender Distribution")
+    plt.savefig("figures/gender_distribution.pdf", bbox_inches="tight", dpi=300)
+    plt.close()
+
+    # 4. Age-Gender stacked bar chart
+    age_gender = (
+        pd.crosstab(df_filtered["age"], df_filtered["gender"], normalize="index") * 100
+    )
+    plt.figure(figsize=(12, 6))
+    age_gender.plot(kind="bar", stacked=True)
+    plt.title("Gender Distribution by Age")
+    plt.xlabel("Age")
+    plt.ylabel("Percentage")
+    plt.legend(title="Gender")
+    plt.tight_layout()
+    plt.savefig("figures/age_gender_distribution.pdf", bbox_inches="tight", dpi=300)
+    plt.close()
+
+    # 5. Region analysis
+    df_filtered["region"] = df_filtered["location"].apply(get_region_from_location)
+    region_counts = df_filtered["region"].value_counts()
+
+    # Calculate percentages
+    total_valid = region_counts.sum()
+    other_count = len(
+        df_filtered[df_filtered["location"].str.contains("其他|海外", na=False)]
+    )
+    other_percentage = (other_count / len(df_filtered)) * 100
+
+    print(f"\n5. Region Analysis:")
+    print(f"Region distribution:")
+    for region, count in region_counts.items():
+        print(f"{region}: {count} ({count/total_valid*100:.2f}%)")
+    print(f"Other/Overseas: {other_count} ({other_percentage:.2f}%)")
+
+    # Region pie chart
+    plt.figure(figsize=(10, 10))
+    plt.pie(region_counts, labels=region_counts.index, autopct="%1.1f%%")
+    plt.title("Region Distribution")
+    plt.savefig("figures/region_distribution.pdf", bbox_inches="tight", dpi=300)
+    plt.close()
 
 
 def merge_user_profiles():
@@ -165,6 +266,198 @@ def merge_user_profiles():
     print(f"Users with demographic data: {merged_df['birthday'].notna().sum()}")
 
 
+def analyze_tweet_basic(year):
+    """Basic analysis of tweet data"""
+    # Load tweet data
+    os.makedirs(f"figures/{year}", exist_ok=True)
+    df = pd.read_parquet(f"youth_weibo_stat/{year}-*.parquet")
+
+    # 1. Location data analysis
+    total_tweets = len(df)
+    tweets_with_location = df[df["lat"].notna() & df["lon"].notna()].shape[0]
+    location_percentage = (tweets_with_location / total_tweets) * 100
+
+    print(f"\nLocation Data Analysis:")
+    print(f"Total tweets: {total_tweets}")
+    print(f"Tweets with location: {tweets_with_location}")
+    print(f"Percentage with location: {location_percentage:.2f}%")
+
+    # 2. Device analysis
+    device_counts = df["device"].value_counts()
+    with open(f"figures/{year}/device_distribution.txt", "w", encoding="utf-8") as f:
+        f.write("Device Distribution:\n")
+        for device, count in device_counts.items():
+            f.write(f"{device}: {count}\n")
+
+
+def analyze_tweet_temporal(year):
+    """Analyze temporal patterns in tweets"""
+    # Load tweet data
+    os.makedirs(f"figures/{year}", exist_ok=True)
+    df = pd.read_parquet(f"youth_weibo_stat/{year}-*.parquet")
+
+    # Convert timestamp to datetime
+    df["time_stamp"] = pd.to_datetime(df["time_stamp"])
+    df["month"] = df["time_stamp"].dt.month
+    df["hour"] = df["time_stamp"].dt.hour
+
+    # Create monthly hour distribution plots
+    for month in range(1, 13):
+        month_data = df[df["month"] == month]
+        if len(month_data) == 0:
+            continue
+
+        plt.figure(figsize=(12, 6))
+        sns.histplot(data=month_data, x="hour", bins=24)
+        plt.title(f"Hour Distribution - {month} ({year})")
+        plt.xlabel("Hour")
+        plt.ylabel("Count")
+        plt.savefig(
+            f"figures/{year}/hour_distribution_{month:02d}.pdf",
+            bbox_inches="tight",
+            dpi=300,
+        )
+        plt.close()
+
+
+def analyze_tweet_content(year):
+    """Analyze tweet content and generate word clouds"""
+    # Load tweet data
+    df = pd.read_parquet(f"youth_weibo_stat/{year}-*.parquet")
+
+    # Convert timestamp to datetime
+    df["time_stamp"] = pd.to_datetime(df["time_stamp"])
+    df["month"] = df["time_stamp"].dt.month
+
+    # Process content for each month
+    for month in range(1, 13):
+        month_data = df[df["month"] == month]
+        if len(month_data) == 0:
+            continue
+
+        # Clean and process text
+        all_words = []
+        for content in month_data["weibo_content"].dropna():
+            cleaned_content = sentence_cleaner(content)
+            words = pseg.cut(cleaned_content)
+            meaningful_words = [
+                word
+                for word, flag in words
+                if flag.startswith(("n", "v")) and len(word) > 1
+            ]
+            all_words.extend(meaningful_words)
+
+        if not all_words:
+            continue
+
+        # Generate word cloud
+        word_freq = Counter(all_words)
+        wordcloud = WordCloud(
+            font_path="/gpfs/share/home/2401111059/.fonts/simhei/simhei.ttf",  # You need to specify a Chinese font
+            width=800,
+            height=400,
+            background_color="white",
+        ).generate_from_frequencies(word_freq)
+
+        plt.figure(figsize=(10, 5))
+        plt.imshow(wordcloud, interpolation="bilinear")
+        plt.axis("off")
+        plt.title(f"Word Cloud - {month} ({year})")
+        plt.savefig(
+            f"figures/{year}/wordcloud_{month:02d}.pdf", bbox_inches="tight", dpi=300
+        )
+        plt.close()
+
+
+def analyze_tweet_profile_merge(year):
+    """Merge tweet analysis with user profiles"""
+    # Load data
+    tweets_df = pd.read_parquet(f"youth_weibo_stat/{year}-*.parquet")
+    profiles_df = pd.read_parquet("merged_profiles/merged_user_profiles.parquet")
+
+    # Convert timestamps
+    tweets_df["time_stamp"] = pd.to_datetime(tweets_df["time_stamp"])
+
+    # 1. Tweet count analysis
+    tweet_counts = tweets_df.groupby("user_id").size().reset_index(name="tweet_count")
+    merged_df = profiles_df.merge(tweet_counts, on="user_id", how="left")
+    merged_df["tweet_count"] = merged_df["tweet_count"].fillna(0)
+
+    # Gender analysis
+    gender_tweet_stats = merged_df.groupby("gender")["tweet_count"].agg(
+        ["mean", "std", "count"]
+    )
+    print("\nTweet Count by Gender:")
+    print(gender_tweet_stats)
+
+    # Region analysis
+    region_tweet_stats = merged_df.groupby("region")["tweet_count"].agg(
+        ["mean", "std", "count"]
+    )
+    print("\nTweet Count by Region:")
+    print(region_tweet_stats)
+
+    # 2. Late night tweet analysis (0-8 AM)
+    tweets_df["is_late_night"] = tweets_df["time_stamp"].dt.hour.between(0, 8)
+    late_night_ratio = (
+        tweets_df.groupby("user_id")["is_late_night"]
+        .mean()
+        .reset_index(name="late_night_ratio")
+    )
+
+    merged_df = merged_df.merge(late_night_ratio, on="user_id", how="left")
+    merged_df["late_night_ratio"] = merged_df["late_night_ratio"].fillna(0)
+
+    # Gender analysis for late night tweets
+    gender_late_night = merged_df.groupby("gender")["late_night_ratio"].mean()
+    print("\nLate Night Tweet Ratio by Gender:")
+    print(gender_late_night)
+
+    # Region analysis for late night tweets
+    region_late_night = merged_df.groupby("region")["late_night_ratio"].mean()
+    print("\nLate Night Tweet Ratio by Region:")
+    print(region_late_night)
+
+    # Create visualizations
+    # 1. Tweet count by gender
+    plt.figure(figsize=(10, 6))
+    sns.boxplot(data=merged_df, x="gender", y="tweet_count")
+    plt.title("Tweet Count Distribution by Gender")
+    plt.savefig("figures/tweet_count_by_gender.pdf", bbox_inches="tight", dpi=300)
+    plt.close()
+
+    # 2. Tweet count by region
+    plt.figure(figsize=(12, 6))
+    sns.boxplot(data=merged_df, x="region", y="tweet_count")
+    plt.title("Tweet Count Distribution by Region")
+    plt.xticks(rotation=45)
+    plt.savefig("figures/tweet_count_by_region.pdf", bbox_inches="tight", dpi=300)
+    plt.close()
+
+    # 3. Late night tweet ratio by gender
+    plt.figure(figsize=(10, 6))
+    sns.boxplot(data=merged_df, x="gender", y="late_night_ratio")
+    plt.title("Late Night Tweet Ratio by Gender")
+    plt.savefig("figures/late_night_by_gender.pdf", bbox_inches="tight", dpi=300)
+    plt.close()
+
+    # 4. Late night tweet ratio by region
+    plt.figure(figsize=(12, 6))
+    sns.boxplot(data=merged_df, x="region", y="late_night_ratio")
+    plt.title("Late Night Tweet Ratio by Region")
+    plt.xticks(rotation=45)
+    plt.savefig("figures/late_night_by_region.pdf", bbox_inches="tight", dpi=300)
+    plt.close()
+
+
 if __name__ == "__main__":
-    # unzip_year_huati_bang_files(2023)
-    merge_user_profiles()
+    fire.Fire(
+        {
+            "merge_profile": merge_user_profiles,
+            "analyze_profile": analyze_profiles,
+            "analyze_tweet_basic": analyze_tweet_basic,
+            "analyze_tweet_temporal": analyze_tweet_temporal,
+            "analyze_tweet_content": analyze_tweet_content,
+            "analyze_tweet_profile": analyze_tweet_profile_merge,
+        }
+    )
