@@ -270,7 +270,11 @@ def analyze_tweet_basic(year):
     """Basic analysis of tweet data"""
     # Load tweet data
     os.makedirs(f"figures/{year}", exist_ok=True)
-    df = pd.read_parquet(f"youth_weibo_stat/{year}-*.parquet")
+    parquet_files = glob.glob(f"youth_weibo_stat/{year}-*.parquet")
+    if not parquet_files:
+        print(f"No parquet files found for year {year}")
+        return
+    df = pd.concat([pd.read_parquet(f) for f in parquet_files])
 
     # 1. Location data analysis
     total_tweets = len(df)
@@ -294,7 +298,11 @@ def analyze_tweet_temporal(year):
     """Analyze temporal patterns in tweets"""
     # Load tweet data
     os.makedirs(f"figures/{year}", exist_ok=True)
-    df = pd.read_parquet(f"youth_weibo_stat/{year}-*.parquet")
+    parquet_files = glob.glob(f"youth_weibo_stat/{year}-*.parquet")
+    if not parquet_files:
+        print(f"No parquet files found for year {year}")
+        return
+    df = pd.concat([pd.read_parquet(f) for f in parquet_files])
 
     # Convert timestamp to datetime
     df["time_stamp"] = pd.to_datetime(df["time_stamp"])
@@ -323,7 +331,11 @@ def analyze_tweet_temporal(year):
 def analyze_tweet_content(year):
     """Analyze tweet content and generate word clouds"""
     # Load tweet data
-    df = pd.read_parquet(f"youth_weibo_stat/{year}-*.parquet")
+    parquet_files = glob.glob(f"youth_weibo_stat/{year}-*.parquet")
+    if not parquet_files:
+        print(f"No parquet files found for year {year}")
+        return
+    df = pd.concat([pd.read_parquet(f) for f in parquet_files])
 
     # Convert timestamp to datetime
     df["time_stamp"] = pd.to_datetime(df["time_stamp"])
@@ -353,7 +365,7 @@ def analyze_tweet_content(year):
         # Generate word cloud
         word_freq = Counter(all_words)
         wordcloud = WordCloud(
-            font_path="/gpfs/share/home/2401111059/.fonts/simhei/simhei.ttf",  # You need to specify a Chinese font
+            font_path="/gpfs/share/home/2401111059/.fonts/simhei/simhei.ttf",
             width=800,
             height=400,
             background_color="white",
@@ -372,7 +384,11 @@ def analyze_tweet_content(year):
 def analyze_tweet_profile_merge(year):
     """Merge tweet analysis with user profiles"""
     # Load data
-    tweets_df = pd.read_parquet(f"youth_weibo_stat/{year}-*.parquet")
+    parquet_files = glob.glob(f"youth_weibo_stat/{year}-*.parquet")
+    if not parquet_files:
+        print(f"No parquet files found for year {year}")
+        return
+    tweets_df = pd.concat([pd.read_parquet(f) for f in parquet_files])
     profiles_df = pd.read_parquet("merged_profiles/merged_user_profiles.parquet")
 
     # Convert timestamps
@@ -423,7 +439,9 @@ def analyze_tweet_profile_merge(year):
     plt.figure(figsize=(10, 6))
     sns.boxplot(data=merged_df, x="gender", y="tweet_count")
     plt.title("Tweet Count Distribution by Gender")
-    plt.savefig("figures/tweet_count_by_gender.pdf", bbox_inches="tight", dpi=300)
+    plt.savefig(
+        f"figures/{year}/tweet_count_by_gender.pdf", bbox_inches="tight", dpi=300
+    )
     plt.close()
 
     # 2. Tweet count by region
@@ -431,14 +449,18 @@ def analyze_tweet_profile_merge(year):
     sns.boxplot(data=merged_df, x="region", y="tweet_count")
     plt.title("Tweet Count Distribution by Region")
     plt.xticks(rotation=45)
-    plt.savefig("figures/tweet_count_by_region.pdf", bbox_inches="tight", dpi=300)
+    plt.savefig(
+        f"figures/{year}/tweet_count_by_region.pdf", bbox_inches="tight", dpi=300
+    )
     plt.close()
 
     # 3. Late night tweet ratio by gender
     plt.figure(figsize=(10, 6))
     sns.boxplot(data=merged_df, x="gender", y="late_night_ratio")
     plt.title("Late Night Tweet Ratio by Gender")
-    plt.savefig("figures/late_night_by_gender.pdf", bbox_inches="tight", dpi=300)
+    plt.savefig(
+        f"figures/{year}/late_night_by_gender.pdf", bbox_inches="tight", dpi=300
+    )
     plt.close()
 
     # 4. Late night tweet ratio by region
@@ -446,7 +468,9 @@ def analyze_tweet_profile_merge(year):
     sns.boxplot(data=merged_df, x="region", y="late_night_ratio")
     plt.title("Late Night Tweet Ratio by Region")
     plt.xticks(rotation=45)
-    plt.savefig("figures/late_night_by_region.pdf", bbox_inches="tight", dpi=300)
+    plt.savefig(
+        f"figures/{year}/late_night_by_region.pdf", bbox_inches="tight", dpi=300
+    )
     plt.close()
 
 
