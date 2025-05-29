@@ -450,6 +450,13 @@ def analyze_tweet_profile_merge(year):
     plt.close()
 
 
+def analyze_all(year):
+    analyze_tweet_basic(year)
+    analyze_tweet_temporal(year)
+    analyze_tweet_content(year)
+    analyze_tweet_profile_merge(year)
+
+
 if __name__ == "__main__":
     fire.Fire(
         {
@@ -459,5 +466,6 @@ if __name__ == "__main__":
             "analyze_tweet_temporal": analyze_tweet_temporal,
             "analyze_tweet_content": analyze_tweet_content,
             "analyze_tweet_profile": analyze_tweet_profile_merge,
+            "analyze_all": analyze_all,
         }
     )
