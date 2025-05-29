@@ -63,7 +63,7 @@ def get_region_from_province(province):
 
 def get_region_from_location(location):
     """Get region from location string"""
-    if pd.isna(location):
+    if pd.isna(location) or location == "":
         return None
     # Split by space and get first element
     province = location.split()[0]
@@ -323,8 +323,8 @@ def analyze_tweet_temporal(year):
     needed_columns = ["time_stamp"]
     df = pd.concat([pd.read_parquet(f, columns=needed_columns) for f in parquet_files])
 
-    # Convert timestamp to datetime
-    df["time_stamp"] = pd.to_datetime(df["time_stamp"])
+    # Convert timestamp to datetime (assuming Unix timestamp in milliseconds)
+    df["time_stamp"] = pd.to_datetime(df["time_stamp"], unit="ms")
     df["month"] = df["time_stamp"].dt.month
     df["hour"] = df["time_stamp"].dt.hour
 
@@ -408,8 +408,8 @@ def analyze_tweet_profile_merge(year):
     )
     profiles_df = pd.read_parquet("merged_profiles/merged_user_profiles.parquet")
 
-    # Convert timestamps
-    tweets_df["time_stamp"] = pd.to_datetime(tweets_df["time_stamp"])
+    # Convert timestamps (assuming Unix timestamp in milliseconds)
+    tweets_df["time_stamp"] = pd.to_datetime(tweets_df["time_stamp"], unit="ms")
 
     # 1. Tweet count analysis
     tweet_counts = tweets_df.groupby("user_id").size().reset_index(name="tweet_count")
