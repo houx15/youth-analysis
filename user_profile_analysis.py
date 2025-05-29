@@ -266,13 +266,19 @@ def merge_user_profiles():
     print(f"Users with demographic data: {merged_df['birthday'].notna().sum()}")
 
 
+def log(text):
+    """Write log to user_profile_analysis.log"""
+    with open("user_profile_analysis.log", "a") as f:
+        f.write(f"{text}\n")
+
+
 def analyze_tweet_basic(year):
     """Basic analysis of tweet data"""
     # Load tweet data
     os.makedirs(f"figures/{year}", exist_ok=True)
     parquet_files = glob.glob(f"youth_weibo_stat/{year}-*.parquet")
     if not parquet_files:
-        print(f"No parquet files found for year {year}")
+        log(f"No parquet files found for year {year}")
         return
     df = pd.concat([pd.read_parquet(f) for f in parquet_files])
 
@@ -281,10 +287,10 @@ def analyze_tweet_basic(year):
     tweets_with_location = df[df["lat"].notna() & df["lon"].notna()].shape[0]
     location_percentage = (tweets_with_location / total_tweets) * 100
 
-    print(f"\nLocation Data Analysis:")
-    print(f"Total tweets: {total_tweets}")
-    print(f"Tweets with location: {tweets_with_location}")
-    print(f"Percentage with location: {location_percentage:.2f}%")
+    log(f"\nLocation Data Analysis:")
+    log(f"Total tweets: {total_tweets}")
+    log(f"Tweets with location: {tweets_with_location}")
+    log(f"Percentage with location: {location_percentage:.2f}%")
 
     # 2. Device analysis
     device_counts = df["device"].value_counts()
@@ -300,7 +306,7 @@ def analyze_tweet_temporal(year):
     os.makedirs(f"figures/{year}", exist_ok=True)
     parquet_files = glob.glob(f"youth_weibo_stat/{year}-*.parquet")
     if not parquet_files:
-        print(f"No parquet files found for year {year}")
+        log(f"No parquet files found for year {year}")
         return
     df = pd.concat([pd.read_parquet(f) for f in parquet_files])
 
@@ -333,7 +339,7 @@ def analyze_tweet_content(year):
     # Load tweet data
     parquet_files = glob.glob(f"youth_weibo_stat/{year}-*.parquet")
     if not parquet_files:
-        print(f"No parquet files found for year {year}")
+        log(f"No parquet files found for year {year}")
         return
     df = pd.concat([pd.read_parquet(f) for f in parquet_files])
 
@@ -386,7 +392,7 @@ def analyze_tweet_profile_merge(year):
     # Load data
     parquet_files = glob.glob(f"youth_weibo_stat/{year}-*.parquet")
     if not parquet_files:
-        print(f"No parquet files found for year {year}")
+        log(f"No parquet files found for year {year}")
         return
     tweets_df = pd.concat([pd.read_parquet(f) for f in parquet_files])
     profiles_df = pd.read_parquet("merged_profiles/merged_user_profiles.parquet")
@@ -403,15 +409,15 @@ def analyze_tweet_profile_merge(year):
     gender_tweet_stats = merged_df.groupby("gender")["tweet_count"].agg(
         ["mean", "std", "count"]
     )
-    print("\nTweet Count by Gender:")
-    print(gender_tweet_stats)
+    log("\nTweet Count by Gender:")
+    log(str(gender_tweet_stats))
 
     # Region analysis
     region_tweet_stats = merged_df.groupby("region")["tweet_count"].agg(
         ["mean", "std", "count"]
     )
-    print("\nTweet Count by Region:")
-    print(region_tweet_stats)
+    log("\nTweet Count by Region:")
+    log(str(region_tweet_stats))
 
     # 2. Late night tweet analysis (0-8 AM)
     tweets_df["is_late_night"] = tweets_df["time_stamp"].dt.hour.between(0, 8)
@@ -426,13 +432,13 @@ def analyze_tweet_profile_merge(year):
 
     # Gender analysis for late night tweets
     gender_late_night = merged_df.groupby("gender")["late_night_ratio"].mean()
-    print("\nLate Night Tweet Ratio by Gender:")
-    print(gender_late_night)
+    log("\nLate Night Tweet Ratio by Gender:")
+    log(str(gender_late_night))
 
     # Region analysis for late night tweets
     region_late_night = merged_df.groupby("region")["late_night_ratio"].mean()
-    print("\nLate Night Tweet Ratio by Region:")
-    print(region_late_night)
+    log("\nLate Night Tweet Ratio by Region:")
+    log(str(region_late_night))
 
     # Create visualizations
     # 1. Tweet count by gender
