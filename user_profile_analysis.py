@@ -70,6 +70,15 @@ def get_region_from_location(location):
     return province_to_region.get(province)
 
 
+def get_province_from_location(location):
+    """Get province from location string"""
+    if pd.isna(location) or location == "":
+        return None
+    # Split by space and get first element
+    province = location.split()[0]
+    return province
+
+
 def load_demographic_data():
     """Load demographic data from COV-Weibo dataset"""
     print("Loading demographic data...")
@@ -130,7 +139,8 @@ def analyze_profiles():
 
     # 2. Age distribution
     plt.figure(figsize=(10, 6))
-    sns.histplot(data=df_filtered, x="age", bins=9)
+    # 不画hist，画柱状图
+    sns.barplot(data=df_filtered, x="age", y="count")
     plt.title("Age Distribution (10-18 years)")
     plt.xlabel("Age")
     plt.ylabel("Count")
@@ -181,6 +191,23 @@ def analyze_profiles():
     plt.pie(region_counts, labels=region_counts.index, autopct="%1.1f%%")
     plt.title("Region Distribution")
     plt.savefig("figures/region_distribution.pdf", bbox_inches="tight", dpi=300)
+    plt.close()
+
+    # 6. Province analysis
+    df_filtered["province"] = df_filtered["location"].apply(get_province_from_location)
+    province_counts = df_filtered["province"].value_counts()
+    print(f"\n6. Province Analysis:")
+    print(f"Province distribution:")
+    for province, count in province_counts.items():
+        print(f"{province}: {count} ({count/total_valid*100:.2f}%)")
+
+    # bar plot
+    plt.figure(figsize=(10, 6))
+    sns.barplot(data=df_filtered, x="province", y="count")
+    plt.title("Province Distribution")
+    plt.xlabel("Province")
+    plt.ylabel("Count")
+    plt.savefig("figures/province_distribution.pdf", bbox_inches="tight", dpi=300)
     plt.close()
 
 
@@ -336,8 +363,8 @@ def analyze_tweet_temporal(year):
 
         plt.figure(figsize=(12, 6))
         sns.histplot(data=month_data, x="hour", bins=24)
-        plt.title(f"Hour Distribution - {month} ({year})")
-        plt.xlabel("Hour")
+        plt.title(f"Using Time Distribution - {month} ({year})")
+        plt.xlabel("Time (24 hour clock)")
         plt.ylabel("Count")
         plt.savefig(
             f"figures/{year}/hour_distribution_{month:02d}.pdf",
@@ -377,7 +404,7 @@ def analyze_tweet_content(year):
         # Generate word cloud
         word_freq = Counter(all_words)
         wordcloud = WordCloud(
-            font_path="/gpfs/share/home/2401111059/.fonts/simhei/simhei.ttf",
+            font_path="/gpfs/share/home/2401111059/.fonts/simhei/SimHei.ttf",
             width=800,
             height=400,
             background_color="white",
