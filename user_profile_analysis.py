@@ -127,21 +127,21 @@ def analyze_profiles():
     total_users = len(df)
 
     # Filter age range
-    df_filtered = df[(df["age"] >= 10) & (df["age"] <= 18)]
+    df_filtered = df[(df["age"] >= 10) & (df["age"] <= 16)]
     filtered_users = len(df_filtered)
 
     print(f"\n1. Age Filtering Results:")
     print(f"Total users: {total_users}")
-    print(f"Users in age range 10-18: {filtered_users}")
+    print(f"Users in age range 10-16: {filtered_users}")
     print(
         f"Percentage filtered out: {((total_users - filtered_users) / total_users * 100):.2f}%"
     )
 
     # 2. Age distribution
     plt.figure(figsize=(10, 6))
-    # 不画hist，画柱状图
-    sns.barplot(data=df_filtered, x="age", y="count")
-    plt.title("Age Distribution (10-18 years)")
+    # 统计每个年龄，一共有10-16，的数目
+    sns.histplot(data=df_filtered, x="age", bins=7)
+    plt.title("Age Distribution (10-16 years)")
     plt.xlabel("Age")
     plt.ylabel("Count")
     plt.savefig("figures/age_distribution.pdf", bbox_inches="tight", dpi=300)
