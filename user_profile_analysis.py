@@ -366,7 +366,11 @@ def analyze_tweet_temporal(year):
         for file in parquet_files:
             df = pd.read_parquet(file, columns=["time_stamp"])
             # Convert timestamp to hour
-            hours = pd.to_datetime(df["time_stamp"], unit="ms").dt.hour
+            df["time_stamp"] = pd.to_numeric(df["time_stamp"])
+            df["beijing_time"] = pd.to_datetime(
+                df["time_stamp"], unit="s"
+            ) + pd.Timedelta(hours=8)
+            hours = df["beijing_time"].dt.hour
             # Update hour counts
             for hour in range(24):
                 hour_counts[hour] += (hours == hour).sum()
