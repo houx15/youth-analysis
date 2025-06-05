@@ -349,30 +349,31 @@ def analyze_tweet_temporal(year):
     """Analyze temporal patterns in tweets"""
     # Load tweet data
     os.makedirs(f"figures/{year}", exist_ok=True)
-    parquet_files = glob.glob(f"youth_weibo_stat/{year}-*.parquet")
-    if not parquet_files:
-        log(f"No parquet files found for year {year}")
-        return
 
-    # Only read necessary columns
-    needed_columns = ["time_stamp"]
-    df = pd.concat([pd.read_parquet(f, columns=needed_columns) for f in parquet_files])
-
-    # Convert timestamp to datetime (assuming Unix timestamp in milliseconds)
-    df["time_stamp"] = pd.to_datetime(df["time_stamp"], unit="ms")
-    df["month"] = df["time_stamp"].dt.month
-    df["hour"] = df["time_stamp"].dt.hour
-
-    # Create monthly hour distribution plots
+    # Process each month separately
     for month in range(1, 13):
         log(f"analyzing tweet temporal for {year} {month}")
-        month_data = df[df["month"] == month]
-        if len(month_data) == 0:
-            log(f"No data for month {month}")
+        month_str = f"{month:02d}"
+        parquet_files = glob.glob(f"youth_weibo_stat/{year}-{month_str}-*.parquet")
+        if not parquet_files:
+            log(f"No parquet files found for year {year} {month}")
             continue
 
+        # Initialize hour counts
+        hour_counts = np.zeros(24)
+
+        # Process each file
+        for file in parquet_files:
+            df = pd.read_parquet(file, columns=["time_stamp"])
+            # Convert timestamp to hour
+            hours = pd.to_datetime(df["time_stamp"], unit="ms").dt.hour
+            # Update hour counts
+            for hour in range(24):
+                hour_counts[hour] += (hours == hour).sum()
+
+        # Create plot
         plt.figure(figsize=(12, 6))
-        sns.histplot(data=month_data, x="hour", bins=24)
+        plt.bar(range(24), hour_counts)
         plt.title(f"Using Time Distribution - {month} ({year})")
         plt.xlabel("Time (24 hour clock)")
         plt.ylabel("Count")
@@ -439,20 +440,50 @@ def analyze_tweet_profile_merge(year):
         log(f"No parquet files found for year {year}")
         return
 
-    # Only read necessary columns
-    needed_columns = ["user_id", "time_stamp"]
-    tweets_df = pd.concat(
-        [pd.read_parquet(f, columns=needed_columns) for f in parquet_files]
-    )
+    # Load profiles once
     profiles_df = pd.read_parquet("merged_profiles/merged_user_profiles.parquet")
 
-    # Convert timestamps (assuming Unix timestamp in milliseconds)
-    tweets_df["time_stamp"] = pd.to_datetime(tweets_df["time_stamp"], unit="ms")
+    # Initialize counters
+    tweet_counts = Counter()
+    late_night_counts = Counter()
+    total_tweets = Counter()
 
-    # 1. Tweet count analysis
-    tweet_counts = tweets_df.groupby("user_id").size().reset_index(name="tweet_count")
-    merged_df = profiles_df.merge(tweet_counts, on="user_id", how="left")
+    # Process files in chunks
+    for file in parquet_files:
+        df = pd.read_parquet(file, columns=["user_id", "time_stamp"])
+
+        # Update tweet counts
+        tweet_counts.update(df["user_id"].value_counts().to_dict())
+
+        # Update late night counts
+        hours = pd.to_datetime(df["time_stamp"], unit="ms").dt.hour
+        late_night_mask = hours.between(0, 8)
+        late_night_counts.update(
+            df.loc[late_night_mask, "user_id"].value_counts().to_dict()
+        )
+        total_tweets.update(df["user_id"].value_counts().to_dict())
+
+    # Convert counters to DataFrame
+    tweet_stats = pd.DataFrame(
+        {
+            "user_id": list(tweet_counts.keys()),
+            "tweet_count": list(tweet_counts.values()),
+            "late_night_count": [
+                late_night_counts.get(uid, 0) for uid in tweet_counts.keys()
+            ],
+            "total_tweets": [total_tweets.get(uid, 0) for uid in tweet_counts.keys()],
+        }
+    )
+
+    # Calculate late night ratio
+    tweet_stats["late_night_ratio"] = (
+        tweet_stats["late_night_count"] / tweet_stats["total_tweets"]
+    )
+
+    # Merge with profiles
+    merged_df = profiles_df.merge(tweet_stats, on="user_id", how="left")
     merged_df["tweet_count"] = merged_df["tweet_count"].fillna(0)
+    merged_df["late_night_ratio"] = merged_df["late_night_ratio"].fillna(0)
 
     # Gender analysis
     gender_tweet_stats = merged_df.groupby("gender")["tweet_count"].agg(
@@ -467,17 +498,6 @@ def analyze_tweet_profile_merge(year):
     )
     log("\nTweet Count by Region:")
     log(str(region_tweet_stats))
-
-    # 2. Late night tweet analysis (0-8 AM)
-    tweets_df["is_late_night"] = tweets_df["time_stamp"].dt.hour.between(0, 8)
-    late_night_ratio = (
-        tweets_df.groupby("user_id")["is_late_night"]
-        .mean()
-        .reset_index(name="late_night_ratio")
-    )
-
-    merged_df = merged_df.merge(late_night_ratio, on="user_id", how="left")
-    merged_df["late_night_ratio"] = merged_df["late_night_ratio"].fillna(0)
 
     # Gender analysis for late night tweets
     gender_late_night = merged_df.groupby("gender")["late_night_ratio"].mean()
