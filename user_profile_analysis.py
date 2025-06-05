@@ -114,6 +114,7 @@ def load_demographic_data():
 def analyze_profiles():
     """Analyze merged user profiles"""
     # Load merged profiles
+    log("analyzing profiles")
     df = pd.read_parquet("merged_profiles/merged_user_profiles.parquet")
 
     # Create figures directory
@@ -130,10 +131,10 @@ def analyze_profiles():
     df_filtered = df[(df["age"] >= 10) & (df["age"] <= 16)]
     filtered_users = len(df_filtered)
 
-    print(f"\n1. Age Filtering Results:")
-    print(f"Total users: {total_users}")
-    print(f"Users in age range 10-16: {filtered_users}")
-    print(
+    log(f"\n1. Age Filtering Results:")
+    log(f"Total users: {total_users}")
+    log(f"Users in age range 10-16: {filtered_users}")
+    log(
         f"Percentage filtered out: {((total_users - filtered_users) / total_users * 100):.2f}%"
     )
 
@@ -180,11 +181,11 @@ def analyze_profiles():
     )
     other_percentage = (other_count / len(df_filtered)) * 100
 
-    print(f"\n5. Region Analysis:")
-    print(f"Region distribution:")
+    log(f"\n5. Region Analysis:")
+    log(f"Region distribution:")
     for region, count in region_counts.items():
-        print(f"{region}: {count} ({count/total_valid*100:.2f}%)")
-    print(f"Other/Overseas: {other_count} ({other_percentage:.2f}%)")
+        log(f"{region}: {count} ({count/total_valid*100:.2f}%)")
+    log(f"Other/Overseas: {other_count} ({other_percentage:.2f}%)")
 
     # Region pie chart
     plt.figure(figsize=(10, 10))
@@ -196,10 +197,10 @@ def analyze_profiles():
     # 6. Province analysis
     df_filtered["province"] = df_filtered["location"].apply(get_province_from_location)
     province_counts = df_filtered["province"].value_counts()
-    print(f"\n6. Province Analysis:")
-    print(f"Province distribution:")
+    log(f"\n6. Province Analysis:")
+    log(f"Province distribution:")
     for province, count in province_counts.items():
-        print(f"{province}: {count} ({count/total_valid*100:.2f}%)")
+        log(f"{province}: {count} ({count/total_valid*100:.2f}%)")
 
     # bar plot
     plt.figure(figsize=(10, 6))
@@ -308,6 +309,7 @@ def get_month_files(year, month):
 
 def analyze_tweet_basic(year):
     """Basic analysis of tweet data"""
+    log(f"analyzing tweet basic for {year}")
     # Load tweet data
     os.makedirs(f"figures/{year}", exist_ok=True)
     parquet_files = glob.glob(f"youth_weibo_stat/{year}-*.parquet")
@@ -321,8 +323,13 @@ def analyze_tweet_basic(year):
 
     # 1. Location data analysis
     total_tweets = len(df)
-    tweets_with_location = df[df["lat"].notna() & df["lon"].notna()].shape[0]
-    location_percentage = (tweets_with_location / total_tweets) * 100
+    # lat lon不为空，不是na
+    tweets_with_location = df[df["lat"].notna() & df["lon"].notna()]
+    # 不为空
+    tweets_with_location = tweets_with_location[
+        tweets_with_location["lat"] != "" & tweets_with_location["lon"] != ""
+    ]
+    location_percentage = (tweets_with_location.shape[0] / total_tweets) * 100
 
     log(f"\nLocation Data Analysis:")
     log(f"Total tweets: {total_tweets}")
@@ -357,8 +364,10 @@ def analyze_tweet_temporal(year):
 
     # Create monthly hour distribution plots
     for month in range(1, 13):
+        log(f"analyzing tweet temporal for {year} {month}")
         month_data = df[df["month"] == month]
         if len(month_data) == 0:
+            log(f"No data for month {month}")
             continue
 
         plt.figure(figsize=(12, 6))
@@ -423,6 +432,7 @@ def analyze_tweet_content(year):
 def analyze_tweet_profile_merge(year):
     """Merge tweet analysis with user profiles"""
     # Load data
+    log(f"analyzing tweet profile merge for {year}")
     parquet_files = glob.glob(f"youth_weibo_stat/{year}-*.parquet")
     if not parquet_files:
         log(f"No parquet files found for year {year}")
@@ -522,7 +532,7 @@ def analyze_all(year):
     analyze_profiles()
     analyze_tweet_basic(year)
     analyze_tweet_temporal(year)
-    analyze_tweet_content(year)
+    # analyze_tweet_content(year)
     analyze_tweet_profile_merge(year)
 
 
