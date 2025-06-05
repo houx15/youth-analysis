@@ -327,7 +327,8 @@ def analyze_tweet_basic(year):
     tweets_with_location = df[df["lat"].notna() & df["lon"].notna()]
     # 不为空
     tweets_with_location = tweets_with_location[
-        tweets_with_location["lat"] != "" & tweets_with_location["lon"] != ""
+        (tweets_with_location["lat"].astype(str) != "")
+        & (tweets_with_location["lon"].astype(str) != "")
     ]
     location_percentage = (tweets_with_location.shape[0] / total_tweets) * 100
 
