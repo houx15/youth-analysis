@@ -460,7 +460,13 @@ def analyze_tweet_profile_merge(year):
         tweet_counts.update(df["user_id"].value_counts().to_dict())
 
         # Update late night counts
-        hours = pd.to_datetime(df["time_stamp"], unit="ms").dt.hour
+        # hours = pd.to_datetime(df["time_stamp"], unit="ms").dt.hour
+        # Convert timestamp to hour
+        df["time_stamp"] = pd.to_numeric(df["time_stamp"])
+        df["beijing_time"] = pd.to_datetime(df["time_stamp"], unit="s") + pd.Timedelta(
+            hours=8
+        )
+        hours = df["beijing_time"].dt.hour
         late_night_mask = hours.between(0, 8)
         late_night_counts.update(
             df.loc[late_night_mask, "user_id"].value_counts().to_dict()
