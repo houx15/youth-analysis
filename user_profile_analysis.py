@@ -204,9 +204,17 @@ def analyze_profiles():
 
     # bar plot
     plt.figure(figsize=(10, 6))
-    sns.histplot(data=df_filtered, x="province", bins=province_counts.shape[0])
+    # histplot,从多到少排列
+    sns.histplot(
+        data=df_filtered,
+        x="province",
+        bins=province_counts.shape[0],
+        order=province_counts.index,
+    )
     plt.title("Province Distribution")
     plt.xlabel("Province")
+    # x label rotate 45
+    plt.xticks(rotation=45)
     plt.ylabel("Count")
     plt.savefig("figures/province_distribution.pdf", bbox_inches="tight", dpi=300)
     plt.close()
