@@ -12,9 +12,10 @@ from datetime import datetime
 import jieba.posseg as pseg
 from wordcloud import WordCloud
 import numpy as np
-from utils.utils import sentence_cleaner
+from utils.utils import sentence_cleaner, STOP_WORDS
 import geopandas as gpd
 from shapely.geometry import Point
+
 
 # Region mapping
 region_to_province = {
@@ -396,10 +397,11 @@ def analyze_tweet_temporal(year):
         plt.close()
 
 
-def analyze_tweet_content(year):
+def analyze_tweet_content(year, month=None):
     """Analyze tweet content and generate word clouds"""
     # Process each month
-    for month in range(1, 13):
+    month_list = [month] if month else range(1, 13)
+    for month in month_list:
         month_files = get_month_files(year, month)
         if not month_files:
             continue
@@ -416,7 +418,9 @@ def analyze_tweet_content(year):
                 meaningful_words = [
                     word
                     for word, flag in words
-                    if flag.startswith(("n", "v")) and len(word) > 1
+                    if flag.startswith(("n", "v"))
+                    and len(word) > 1
+                    and word not in STOP_WORDS
                 ]
                 all_words.extend(meaningful_words)
 
@@ -437,7 +441,10 @@ def analyze_tweet_content(year):
         plt.axis("off")
         plt.title(f"Word Cloud - {month} ({year})")
         plt.savefig(
-            f"figures/{year}/wordcloud_{month:02d}.pdf", bbox_inches="tight", dpi=300
+            f"figures/{year}/wordcloud_{month:02d}.pdf",
+            bbox_inches="tight",
+            dpi=300,
+            format="pdf",
         )
         plt.close()
 
@@ -578,11 +585,11 @@ if __name__ == "__main__":
     fire.Fire(
         {
             "merge_profile": merge_user_profiles,
-            "analyze_profile": analyze_profiles,
-            "analyze_tweet_basic": analyze_tweet_basic,
-            "analyze_tweet_temporal": analyze_tweet_temporal,
-            "analyze_tweet_content": analyze_tweet_content,
-            "analyze_tweet_profile": analyze_tweet_profile_merge,
-            "analyze_all": analyze_all,
+            "profile": analyze_profiles,
+            "basic": analyze_tweet_basic,
+            "temporal": analyze_tweet_temporal,
+            "content": analyze_tweet_content,
+            "profile": analyze_tweet_profile_merge,
+            "all": analyze_all,
         }
     )
