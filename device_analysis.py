@@ -180,7 +180,7 @@ def analyze_tweet_basic(year):
     log(f"analyzing tweet basic for {year}")
     # Load tweet data
     os.makedirs(f"figures/{year}", exist_ok=True)
-    parquet_files = glob.glob(f"youth_weibo_stat/{year}-*.parquet")
+    parquet_files = glob.glob(f"cleaned_youth_weibo/{year}/*.parquet")
     if not parquet_files:
         log(f"No parquet files found for year {year}")
         return
@@ -395,7 +395,7 @@ def check(year, ratio=0.001):
             break
     log(f"top_5_userids: {top_5_userids}")
 
-    parquet_files = glob.glob(f"youth_weibo_stat/{year}-*.parquet")
+    parquet_files = glob.glob(f"cleaned_youth_weibo/{year}/*.parquet")
     if not parquet_files:
         log(f"No parquet files found for year {year}")
         return
@@ -435,3 +435,7 @@ if __name__ == "__main__":
             "check": check,
         }
     )
+
+"""
+大问题，目前用的不是10-16岁的数据
+"""

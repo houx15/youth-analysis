@@ -311,7 +311,7 @@ def log(text):
 def get_month_files(year, month):
     """Get all parquet files for a specific month"""
     month_str = f"{month:02d}"
-    pattern = f"youth_weibo_stat/{year}-{month_str}-*.parquet"
+    pattern = f"cleaned_youth_weibo/{year}/{month_str}-*.parquet"
     return sorted(glob.glob(pattern))
 
 
@@ -320,7 +320,7 @@ def analyze_tweet_basic(year):
     log(f"analyzing tweet basic for {year}")
     # Load tweet data
     os.makedirs(f"figures/{year}", exist_ok=True)
-    parquet_files = glob.glob(f"youth_weibo_stat/{year}-*.parquet")
+    parquet_files = glob.glob(f"cleaned_youth_weibo/{year}/*.parquet")
     if not parquet_files:
         log(f"No parquet files found for year {year}")
         return
@@ -362,7 +362,7 @@ def analyze_tweet_temporal(year):
     for month in range(1, 13):
         log(f"analyzing tweet temporal for {year} {month}")
         month_str = f"{month:02d}"
-        parquet_files = glob.glob(f"youth_weibo_stat/{year}-{month_str}-*.parquet")
+        parquet_files = glob.glob(f"cleaned_youth_weibo/{year}/{month_str}-*.parquet")
         if not parquet_files:
             log(f"No parquet files found for year {year} {month}")
             continue
@@ -453,7 +453,7 @@ def analyze_tweet_profile_merge(year):
     """Merge tweet analysis with user profiles"""
     # Load data
     log(f"analyzing tweet profile merge for {year}")
-    parquet_files = glob.glob(f"youth_weibo_stat/{year}-*.parquet")
+    parquet_files = glob.glob(f"cleaned_youth_weibo/{year}/*.parquet")
     if not parquet_files:
         log(f"No parquet files found for year {year}")
         return
