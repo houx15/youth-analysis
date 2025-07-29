@@ -10,11 +10,16 @@ import re
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from user_profile_analysis import log
 
 # 设置中文字体
 plt.rcParams["font.sans-serif"] = ["SimHei", "Arial Unicode MS", "DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False
+
+
+def log(text):
+    """Write log to device_analysis.log"""
+    with open("device_analysis.log", "a") as f:
+        f.write(f"{text}\n")
 
 
 DEVICE_BRAND_MAP = {
@@ -375,8 +380,7 @@ def check(year, ratio=0.001):
     检查发言数异常多的用户，抽样发言内容
     """
     stats = pd.read_parquet(f"merged_profiles/device_analysis_{year}.parquet")
-    stats = stats.groupby("user_id").size().rename("weibo_count")
-    stats = stats.sort_values(ascending=False)
+    stats = stats.sort_values(by="weibo_count", ascending=False)
     # 取前ratio
     stats = stats.head(int(len(stats) * ratio))
     log(f"抽样用户数: {len(stats)}")
