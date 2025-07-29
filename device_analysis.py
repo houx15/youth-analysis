@@ -385,7 +385,7 @@ def check(year, ratio=0.001):
     stats = stats.head(int(len(stats) * ratio))
     log(f"抽样用户数: {len(stats)}")
     for user_id in stats.index:
-        log(f"user_id: {user_id}, weibo_count: {stats.loc[user_id]}")
+        log(f"user_id: {user_id}, weibo_count: {stats.loc[user_id, 'weibo_count']}")
     raise Exception("stop here")
 
     parquet_files = glob.glob(f"youth_weibo_stat/{year}-*.parquet")
