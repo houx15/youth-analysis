@@ -386,7 +386,14 @@ def check(year, ratio=0.001):
     log(f"抽样用户数: {len(stats)}")
     for user_id in stats.index:
         log(f"user_id: {user_id}, weibo_count: {stats.loc[user_id, 'weibo_count']}")
-    raise Exception("stop here")
+
+    # 挑最高的5个，看看都在发什么
+    top_5_userids = []
+    for user_id in stats.index:
+        top_5_userids.append(user_id)
+        if len(top_5_userids) >= 5:
+            break
+    log(f"top_5_userids: {top_5_userids}")
 
     parquet_files = glob.glob(f"youth_weibo_stat/{year}-*.parquet")
     if not parquet_files:
@@ -395,7 +402,17 @@ def check(year, ratio=0.001):
 
     # Only read necessary columns
     needed_columns = ["weibo_content", "user_id", "time_stamp"]
-    df = pd.concat([pd.read_parquet(f, columns=needed_columns) for f in parquet_files])
+    for f in parquet_files[:5]:
+        data = pd.read_parquet(f, columns=needed_columns)
+        data = data[data["user_id"].isin(top_5_userids)]
+        for user_id in top_5_userids:
+            user_data = data[data["user_id"] == user_id]
+            if user_data.shape[0] > 20:
+                user_data = user_data.sample(20)
+            for i in range(user_data.shape[0]):
+                log(
+                    f"file: {f}, user_id: {user_id}, weibo_content: {user_data.iloc[i]['weibo_content']}"
+                )
 
 
 def process(year):
