@@ -390,7 +390,7 @@ def check(year, ratio=0.001):
     # 挑最高的5个，看看都在发什么
     top_5_userids = []
     for user_id in stats.index:
-        top_5_userids.append(user_id)
+        top_5_userids.append(str(user_id))
         if len(top_5_userids) >= 5:
             break
     log(f"top_5_userids: {top_5_userids}")
@@ -402,17 +402,23 @@ def check(year, ratio=0.001):
 
     # Only read necessary columns
     needed_columns = ["weibo_content", "user_id", "time_stamp"]
-    for f in parquet_files[:5]:
+    printed_user = set()
+    for f in parquet_files:
         data = pd.read_parquet(f, columns=needed_columns)
         data = data[data["user_id"].isin(top_5_userids)]
         for user_id in top_5_userids:
+            if user_id in printed_user:
+                continue
             user_data = data[data["user_id"] == user_id]
             if user_data.shape[0] > 20:
                 user_data = user_data.sample(20)
-            for i in range(user_data.shape[0]):
-                log(
-                    f"file: {f}, user_id: {user_id}, weibo_content: {user_data.iloc[i]['weibo_content']}"
-                )
+                printed_user.add(user_id)
+                for i in range(user_data.shape[0]):
+                    log(
+                        f"file: {f}, user_id: {user_id}, weibo_content: {user_data.iloc[i]['weibo_content']}"
+                    )
+        if len(printed_user) >= 5:
+            break
 
 
 def process(year):
