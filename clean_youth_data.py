@@ -110,5 +110,34 @@ def clean_weibo_data(year, month=None):
     print(f"输出目录: {output_dir}")
 
 
+def remove_shuijun(year, month=None):
+    """
+    删除水军
+    configs/too_many_weibo_userids.json list里面单个元素是int，是水军user id
+    需要遍历clean weibo data处理过了的parquet（每一个），删除这些user id发布的内容
+    """
+    with open("configs/too_many_weibo_userids.json", "r") as f:
+        shuijun_user_ids = json.load(f)
+
+    if month is not None:
+        months = [month]
+    else:
+        months = range(1, 13)
+
+    for month in months:
+        month_str = f"{month:02d}"
+        pattern = f"cleaned_youth_weibo/{year}-{month_str}-*.parquet"
+        parquet_files = glob.glob(pattern)
+        for file_path in parquet_files:
+            df = pd.read_parquet(file_path)
+            before = len(df)
+            df["user_id"] = df["user_id"].astype(int)
+            df = df[~df["user_id"].isin(shuijun_user_ids)]
+            after = len(df)
+            df.to_parquet(file_path)
+            print(f"处理 {file_path} 完成，删除前 {before} 条，删除后 {after} 条")
+        print(f"处理 {year} 年 {month} 月数据完成")
+
+
 if __name__ == "__main__":
-    fire.Fire({"clean": clean_weibo_data})
+    fire.Fire({"clean": clean_weibo_data, "remove": remove_shuijun})
