@@ -390,7 +390,7 @@ def check(year, ratio=0.001):
     # 挑最高的5个，看看都在发什么
     top_5_userids = []
     for user_id in stats.index:
-        top_5_userids.append(str(user_id))
+        top_5_userids.append(int(user_id))
         if len(top_5_userids) >= 5:
             break
     log(f"top_5_userids: {top_5_userids}")
@@ -405,6 +405,7 @@ def check(year, ratio=0.001):
     printed_user = set()
     for f in parquet_files:
         data = pd.read_parquet(f, columns=needed_columns)
+        print(data["user_id"].dtype)
         data = data[data["user_id"].isin(top_5_userids)]
         for user_id in top_5_userids:
             if user_id in printed_user:
