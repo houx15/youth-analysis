@@ -384,15 +384,15 @@ def check(year, ratio=0.001):
     # 取前ratio
     stats = stats.head(int(len(stats) * ratio))
     log(f"抽样用户数: {len(stats)}")
-    for user_id in stats.index:
-        log(f"user_id: {user_id}, weibo_count: {stats.loc[user_id, 'weibo_count']}")
+
+    # 打印前几个用户的信息
+    for idx, row in stats.head(10).iterrows():
+        log(f"user_id: {row['user_id']}, weibo_count: {row['weibo_count']}")
 
     # 挑最高的5个，看看都在发什么
     top_5_userids = []
-    for user_id in stats.index:
-        top_5_userids.append(int(user_id))
-        if len(top_5_userids) >= 5:
-            break
+    for idx, row in stats.head(5).iterrows():
+        top_5_userids.append(int(row["user_id"]))
     log(f"top_5_userids: {top_5_userids}")
 
     parquet_files = glob.glob(f"cleaned_youth_weibo/{year}/*.parquet")
