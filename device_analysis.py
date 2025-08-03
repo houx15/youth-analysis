@@ -381,6 +381,7 @@ def check(year, ratio=0.001):
     """
     stats = pd.read_parquet(f"merged_profiles/device_analysis_{year}.parquet")
     stats = stats.sort_values(by="weibo_count", ascending=False)
+    stats = stats[stats["weibo_count"] > 10000]
     # 取前ratio
     stats = stats.head(int(len(stats) * ratio))
     log(f"抽样用户数: {len(stats)}")
@@ -391,9 +392,12 @@ def check(year, ratio=0.001):
 
     # 挑最高的5个，看看都在发什么
     top_5_userids = []
-    for idx, row in stats.head(5).iterrows():
+    for idx, row in stats.iterrows():
         top_5_userids.append(int(row["user_id"]))
-    log(f"top_5_userids: {top_5_userids}")
+    with open(f"configs/too_many_weibo_userids.json", "w") as f:
+        json.dump(top_5_userids, f)
+
+    raise Exception("stop here")
 
     parquet_files = glob.glob(f"cleaned_youth_weibo/{year}/*.parquet")
     if not parquet_files:
