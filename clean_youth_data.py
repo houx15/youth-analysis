@@ -126,7 +126,7 @@ def remove_shuijun(year, month=None):
 
     for month in months:
         month_str = f"{month:02d}"
-        pattern = f"cleaned_youth_weibo/{year}-{month_str}-*.parquet"
+        pattern = f"cleaned_youth_weibo/{year}/{year}-{month_str}-*.parquet"
         parquet_files = glob.glob(pattern)
         for file_path in parquet_files:
             df = pd.read_parquet(file_path)
