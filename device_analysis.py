@@ -383,7 +383,7 @@ def check(year, ratio=0.001):
     stats = stats.sort_values(by="weibo_count", ascending=False)
     stats = stats[stats["weibo_count"] > 10000]
     # 取前ratio
-    stats = stats.head(int(len(stats) * ratio))
+    # stats = stats.head(int(len(stats) * ratio))
     log(f"抽样用户数: {len(stats)}")
 
     # 打印前几个用户的信息
