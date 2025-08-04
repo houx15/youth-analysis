@@ -398,55 +398,11 @@ def analyze_tweet_temporal(year):
 
 
 def analyze_tweet_content(year, month=None):
-    """Analyze tweet content and generate word clouds"""
-    # Process each month
-    month_list = [month] if month else range(1, 13)
-    for month in month_list:
-        month_files = get_month_files(year, month)
-        if not month_files:
-            continue
+    """Analyze tweet content and generate word clouds using the new word frequency analysis module"""
+    from word_frequency_analysis import analyze_word_frequencies
 
-        # Only read necessary columns
-        needed_columns = ["weibo_content"]
-        all_words = []
-
-        for file in month_files:
-            df = pd.read_parquet(file, columns=needed_columns)
-            for content in df["weibo_content"].dropna():
-                cleaned_content = sentence_cleaner(content)
-                words = pseg.cut(cleaned_content)
-                meaningful_words = [
-                    word
-                    for word, flag in words
-                    if flag.startswith(("n", "v"))
-                    and len(word) > 1
-                    and word not in STOP_WORDS
-                ]
-                all_words.extend(meaningful_words)
-
-        if not all_words:
-            continue
-
-        # Generate word cloud
-        word_freq = Counter(all_words)
-        wordcloud = WordCloud(
-            font_path="/gpfs/share/home/2401111059/.fonts/simhei/SimHei.ttf",
-            width=800,
-            height=400,
-            background_color="white",
-        ).generate_from_frequencies(word_freq)
-
-        plt.figure(figsize=(10, 5))
-        plt.imshow(wordcloud, interpolation="bilinear")
-        plt.axis("off")
-        plt.title(f"Word Cloud - {month} ({year})")
-        plt.savefig(
-            f"figures/{year}/wordcloud_{month:02d}.pdf",
-            bbox_inches="tight",
-            dpi=300,
-            format="pdf",
-        )
-        plt.close()
+    print(f"使用新的词频分析模块分析 {year} 年内容...")
+    return analyze_word_frequencies(year, month, recalculate=False)
 
 
 def analyze_tweet_profile_merge(year):

@@ -139,5 +139,68 @@ def remove_shuijun(year, month=None):
         print(f"处理 {year} 年 {month} 月数据完成")
 
 
+def merge_demo_to_content(year, month=None):
+    """
+        合并demo数据到content数据
+
+        demo 数据：merged_profiles/merged_user_profiles.parquet
+        >>> data.columns
+    Index(['date', 'user_id', 'nick_name', 'user_type', 'gender', 'verified_type',
+           'verified_reason', 'description', 'fans_number', 'weibo_number', 'type',
+           'friends_count', 'favourites_count', 'created_at', 'allow_all_comment',
+           'bi_followers_count', 'location', 'province', 'city', 'ip_location',
+           'birthday', 'demographic_gender', 'demographic_province', 'region'],
+          dtype='object')
+        youth_data = age 10-16
+        合并 user_type, gender, location, province, city, ip_location, birthday, demographic_gender, demographic_province, region
+
+        content 数据：cleaned_youth_weibo/{year}/{year}-{month_str}-*.parquet
+    """
+    demo_data = pd.read_parquet("merged_profiles/merged_user_profiles.parquet")
+    demo_data["birthday"] = pd.to_datetime(demo_data["birthday"])
+    demo_data["age"] = 2020 - demo_data["birthday"].dt.year
+    demo_data = demo_data[demo_data["age"] >= 10]
+    demo_data = demo_data[demo_data["age"] <= 16]
+    demo_data = demo_data[
+        [
+            "user_id",
+            "user_type",
+            "gender",
+            "location",
+            "province",
+            "city",
+            "ip_location",
+            "birthday",
+            "demographic_gender",
+            "demographic_province",
+            "region",
+        ]
+    ]
+    demo_data = demo_data.drop_duplicates(subset=["user_id"])
+    demo_data = demo_data.dropna(subset=["user_id"])
+
+    if month is not None:
+        months = [month]
+    else:
+        months = range(1, 13)
+
+    for month in months:
+        month_str = f"{month:02d}"
+        pattern = f"cleaned_youth_weibo/{year}/{year}-{month_str}-*.parquet"
+        parquet_files = glob.glob(pattern)
+        for file_path in parquet_files:
+            df = pd.read_parquet(file_path)
+            df = df.merge(demo_data, on="user_id", how="left")
+            df.to_parquet(file_path)
+            print(f"处理 {file_path} 完成")
+        print(f"处理 {year} 年 {month} 月数据完成")
+
+
 if __name__ == "__main__":
-    fire.Fire({"clean": clean_weibo_data, "remove": remove_shuijun})
+    fire.Fire(
+        {
+            "clean": clean_weibo_data,
+            "remove": remove_shuijun,
+            "merge": merge_demo_to_content,
+        }
+    )
