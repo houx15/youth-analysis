@@ -178,6 +178,7 @@ def merge_demo_to_content(year, month=None):
     ]
     demo_data = demo_data.drop_duplicates(subset=["user_id"])
     demo_data = demo_data.dropna(subset=["user_id"])
+    demo_data["user_id"] = demo_data["user_id"].astype(int)
 
     if month is not None:
         months = [month]
