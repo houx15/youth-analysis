@@ -425,6 +425,7 @@ def analyze_tweet_profile_merge(year):
     # Process files in chunks
     for file in parquet_files:
         df = pd.read_parquet(file, columns=["user_id", "time_stamp"])
+        df["user_id"] = df["user_id"].astype(int)
 
         # Update tweet counts
         tweet_counts.update(df["user_id"].value_counts().to_dict())
@@ -461,7 +462,8 @@ def analyze_tweet_profile_merge(year):
     )
 
     # Merge with profiles
-    merged_df = profiles_df.merge(tweet_stats, on="user_id", how="left")
+    profiles_df["user_id"] = profiles_df["user_id"].astype(int)
+    merged_df = tweet_stats.merge(profiles_df, on="user_id", how="left")
     merged_df["tweet_count"] = merged_df["tweet_count"].fillna(0)
     merged_df["late_night_ratio"] = merged_df["late_night_ratio"].fillna(0)
 
