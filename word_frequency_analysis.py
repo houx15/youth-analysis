@@ -228,7 +228,7 @@ def create_word_frequency_plots(word_freqs, output_dir, year):
 
     # 1. 总词频词云
     create_word_cloud(
-        get_top_words(word_freqs["total"], 100),
+        get_top_words(word_freqs["total"], 50),
         f"Total Word Frequency - {year}",
         f"{output_dir}/total_wordcloud.pdf",
     )
@@ -380,7 +380,11 @@ def analyze_word_frequencies(year, month=None, recalculate=False):
     """
     # 设置文件路径
     word_freq_file = f"word_frequencies/word_freq_{year}.pkl"
+    if month is not None:
+        word_freq_file = f"word_frequencies/word_freq_{year}_{month:02d}.pkl"
     output_dir = f"figures/{year}/word_frequency"
+    if month is not None:
+        output_dir = f"figures/{year}/word_frequency/{month:02d}"
 
     # 计算或加载词频数据
     if recalculate or not os.path.exists(word_freq_file):
