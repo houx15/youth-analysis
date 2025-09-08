@@ -76,6 +76,16 @@ def get_province_from_location(location):
     return province
 
 
+def create_counter():
+    """创建一个新的Counter对象，用于defaultdict"""
+    return Counter()
+
+
+def create_defaultdict_counter():
+    """创建一个新的defaultdict(Counter)对象，用于嵌套defaultdict"""
+    return defaultdict(Counter)
+
+
 def extract_words_from_content(content):
     """从文本内容中提取有意义的词汇"""
     if pd.isna(content) or content == "":
@@ -116,9 +126,7 @@ def calculate_word_frequencies(year, month=None, save_path=None):
         "by_gender": defaultdict(Counter),  # 按性别分组
         "by_region": defaultdict(Counter),  # 按区域分组
         "by_province": defaultdict(Counter),  # 按省份分组
-        "by_gender_region": defaultdict(
-            lambda: defaultdict(Counter)
-        ),  # 按性别+区域分组
+        "by_gender_region": defaultdict(create_defaultdict_counter),  # 按性别+区域分组
     }
 
     total_files = 0
