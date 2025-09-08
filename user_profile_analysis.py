@@ -16,6 +16,42 @@ from utils.utils import sentence_cleaner, STOP_WORDS
 import geopandas as gpd
 from shapely.geometry import Point
 
+"""
+国家统计局2020年分地区未成年人口数目（万人）
+"""
+province_2020_underage_count = {
+    "北京": 2189,
+    "天津": 1387,
+    "河北": 7464,
+    "上海": 2488,
+    "江苏": 8477,
+    "浙江": 6468,
+    "福建": 4161,
+    "山东": 10165,
+    "广东": 12624,
+    "海南": 1012,
+    "山西": 3490,
+    "安徽": 6105,
+    "江西": 4519,
+    "河南": 9941,
+    "湖北": 5745,
+    "湖南": 6645,
+    "内蒙古": 2403,
+    "广西": 5019,
+    "重庆": 3209,
+    "四川": 8371,
+    "贵州": 3858,
+    "云南": 4722,
+    "西藏": 366,
+    "陕西": 3955,
+    "甘肃": 2501,
+    "青海": 593,
+    "宁夏": 721,
+    "新疆": 2590,
+    "辽宁": 4255,
+    "吉林": 2399,
+    "黑龙江": 3171,
+}
 
 # Region mapping
 region_to_province = {
@@ -195,6 +231,33 @@ def analyze_profiles():
     plt.savefig("figures/region_distribution.pdf", bbox_inches="tight", dpi=300)
     plt.close()
 
+    # 移除其他,或海外
+    region_counts = region_counts.drop("其他")
+    region_counts = region_counts.drop("海外")
+
+    # normalized by 2020年未成年人口数目
+    region_counts = region_counts.apply(
+        lambda x: x / (province_2020_underage_count[x.index] * 10000)
+    )
+    region_counts = region_counts.sort_values(ascending=False)
+    log(f"\n7. Region Analysis(normalized by 2020 underage population):")
+    for region, count in region_counts.items():
+        log(f"{region}: {count} ({count/total_valid*100:.4f}%)")
+
+    # bar plot
+    plt.figure(figsize=(10, 6))
+    sns.barplot(
+        x=region_counts.index,
+        y=region_counts.values,
+    )
+    plt.title("Region Distribution(normalized by 2020 underage population)")
+    plt.xlabel("Region")
+    plt.ylabel("Count")
+    plt.savefig(
+        "figures/region_distribution_normalized.pdf", bbox_inches="tight", dpi=300
+    )
+    plt.close()
+
     # 6. Province analysis
     df_filtered["province"] = df_filtered["location"].apply(get_province_from_location)
     province_counts = df_filtered["province"].value_counts()
@@ -217,6 +280,33 @@ def analyze_profiles():
     plt.xticks(rotation=45)
     plt.ylabel("Count")
     plt.savefig("figures/province_distribution.pdf", bbox_inches="tight", dpi=300)
+    plt.close()
+
+    # 移除其他,或海外
+    province_counts = province_counts.drop("其他")
+    province_counts = province_counts.drop("海外")
+
+    # normalized by 2020年未成年人口数目
+    province_counts = province_counts.apply(
+        lambda x: x / (province_2020_underage_count[x.index] * 10000)
+    )
+    province_counts = province_counts.sort_values(ascending=False)
+    log(f"\n7. Province Analysis(normalized by 2020 underage population):")
+    for province, count in province_counts.items():
+        log(f"{province}: {count} ({count/total_valid*100:.4f}%)")
+
+    # bar plot
+    plt.figure(figsize=(10, 6))
+    sns.barplot(
+        x=province_counts.index,
+        y=province_counts.values,
+    )
+    plt.title("Province Distribution(normalized by 2020 underage population)")
+    plt.xlabel("Province")
+    plt.ylabel("Count")
+    plt.savefig(
+        "figures/province_distribution_normalized.pdf", bbox_inches="tight", dpi=300
+    )
     plt.close()
 
 
