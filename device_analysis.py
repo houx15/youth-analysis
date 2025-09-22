@@ -152,6 +152,8 @@ def device_handler(device_string):
     处理device数据
     """
     device = None
+    # 转为大写
+    device_string = device_string.upper()
     for brand in INTERESTED_DEVICE_TYPES:
         if brand in device_string:
             device = brand

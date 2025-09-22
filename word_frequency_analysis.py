@@ -203,6 +203,31 @@ def load_word_frequencies(file_path):
         return pickle.load(f)
 
 
+def remove_stop_words_from_freq(word_freq):
+    """从词频字典中移除停用词"""
+    filtered_freq = Counter()
+    for word, count in word_freq.items():
+        if word not in STOP_WORDS:
+            filtered_freq[word] = count
+    return filtered_freq
+
+
+def convert_to_ratio(word_freq):
+    """将绝对频率转换为相对频率（ratio）"""
+    if not word_freq:
+        return Counter()
+
+    total_count = sum(word_freq.values())
+    if total_count == 0:
+        return Counter()
+
+    ratio_freq = Counter()
+    for word, count in word_freq.items():
+        ratio_freq[word] = count / total_count
+
+    return ratio_freq
+
+
 def get_top_words(word_freq, top_n=50):
     """获取词频最高的词汇"""
     return dict(word_freq.most_common(top_n))
@@ -234,39 +259,71 @@ def create_word_frequency_plots(word_freqs, output_dir, year):
     """创建各种词频可视化图表"""
     os.makedirs(output_dir, exist_ok=True)
 
+    # 处理词频数据：去除停用词并转换为ratio
+    processed_freqs = {}
+
+    # 处理总词频
+    filtered_total = remove_stop_words_from_freq(word_freqs["total"])
+    processed_freqs["total"] = convert_to_ratio(filtered_total)
+
+    # 处理按性别分组的词频
+    processed_freqs["by_gender"] = {}
+    for gender, freq in word_freqs["by_gender"].items():
+        if freq:
+            filtered_freq = remove_stop_words_from_freq(freq)
+            processed_freqs["by_gender"][gender] = convert_to_ratio(filtered_freq)
+
+    # 处理按区域分组的词频
+    processed_freqs["by_region"] = {}
+    for region, freq in word_freqs["by_region"].items():
+        if freq:
+            filtered_freq = remove_stop_words_from_freq(freq)
+            processed_freqs["by_region"][region] = convert_to_ratio(filtered_freq)
+
+    # 处理按性别+区域分组的词频
+    processed_freqs["by_gender_region"] = {}
+    for gender, region_freqs in word_freqs["by_gender_region"].items():
+        processed_freqs["by_gender_region"][gender] = {}
+        for region, freq in region_freqs.items():
+            if freq:
+                filtered_freq = remove_stop_words_from_freq(freq)
+                processed_freqs["by_gender_region"][gender][region] = convert_to_ratio(
+                    filtered_freq
+                )
+
     # 1. 总词频词云
     create_word_cloud(
-        get_top_words(word_freqs["total"], 50),
-        f"Total Word Frequency - {year}",
+        get_top_words(processed_freqs["total"], 50),
+        f"Total Word Frequency Ratio - {year}",
         f"{output_dir}/total_wordcloud.pdf",
     )
 
     # 2. 按性别分组的词云
-    for gender, freq in word_freqs["by_gender"].items():
+    for gender, freq in processed_freqs["by_gender"].items():
         if freq:
             create_word_cloud(
                 get_top_words(freq, 50),
-                f"Word Frequency by Gender ({gender}) - {year}",
+                f"Word Frequency Ratio by Gender ({gender}) - {year}",
                 f"{output_dir}/gender_{gender}_wordcloud.pdf",
             )
 
     # 3. 按区域分组的词云
-    for region, freq in word_freqs["by_region"].items():
+    for region, freq in processed_freqs["by_region"].items():
         if freq:
             create_word_cloud(
                 get_top_words(freq, 50),
-                f"Word Frequency by Region ({region}) - {year}",
+                f"Word Frequency Ratio by Region ({region}) - {year}",
                 f"{output_dir}/region_{region}_wordcloud.pdf",
             )
 
     # 4. 性别词频对比柱状图
-    create_gender_comparison_plot(word_freqs["by_gender"], output_dir, year)
+    create_gender_comparison_plot(processed_freqs["by_gender"], output_dir, year)
 
     # 5. 区域词频对比柱状图
-    create_region_comparison_plot(word_freqs["by_region"], output_dir, year)
+    create_region_comparison_plot(processed_freqs["by_region"], output_dir, year)
 
     # 6. 性别+区域组合词频热力图
-    create_gender_region_heatmap(word_freqs["by_gender_region"], output_dir, year)
+    create_gender_region_heatmap(processed_freqs["by_gender_region"], output_dir, year)
 
 
 def create_gender_comparison_plot(gender_freqs, output_dir, year):
@@ -284,18 +341,18 @@ def create_gender_comparison_plot(gender_freqs, output_dir, year):
     for word in list(common_words)[:20]:  # 取前20个词
         for gender, freq in gender_freqs.items():
             comparison_data.append(
-                {"word": word, "gender": gender, "frequency": freq.get(word, 0)}
+                {"word": word, "gender": gender, "ratio": freq.get(word, 0)}
             )
 
     df = pd.DataFrame(comparison_data)
 
     # 创建柱状图
     plt.figure(figsize=(15, 8))
-    pivot_df = df.pivot(index="word", columns="gender", values="frequency")
+    pivot_df = df.pivot(index="word", columns="gender", values="ratio")
     pivot_df.plot(kind="bar", figsize=(15, 8))
-    plt.title(f"Word Frequency Comparison by Gender - {year}")
+    plt.title(f"Word Frequency Ratio Comparison by Gender - {year}")
     plt.xlabel("Words")
-    plt.ylabel("Frequency")
+    plt.ylabel("Frequency Ratio")
     plt.xticks(rotation=45)
     plt.legend(title="Gender")
     plt.tight_layout()
@@ -318,18 +375,18 @@ def create_region_comparison_plot(region_freqs, output_dir, year):
     for word in list(common_words)[:20]:  # 取前20个词
         for region, freq in region_freqs.items():
             comparison_data.append(
-                {"word": word, "region": region, "frequency": freq.get(word, 0)}
+                {"word": word, "region": region, "ratio": freq.get(word, 0)}
             )
 
     df = pd.DataFrame(comparison_data)
 
     # 创建柱状图
     plt.figure(figsize=(15, 8))
-    pivot_df = df.pivot(index="word", columns="region", values="frequency")
+    pivot_df = df.pivot(index="word", columns="region", values="ratio")
     pivot_df.plot(kind="bar", figsize=(15, 8))
-    plt.title(f"Word Frequency Comparison by Region - {year}")
+    plt.title(f"Word Frequency Ratio Comparison by Region - {year}")
     plt.xlabel("Words")
-    plt.ylabel("Frequency")
+    plt.ylabel("Frequency Ratio")
     plt.xticks(rotation=45)
     plt.legend(title="Region")
     plt.tight_layout()
@@ -358,7 +415,7 @@ def create_gender_region_heatmap(gender_region_freqs, output_dir, year):
                         "word": word,
                         "gender": gender,
                         "region": region,
-                        "frequency": freq.get(word, 0),
+                        "ratio": freq.get(word, 0),
                     }
                 )
 
@@ -367,11 +424,11 @@ def create_gender_region_heatmap(gender_region_freqs, output_dir, year):
     # 创建热力图
     plt.figure(figsize=(12, 8))
     pivot_df = df.pivot_table(
-        index="word", columns=["gender", "region"], values="frequency", aggfunc="sum"
+        index="word", columns=["gender", "region"], values="ratio", aggfunc="sum"
     )
 
-    sns.heatmap(pivot_df, annot=True, fmt="g", cmap="YlOrRd")
-    plt.title(f"Word Frequency Heatmap by Gender and Region - {year}")
+    sns.heatmap(pivot_df, annot=True, fmt=".4f", cmap="YlOrRd")
+    plt.title(f"Word Frequency Ratio Heatmap by Gender and Region - {year}")
     plt.tight_layout()
     plt.savefig(f"{output_dir}/gender_region_heatmap.pdf", bbox_inches="tight", dpi=300)
     plt.close()
