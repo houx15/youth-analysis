@@ -238,8 +238,8 @@ def analyze_profiles():
         region_counts = region_counts.drop("海外")
 
     # normalized by 2020年未成年人口数目
-    region_counts = region_counts.apply(
-        lambda x: x / (province_2020_underage_count[x.index] * 10000)
+    region_counts = region_counts / region_counts.index.map(
+        lambda idx: province_2020_underage_count.get(idx, 1) * 10000
     )
     region_counts = region_counts.sort_values(ascending=False)
     log(f"\n7. Region Analysis(normalized by 2020 underage population):")
@@ -289,8 +289,8 @@ def analyze_profiles():
     province_counts = province_counts.drop("海外")
 
     # normalized by 2020年未成年人口数目
-    province_counts = province_counts.apply(
-        lambda x: x / (province_2020_underage_count[x.index] * 10000)
+    province_counts = province_counts / province_counts.index.map(
+        lambda idx: province_2020_underage_count.get(idx, 1) * 10000
     )
     province_counts = province_counts.sort_values(ascending=False)
     log(f"\n7. Province Analysis(normalized by 2020 underage population):")
