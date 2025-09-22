@@ -232,8 +232,10 @@ def analyze_profiles():
     plt.close()
 
     # 移除其他,或海外
-    region_counts = region_counts.drop("其他")
-    region_counts = region_counts.drop("海外")
+    if "其他" in region_counts:
+        region_counts = region_counts.drop("其他")
+    if "海外" in region_counts:
+        region_counts = region_counts.drop("海外")
 
     # normalized by 2020年未成年人口数目
     region_counts = region_counts.apply(
@@ -625,7 +627,7 @@ def analyze_all(year):
     analyze_profiles()
     analyze_tweet_basic(year)
     analyze_tweet_temporal(year)
-    # analyze_tweet_content(year)
+    analyze_tweet_content(year)
     analyze_tweet_profile_merge(year)
 
 
