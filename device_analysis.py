@@ -177,7 +177,7 @@ def device_handler(device_string):
     }
 
 
-def analyze_tweet_basic(year):
+def analyze_device_basic(year):
     """Basic analysis of tweet data"""
     log(f"analyzing tweet basic for {year}")
     # Load tweet data
@@ -428,17 +428,17 @@ def check(year, ratio=0.001):
             break
 
 
-def process(year):
-    analyze_tweet_basic(year)
+def process_device_analysis(year):
+    analyze_device_basic(year)
     plot_brand_distribution(year)
 
 
 if __name__ == "__main__":
     fire.Fire(
         {
-            "analyze": analyze_tweet_basic,
+            "analyze": analyze_device_basic,
             "plot": plot_brand_distribution,
-            "process": process,
+            "process": process_device_analysis,
             "check": check,
         }
     )

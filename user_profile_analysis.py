@@ -15,6 +15,8 @@ import numpy as np
 from utils.utils import sentence_cleaner, STOP_WORDS
 import geopandas as gpd
 from shapely.geometry import Point
+from device_analysis import process_device_analysis
+
 
 """
 国家统计局2020年分地区未成年人口数目（万人）
@@ -189,7 +191,7 @@ def analyze_profiles():
     gender_counts = df_filtered["gender"].value_counts()
     plt.figure(figsize=(8, 8))
     plt.pie(gender_counts, labels=gender_counts.index, autopct="%1.1f%%")
-    plt.title("Gender Distribution")
+    plt.title("2. Gender Distribution")
     plt.savefig("figures/gender_distribution.pdf", bbox_inches="tight", dpi=300)
     plt.close()
 
@@ -218,7 +220,7 @@ def analyze_profiles():
     )
     other_percentage = (other_count / len(df_filtered)) * 100
 
-    log(f"\n5. Region Analysis:")
+    log(f"\n3. Region Analysis:")
     log(f"Region distribution:")
     for region, count in region_counts.items():
         log(f"{region}: {count} ({count/total_valid*100:.2f}%)")
@@ -242,7 +244,7 @@ def analyze_profiles():
         lambda idx: province_2020_underage_count.get(idx, 1) * 10000
     )
     region_counts = region_counts.sort_values(ascending=False)
-    log(f"\n7. Region Analysis(normalized by 2020 underage population):")
+    log(f"\n4. Region Analysis(normalized by 2020 underage population):")
     for region, count in region_counts.items():
         log(f"{region}: {count} ({count/total_valid*100:.4f}%)")
 
@@ -263,10 +265,10 @@ def analyze_profiles():
     # 6. Province analysis
     df_filtered["province"] = df_filtered["location"].apply(get_province_from_location)
     province_counts = df_filtered["province"].value_counts()
-    log(f"\n6. Province Analysis:")
+    log(f"\n5. Province Analysis:")
     log(f"Province distribution:")
     for province, count in province_counts.items():
-        log(f"{province}: {count} ({count/total_valid*100:.2f}%)")
+        log(f"{province}: {count} ({count/total_valid*10000:.4f}/10,000)")
 
     # bar plot
     plt.figure(figsize=(10, 6))
@@ -293,9 +295,9 @@ def analyze_profiles():
         lambda idx: province_2020_underage_count.get(idx, 1) * 10000
     )
     province_counts = province_counts.sort_values(ascending=False)
-    log(f"\n7. Province Analysis(normalized by 2020 underage population):")
+    log(f"\n6. Province Analysis(normalized by 2020 underage population):")
     for province, count in province_counts.items():
-        log(f"{province}: {count} ({count/total_valid*100:.4f}%)")
+        log(f"{province}: {count} ({count/total_valid*10000:.4f}/10,000)")
 
     # bar plot
     plt.figure(figsize=(10, 6))
@@ -438,11 +440,11 @@ def analyze_tweet_basic(year):
     log(f"Percentage with location: {location_percentage:.2f}%")
 
     # 2. Device analysis
-    device_counts = df["device"].value_counts()
-    with open(f"figures/{year}/device_distribution.txt", "w", encoding="utf-8") as f:
-        f.write("Device Distribution:\n")
-        for device, count in device_counts.items():
-            f.write(f"{device}: {count}\n")
+    # device_counts = df["device"].value_counts()
+    # with open(f"figures/{year}/device_distribution.txt", "w", encoding="utf-8") as f:
+    #     f.write("Device Distribution:\n")
+    #     for device, count in device_counts.items():
+    #         f.write(f"{device}: {count}\n")
 
 
 def analyze_tweet_temporal(year):
@@ -454,7 +456,9 @@ def analyze_tweet_temporal(year):
     for month in range(1, 13):
         log(f"analyzing tweet temporal for {year} {month}")
         month_str = f"{month:02d}"
-        parquet_files = glob.glob(f"cleaned_youth_weibo/{year}/{month_str}-*.parquet")
+        parquet_files = glob.glob(
+            f"cleaned_youth_weibo/{year}/{year}-{month_str}-*.parquet"
+        )
         if not parquet_files:
             log(f"No parquet files found for year {year} {month}")
             continue
@@ -494,7 +498,9 @@ def analyze_tweet_content(year, month=None):
     from word_frequency_analysis import analyze_word_frequencies
 
     print(f"使用新的词频分析模块分析 {year} 年内容...")
-    return analyze_word_frequencies(year, month, recalculate=False)
+    for month in range(1, 13):
+        month_str = f"{month:02d}"
+        analyze_word_frequencies(year, month, recalculate=False)
 
 
 def analyze_tweet_profile_merge(year):
@@ -626,6 +632,7 @@ def analyze_tweet_profile_merge(year):
 def analyze_all(year):
     analyze_profiles()
     analyze_tweet_basic(year)
+    process_device_analysis(year)
     analyze_tweet_temporal(year)
     analyze_tweet_content(year)
     analyze_tweet_profile_merge(year)
