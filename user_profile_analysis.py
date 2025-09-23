@@ -295,6 +295,9 @@ def analyze_profiles():
     # 移除其他,或海外
     province_counts = province_counts.drop("其他")
     province_counts = province_counts.drop("海外")
+    province_counts = province_counts.drop("香港")
+    province_counts = province_counts.drop("澳门")
+    province_counts = province_counts.drop("台湾")
 
     # normalized by 2020年未成年人口数目
     province_counts = province_counts / province_counts.index.map(
