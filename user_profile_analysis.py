@@ -317,6 +317,7 @@ def analyze_profiles():
     plt.title("Province Distribution(normalized by 2020 underage population)")
     plt.xlabel("Province")
     plt.ylabel("Count")
+    plt.xticks(rotation=45)
     plt.savefig(
         "figures/province_distribution_normalized.pdf", bbox_inches="tight", dpi=300
     )
