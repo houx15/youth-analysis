@@ -462,6 +462,9 @@ def analyze_tweet_temporal(year):
     # Load tweet data
     os.makedirs(f"figures/{year}", exist_ok=True)
 
+    # 统计每个月0-5点的weibo占总数的比例，绘制折线图
+    month_0_5_ratio = []
+
     # Process each month separately
     for month in range(1, 13):
         log(f"analyzing tweet temporal for {year} {month}")
@@ -475,6 +478,8 @@ def analyze_tweet_temporal(year):
 
         # Initialize hour counts
         hour_counts = np.zeros(24)
+        total_counts = 0
+        month_0_5_counts = 0
 
         # Process each file
         for file in parquet_files:
@@ -488,7 +493,15 @@ def analyze_tweet_temporal(year):
             # Update hour counts
             for hour in range(24):
                 hour_counts[hour] += (hours == hour).sum()
-
+                total_counts += (hours == hour).sum()
+                if hour >= 0 and hour <= 5:
+                    month_0_5_counts += (hours == hour).sum()
+        month_0_5_ratio.append(
+            {
+                "month": month,
+                "ratio": month_0_5_counts / total_counts,
+            }
+        )
         # Create plot
         plt.figure(figsize=(12, 6))
         plt.bar(range(24), hour_counts)
@@ -501,6 +514,15 @@ def analyze_tweet_temporal(year):
             dpi=300,
         )
         plt.close()
+
+    plt.figure(figsize=(12, 6))
+    # 绘制折线图
+    plt.plot(month_0_5_ratio["month"], month_0_5_ratio["ratio"])
+    plt.title(f"0-5 Hour Ratio - {year}")
+    plt.xlabel("Month")
+    plt.ylabel("Ratio")
+    plt.savefig(f"figures/{year}/month_0_5_ratio.pdf", bbox_inches="tight", dpi=300)
+    plt.close()
 
 
 def analyze_tweet_content(year, month=None):
@@ -546,7 +568,7 @@ def analyze_tweet_profile_merge(year):
             hours=8
         )
         hours = df["beijing_time"].dt.hour
-        late_night_mask = hours.between(0, 8)
+        late_night_mask = hours.between(0, 5)
         late_night_counts.update(
             df.loc[late_night_mask, "user_id"].value_counts().to_dict()
         )
@@ -588,6 +610,10 @@ def analyze_tweet_profile_merge(year):
     )
     log("\nTweet Count by Region:")
     log(str(region_tweet_stats))
+
+    # 关于时间的分析，去掉location含有其他，或海外的
+    merged_df = merged_df[~merged_df["location"].str.contains("其他")]
+    merged_df = merged_df[~merged_df["location"].str.contains("海外")]
 
     # Gender analysis for late night tweets
     gender_late_night = merged_df.groupby("gender")["late_night_ratio"].mean()
