@@ -516,8 +516,9 @@ def analyze_tweet_temporal(year):
         plt.close()
 
     plt.figure(figsize=(12, 6))
+    df = pd.DataFrame(month_0_5_ratio)
     # 绘制折线图
-    plt.plot(month_0_5_ratio["month"], month_0_5_ratio["ratio"])
+    plt.plot(df["month"], df["ratio"])
     plt.title(f"0-5 Hour Ratio - {year}")
     plt.xlabel("Month")
     plt.ylabel("Ratio")
