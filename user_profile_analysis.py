@@ -92,6 +92,12 @@ for region, provinces in region_to_province.items():
     for province in provinces:
         province_to_region[province] = region
 
+region_2020_underage_count = {}
+for region, provinces in region_to_province.items():
+    region_2020_underage_count[region] = sum(
+        province_2020_underage_count.get(province, 0) for province in provinces
+    )
+
 
 def get_region_from_province(province):
     """Get region from province name"""
@@ -234,19 +240,19 @@ def analyze_profiles():
     plt.close()
 
     # 移除其他,或海外
-    if "其他" in region_counts:
-        region_counts = region_counts.drop("其他")
-    if "海外" in region_counts:
-        region_counts = region_counts.drop("海外")
+    # if "其他" in region_counts:
+    #     region_counts = region_counts.drop("其他")
+    # if "海外" in region_counts:
+    #     region_counts = region_counts.drop("海外")
 
     # normalized by 2020年未成年人口数目
     region_counts = region_counts / region_counts.index.map(
-        lambda idx: province_2020_underage_count.get(idx, 1) * 10000
+        lambda idx: region_2020_underage_count.get(idx, 1) * 10000
     )
     region_counts = region_counts.sort_values(ascending=False)
     log(f"\n4. Region Analysis(normalized by 2020 underage population):")
     for region, count in region_counts.items():
-        log(f"{region}: {count} ({count/total_valid*10000:.4f}/10,000)")
+        log(f"{region}: {count} ({(count)*1000000:.4f}/1,000,000)")
 
     # bar plot
     plt.figure(figsize=(10, 6))
@@ -256,7 +262,7 @@ def analyze_profiles():
     )
     plt.title("Region Distribution(normalized by 2020 underage population)")
     plt.xlabel("Region")
-    plt.ylabel("Count")
+    plt.ylabel("Proportion")
     plt.savefig(
         "figures/region_distribution_normalized.pdf", bbox_inches="tight", dpi=300
     )
@@ -297,7 +303,7 @@ def analyze_profiles():
     province_counts = province_counts.sort_values(ascending=False)
     log(f"\n6. Province Analysis(normalized by 2020 underage population):")
     for province, count in province_counts.items():
-        log(f"{province}: {count} ({count/total_valid*10000:.4f}/10,000)")
+        log(f"{province}: {count} ({(count)*1000000:.4f}/1,000,000)")
 
     # bar plot
     plt.figure(figsize=(10, 6))
