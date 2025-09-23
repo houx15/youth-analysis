@@ -246,7 +246,7 @@ def analyze_profiles():
     region_counts = region_counts.sort_values(ascending=False)
     log(f"\n4. Region Analysis(normalized by 2020 underage population):")
     for region, count in region_counts.items():
-        log(f"{region}: {count} ({count/total_valid*100:.4f}%)")
+        log(f"{region}: {count} ({count/total_valid*10000:.4f}/10,000)")
 
     # bar plot
     plt.figure(figsize=(10, 6))
@@ -268,7 +268,7 @@ def analyze_profiles():
     log(f"\n5. Province Analysis:")
     log(f"Province distribution:")
     for province, count in province_counts.items():
-        log(f"{province}: {count} ({count/total_valid*10000:.4f}/10,000)")
+        log(f"{province}: {count} ({count/total_valid*100:.4f}%)")
 
     # bar plot
     plt.figure(figsize=(10, 6))
