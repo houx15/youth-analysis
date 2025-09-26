@@ -177,12 +177,18 @@ def device_handler(device_string):
     }
 
 
-def analyze_device_basic(year):
+def analyze_device_basic(year, mode="youth"):
     """Basic analysis of tweet data"""
     log(f"analyzing tweet basic for {year}")
     # Load tweet data
     os.makedirs(f"figures/{year}", exist_ok=True)
-    parquet_files = glob.glob(f"cleaned_youth_weibo/{year}/*.parquet")
+    if mode == "youth":
+        parquet_files = glob.glob(f"cleaned_youth_weibo/{year}/*.parquet")
+    elif mode == "all":
+        parquet_files = glob.glob(f"youth_weibo_stat/{year}/*.parquet")
+    else:
+        raise ValueError(f"Invalid mode: {mode}")
+
     if not parquet_files:
         log(f"No parquet files found for year {year}")
         return
@@ -262,18 +268,18 @@ def analyze_device_basic(year):
     ]
     result = result[cols]
 
-    result.to_parquet(f"merged_profiles/device_analysis_{year}.parquet")
+    result.to_parquet(f"merged_profiles/device_analysis_{year}_{mode}.parquet")
 
     # 绘制品牌分布图
     brand_counts = result["frequent_brand"].value_counts()
     plt.figure(figsize=(10, 6))
     sns.barplot(x=brand_counts.index, y=brand_counts.values)
-    plt.title(f"{year} 用户最常用品牌分布")
+    plt.title(f"{year} 用户最常用品牌分布 ({mode})")
     plt.xlabel("品牌")
     plt.ylabel("用户数量")
     plt.xticks(rotation=45)
     plt.tight_layout()
-    plt.savefig(f"figures/{year}/brand_distribution.png")
+    plt.savefig(f"figures/{year}/brand_distribution_{mode}.png")
     plt.close()
 
     # 统计未匹配人数
@@ -281,12 +287,12 @@ def analyze_device_basic(year):
     log(f"Year {year}: {unmatched_users} users had no matching brand.")
 
 
-def plot_brand_distribution(year):
+def plot_brand_distribution(year, mode="youth"):
     """绘制品牌分布图并统计未匹配用户"""
     log(f"绘制 {year} 年品牌分布图")
 
     # 读取设备分析结果
-    device_file = f"merged_profiles/device_analysis_{year}.parquet"
+    device_file = f"merged_profiles/device_analysis_{year}_{mode}.parquet"
     if not os.path.exists(device_file):
         log(f"设备分析文件不存在: {device_file}")
         return
@@ -317,7 +323,7 @@ def plot_brand_distribution(year):
     top_brands = brand_counts.head(15)  # 显示前15个品牌
     bars = ax1.bar(range(len(top_brands)), top_brands.values, color="skyblue")
     ax1.set_title(
-        f"{year} 年用户最常用品牌分布 (前15名)", fontsize=14, fontweight="bold"
+        f"{year} 年用户最常用品牌分布 (前15名) ({mode})", fontsize=14, fontweight="bold"
     )
     ax1.set_xlabel("品牌", fontsize=12)
     ax1.set_ylabel("用户数量", fontsize=12)
@@ -342,15 +348,19 @@ def plot_brand_distribution(year):
     colors = ["lightgreen", "lightcoral"]
 
     ax2.pie(sizes, labels=labels, colors=colors, autopct="%1.1f%%", startangle=90)
-    ax2.set_title(f"{year} 年品牌匹配情况", fontsize=14, fontweight="bold")
+    ax2.set_title(f"{year} 年品牌匹配情况 ({mode})", fontsize=14, fontweight="bold")
 
     plt.tight_layout()
-    plt.savefig(f"figures/{year}/brand_analysis.png", dpi=300, bbox_inches="tight")
+    plt.savefig(
+        f"figures/{year}/brand_analysis_{mode}.png", dpi=300, bbox_inches="tight"
+    )
     plt.close()
 
     # 保存详细统计结果到文本文件
-    with open(f"figures/{year}/brand_statistics.txt", "w", encoding="utf-8") as f:
-        f.write(f"{year} 年品牌分析统计结果\n")
+    with open(
+        f"figures/{year}/brand_statistics_{mode}.txt", "w", encoding="utf-8"
+    ) as f:
+        f.write(f"{year} 年品牌分析统计结果 ({mode})\n")
         f.write("=" * 50 + "\n\n")
         f.write(f"总用户数: {total_users:,}\n")
         f.write(f"成功匹配品牌用户数: {matched_users:,}\n")
@@ -373,8 +383,8 @@ def plot_brand_distribution(year):
         for device, count in unmatched_devices.items():
             f.write(f"{device}: {count} 用户\n")
 
-    log(f"品牌分析图表已保存到 figures/{year}/brand_analysis.png")
-    log(f"详细统计结果已保存到 figures/{year}/brand_statistics.txt")
+    log(f"品牌分析图表已保存到 figures/{year}/brand_analysis_{mode}.png")
+    log(f"详细统计结果已保存到 figures/{year}/brand_statistics_{mode}.txt")
 
 
 def check(year, ratio=0.001):
@@ -428,9 +438,9 @@ def check(year, ratio=0.001):
             break
 
 
-def process_device_analysis(year):
-    analyze_device_basic(year)
-    plot_brand_distribution(year)
+def process_device_analysis(year, mode="youth"):
+    analyze_device_basic(year, mode)
+    plot_brand_distribution(year, mode)
 
 
 if __name__ == "__main__":
