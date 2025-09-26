@@ -531,7 +531,11 @@ def analyze_tweet_content(year, month=None):
     from word_frequency_analysis import analyze_word_frequencies
 
     print(f"使用新的词频分析模块分析 {year} 年内容...")
-    for month in range(1, 13):
+    if month is not None:
+        month_list = [month]
+    else:
+        month_list = range(1, 13)
+    for month in month_list:
         month_str = f"{month:02d}"
         analyze_word_frequencies(year, month, recalculate=False)
 

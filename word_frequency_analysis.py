@@ -317,6 +317,12 @@ def create_word_frequency_plots(word_freqs, output_dir, year):
             filtered_freq = remove_stop_words_from_freq(freq)
             processed_freqs["by_gender"][gender] = convert_to_ratio(filtered_freq)
 
+    processed_freqs["by_device"] = {}
+    for device, freq in word_freqs["by_device"].items():
+        if freq:
+            filtered_freq = remove_stop_words_from_freq(freq)
+            processed_freqs["by_device"][device] = convert_to_ratio(filtered_freq)
+
     # 处理按区域分组的词频
     processed_freqs["by_region"] = {}
     for region, freq in word_freqs["by_region"].items():
