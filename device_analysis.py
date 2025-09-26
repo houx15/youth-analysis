@@ -185,7 +185,7 @@ def analyze_device_basic(year, mode="youth"):
     if mode == "youth":
         parquet_files = glob.glob(f"cleaned_youth_weibo/{year}/*.parquet")
     elif mode == "all":
-        parquet_files = glob.glob(f"youth_weibo_stat/{year}/*.parquet")
+        parquet_files = glob.glob(f"youth_weibo_stat/{year}-*.parquet")
     else:
         raise ValueError(f"Invalid mode: {mode}")
 
