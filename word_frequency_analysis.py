@@ -19,6 +19,32 @@ import seaborn as sns
 import numpy as np
 from datetime import datetime
 
+other_devices = [
+    "魅蓝",
+    "Meizu",
+    "OnePlus",
+    "Smartisan",
+    "Realme",
+    "麦芒",
+    "Lenovo",
+    "Nubia",
+    "ZTE",
+    "360",
+    "Gionee",
+    "Nokia",
+    "LeEco",
+    "Hisense",
+    "BlackShark",
+    "Sony",
+    "Coolpad",
+    "国美",
+    "Google",
+    "Motorola",
+    "ASUS",
+    "BlackBerry",
+    "Gree",
+    "Sugar",
+]
 
 # Region mapping (从user_profile_analysis.py复制)
 region_to_province = {
@@ -127,10 +153,21 @@ def calculate_word_frequencies(year, month=None, save_path=None):
         "by_region": defaultdict(Counter),  # 按区域分组
         "by_province": defaultdict(Counter),  # 按省份分组
         "by_gender_region": defaultdict(create_defaultdict_counter),  # 按性别+区域分组
+        "by_device": defaultdict(Counter),  # 按设备分组
     }
 
     total_files = 0
     total_records = 0
+
+    device_data = pd.read_parquet(
+        f"merged_profiles/device_analysis_{year}.parquet",
+        columns=["user_id", "frequent_brand"],
+    )
+
+    # 替换frequent brand中other_devices为Other
+    device_data["frequent_brand"] = device_data["frequent_brand"].apply(
+        lambda x: "Other" if x in other_devices else x
+    )
 
     for month in month_list:
         month_str = f"{month:02d}"
@@ -148,6 +185,8 @@ def calculate_word_frequencies(year, month=None, save_path=None):
             needed_columns = ["user_id", "weibo_content", "gender", "location"]
             df = pd.read_parquet(file_path, columns=needed_columns)
 
+            df = df.merge(device_data, on="user_id", how="left")
+
             total_files += 1
             total_records += len(df)
 
@@ -163,6 +202,7 @@ def calculate_word_frequencies(year, month=None, save_path=None):
                 location = row.get("location", "")
                 region = get_region_from_location(location)
                 province = get_province_from_location(location)
+                device = row.get("frequent_brand", "unknown")
 
                 # 更新总词频
                 word_freqs["total"].update(words)
@@ -182,9 +222,13 @@ def calculate_word_frequencies(year, month=None, save_path=None):
                 if region:
                     word_freqs["by_gender_region"][gender][region].update(words)
 
+                if device:
+                    word_freqs["by_device"][device].update(words)
+
     print(f"词频计算完成！")
     print(f"处理文件数: {total_files}")
     print(f"处理记录数: {total_records:,}")
+    print(f"按设备分组数: {len(word_freqs['by_device'])}")
     print(f"总词汇数: {len(word_freqs['total'])}")
 
     # 保存词频数据
@@ -307,6 +351,15 @@ def create_word_frequency_plots(word_freqs, output_dir, year):
                 f"{output_dir}/gender_{gender}_wordcloud.pdf",
             )
 
+    # 2. 按设备分组的词云
+    for device, freq in processed_freqs["by_device"].items():
+        if freq:
+            create_word_cloud(
+                get_top_words(freq, 50),
+                f"Word Frequency Ratio by Device ({device}) - {year}",
+                f"{output_dir}/device_{device}_wordcloud.pdf",
+            )
+
     # 3. 按区域分组的词云
     for region, freq in processed_freqs["by_region"].items():
         if freq:
@@ -357,6 +410,40 @@ def create_gender_comparison_plot(gender_freqs, output_dir, year):
     plt.legend(title="Gender")
     plt.tight_layout()
     plt.savefig(f"{output_dir}/gender_comparison.pdf", bbox_inches="tight", dpi=300)
+    plt.close()
+
+
+def create_device_comparison_plot(device_freqs, output_dir, year):
+    """创建设备词频对比图"""
+    # 选择一些常见词汇进行对比
+    common_words = set()
+    for freq in device_freqs.values():
+        common_words.update(list(freq.keys())[:20])
+
+    if not common_words:
+        return
+
+    # 创建对比数据
+    comparison_data = []
+    for word in list(common_words)[:20]:
+        for device, freq in device_freqs.items():
+            comparison_data.append(
+                {"word": word, "device": device, "ratio": freq.get(word, 0)}
+            )
+
+    df = pd.DataFrame(comparison_data)
+
+    # 创建柱状图
+    plt.figure(figsize=(15, 8))
+    pivot_df = df.pivot(index="word", columns="device", values="ratio")
+    pivot_df.plot(kind="bar", figsize=(15, 8))
+    plt.title(f"Word Frequency Ratio Comparison by Device - {year}")
+    plt.xlabel("Words")
+    plt.ylabel("Frequency Ratio")
+    plt.xticks(rotation=45)
+    plt.legend(title="Device")
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/device_comparison.pdf", bbox_inches="tight", dpi=300)
     plt.close()
 
 
