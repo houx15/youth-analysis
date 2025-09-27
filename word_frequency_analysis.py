@@ -279,7 +279,10 @@ def calculate_word_frequencies_all_by_gender(year, month=None, save_path=None):
         lambda x: "Other" if x in other_devices else x
     )
 
-    user_data = pd.read_parquet("merged_profiles/merged_user_profiles.parquet", columns=["user_id", "gender", "location"])
+    user_data = pd.read_parquet(
+        "merged_profiles/merged_user_profiles.parquet",
+        columns=["user_id", "gender", "location"],
+    )
 
     for month in month_list:
         month_str = f"{month:02d}"
@@ -343,6 +346,7 @@ def calculate_word_frequencies_all_by_gender(year, month=None, save_path=None):
         print(f"词频数据已保存到: {save_path}")
 
     return word_freqs
+
 
 def load_word_frequencies(file_path):
     """加载保存的词频数据"""
@@ -489,9 +493,8 @@ def create_word_frequency_plots(word_freqs, output_dir, year):
 
 
 def create_word_frequency_plots_all_by_gender(word_freqs, output_dir, year):
-        """创建各种词频可视化图表"""
+    """创建各种词频可视化图表"""
     os.makedirs(output_dir, exist_ok=True)
-
     # 处理词频数据：去除停用词并转换为ratio
     processed_freqs = {}
 
@@ -709,11 +712,14 @@ def analyze_word_frequencies_all_by_gender(year, month=None, recalculate=False):
     if month is not None:
         output_dir = f"figures/{year}/word_frequency_all/{month:02d}"
     if recalculate or not os.path.exists(word_freq_file):
-        word_freqs = calculate_word_frequencies_all_by_gender(year, month, word_freq_file)
+        word_freqs = calculate_word_frequencies_all_by_gender(
+            year, month, word_freq_file
+        )
     else:
         print(f"加载已保存的词频数据: {word_freq_file}")
         word_freqs = load_word_frequencies(word_freq_file)
     create_word_frequency_plots_all_by_gender(word_freqs, output_dir, year)
+
 
 def analyze_word_frequencies(year, month=None, recalculate=False):
     """
