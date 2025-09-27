@@ -241,6 +241,109 @@ def calculate_word_frequencies(year, month=None, save_path=None):
     return word_freqs
 
 
+def calculate_word_frequencies_all_by_gender(year, month=None, save_path=None):
+    """
+    计算词频，支持按不同维度分组
+
+    Args:
+        year: 年份
+        month: 月份（可选）
+        save_path: 保存路径（可选）
+
+    Returns:
+        dict: 包含不同维度的词频统计
+    """
+    print(f"开始计算 {year} 年词频...")
+
+    # 确定要处理的月份
+    month_list = [month] if month else range(1, 13)
+
+    # 初始化词频统计器
+    word_freqs = {
+        "total": Counter(),  # 总词频
+        "by_gender": defaultdict(Counter),  # 按性别分组
+        "by_gender_region": defaultdict(create_defaultdict_counter),  # 按性别+区域分组
+        "by_device": defaultdict(Counter),  # 按设备分组
+    }
+
+    total_files = 0
+    total_records = 0
+
+    device_data = pd.read_parquet(
+        f"merged_profiles/device_analysis_{year}_all.parquet",
+        columns=["user_id", "frequent_brand"],
+    )
+
+    # 替换frequent brand中other_devices为Other
+    device_data["frequent_brand"] = device_data["frequent_brand"].apply(
+        lambda x: "Other" if x in other_devices else x
+    )
+
+    user_data = pd.read_parquet("merged_profiles/merged_user_profiles.parquet", columns=["user_id", "gender", "location"])
+
+    for month in month_list:
+        month_str = f"{month:02d}"
+        pattern = f"youth_weibo_stat/{year}-{month_str}-*.parquet"
+        parquet_files = glob.glob(pattern)
+
+        if not parquet_files:
+            print(f"未找到 {year} 年 {month} 月的数据文件")
+            continue
+
+        print(f"处理 {year} 年 {month} 月，共 {len(parquet_files)} 个文件")
+
+        for file_path in parquet_files:
+            # 读取文件，只读取需要的列
+            needed_columns = ["user_id", "weibo_content"]
+            df = pd.read_parquet(file_path, columns=needed_columns)
+
+            df = df.merge(device_data, on="user_id", how="left")
+            df = df.merge(user_data, on="user_id", how="left")
+
+            total_files += 1
+            total_records += len(df)
+
+            # 处理每一行数据
+            for _, row in df.iterrows():
+                # 提取词汇
+                words = extract_words_from_content(row["weibo_content"])
+                if not words:
+                    continue
+
+                # 获取用户属性
+                gender = row.get("gender", "unknown")
+                location = row.get("location", "")
+                region = get_region_from_location(location)
+                device = row.get("frequent_brand", "unknown")
+
+                # 更新总词频
+                word_freqs["total"].update(words)
+
+                # 更新按性别分组的词频
+                word_freqs["by_gender"][gender].update(words)
+
+                # 更新按性别+区域分组的词频
+                if region:
+                    word_freqs["by_gender_region"][gender][region].update(words)
+
+                if device:
+                    word_freqs["by_device"][device].update(words)
+
+    print(f"词频计算完成！")
+    print(f"处理文件数: {total_files}")
+    print(f"处理记录数: {total_records:,}")
+    print(f"按设备分组数: {len(word_freqs['by_device'])}")
+    print(f"总词汇数: {len(word_freqs['total'])}")
+
+    # 保存词频数据
+    if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        with open(save_path, "wb") as f:
+            pickle.dump(word_freqs, f)
+        print(f"词频数据已保存到: {save_path}")
+
+    return word_freqs
+
 def load_word_frequencies(file_path):
     """加载保存的词频数据"""
     with open(file_path, "rb") as f:
@@ -385,6 +488,76 @@ def create_word_frequency_plots(word_freqs, output_dir, year):
     create_gender_region_heatmap(processed_freqs["by_gender_region"], output_dir, year)
 
 
+def create_word_frequency_plots_all_by_gender(word_freqs, output_dir, year):
+        """创建各种词频可视化图表"""
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 处理词频数据：去除停用词并转换为ratio
+    processed_freqs = {}
+
+    # 处理总词频
+    filtered_total = remove_stop_words_from_freq(word_freqs["total"])
+    processed_freqs["total"] = convert_to_ratio(filtered_total)
+
+    # 处理按性别分组的词频
+    processed_freqs["by_gender"] = {}
+    for gender, freq in word_freqs["by_gender"].items():
+        if freq:
+            filtered_freq = remove_stop_words_from_freq(freq)
+            processed_freqs["by_gender"][gender] = convert_to_ratio(filtered_freq)
+
+    processed_freqs["by_device"] = {}
+    for device, freq in word_freqs["by_device"].items():
+        if freq:
+            filtered_freq = remove_stop_words_from_freq(freq)
+            processed_freqs["by_device"][device] = convert_to_ratio(filtered_freq)
+
+    # 处理按性别+区域分组的词频
+    processed_freqs["by_gender_region"] = {}
+    for gender, region_freqs in word_freqs["by_gender_region"].items():
+        processed_freqs["by_gender_region"][gender] = {}
+        for region, freq in region_freqs.items():
+            if freq:
+                filtered_freq = remove_stop_words_from_freq(freq)
+                processed_freqs["by_gender_region"][gender][region] = convert_to_ratio(
+                    filtered_freq
+                )
+
+    # 1. 总词频词云
+    create_word_cloud(
+        get_top_words(processed_freqs["total"], 50),
+        f"Total Word Frequency Ratio - {year}",
+        f"{output_dir}/total_wordcloud.pdf",
+    )
+
+    # 2. 按性别分组的词云
+    for gender, freq in processed_freqs["by_gender"].items():
+        if freq:
+            create_word_cloud(
+                get_top_words(freq, 50),
+                f"Word Frequency Ratio by Gender ({gender}) - {year}",
+                f"{output_dir}/gender_{gender}_wordcloud.pdf",
+            )
+
+    # 2. 按设备分组的词云
+    for device, freq in processed_freqs["by_device"].items():
+        if freq:
+            create_word_cloud(
+                get_top_words(freq, 50),
+                f"Word Frequency Ratio by Device ({device}) - {year}",
+                f"{output_dir}/device_{device}_wordcloud.pdf",
+            )
+
+    # 3. 按区域分组的词云
+    for region, freq in processed_freqs["by_region"].items():
+        if freq:
+            create_word_cloud(
+                get_top_words(freq, 50),
+                f"Word Frequency Ratio by Region ({region}) - {year}",
+                f"{output_dir}/region_{region}_wordcloud.pdf",
+            )
+
+
 def create_gender_comparison_plot(gender_freqs, output_dir, year):
     """创建性别词频对比图"""
     # 选择一些常见词汇进行对比
@@ -527,6 +700,21 @@ def create_gender_region_heatmap(gender_region_freqs, output_dir, year):
     plt.close()
 
 
+def analyze_word_frequencies_all_by_gender(year, month=None, recalculate=False):
+    """
+    完整的词频分析流程
+    """
+    word_freq_file = f"all_word_frequencies/word_freq_{year}.pkl"
+    output_dir = f"figures/{year}/word_frequency_all"
+    if month is not None:
+        output_dir = f"figures/{year}/word_frequency_all/{month:02d}"
+    if recalculate or not os.path.exists(word_freq_file):
+        word_freqs = calculate_word_frequencies_all_by_gender(year, month, word_freq_file)
+    else:
+        print(f"加载已保存的词频数据: {word_freq_file}")
+        word_freqs = load_word_frequencies(word_freq_file)
+    create_word_frequency_plots_all_by_gender(word_freqs, output_dir, year)
+
 def analyze_word_frequencies(year, month=None, recalculate=False):
     """
     完整的词频分析流程
@@ -572,5 +760,6 @@ if __name__ == "__main__":
             "calculate": calculate_word_frequencies,
             "analyze": analyze_word_frequencies,
             "visualize": create_word_frequency_plots,
+            "analyze_all": analyze_word_frequencies_all_by_gender,
         }
     )
