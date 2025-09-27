@@ -551,14 +551,15 @@ def create_word_frequency_plots_all_by_gender(word_freqs, output_dir, year):
                 f"{output_dir}/device_{device}_wordcloud.pdf",
             )
 
-    # 3. 按区域分组的词云
-    for region, freq in processed_freqs["by_region"].items():
-        if freq:
-            create_word_cloud(
-                get_top_words(freq, 50),
-                f"Word Frequency Ratio by Region ({region}) - {year}",
-                f"{output_dir}/region_{region}_wordcloud.pdf",
-            )
+    # 3. 按区域-性别
+    for gender, region_freqs in processed_freqs["by_gender_region"].items():
+        for region, freq in region_freqs.items():
+            if freq:
+                create_word_cloud(
+                    get_top_words(freq, 50),
+                    f"Word Frequency Ratio by Region ({region}) Gender ({gender}) - {year}",
+                    f"{output_dir}/region_{region}_gender_{gender}_wordcloud.pdf",
+                )
 
 
 def create_gender_comparison_plot(gender_freqs, output_dir, year):
@@ -708,6 +709,8 @@ def analyze_word_frequencies_all_by_gender(year, month=None, recalculate=False):
     完整的词频分析流程
     """
     word_freq_file = f"all_word_frequencies/word_freq_{year}.pkl"
+    if month is not None:
+        word_freq_file = f"all_word_frequencies/word_freq_{year}_{month:02d}.pkl"
     output_dir = f"figures/{year}/word_frequency_all"
     if month is not None:
         output_dir = f"figures/{year}/word_frequency_all/{month:02d}"
