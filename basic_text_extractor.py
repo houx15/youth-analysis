@@ -162,6 +162,8 @@ def process_special_format_2020_06_30(chunk, seen_weibo_ids):
                 "tag": "",
                 "lat": "",
                 "lon": "",
+                "region_name": "",
+                "r_region_name": "",
             }
             results.append(result)
         except Exception as e:
@@ -220,6 +222,8 @@ def process_old_format(chunk, seen_weibo_ids):
                 "tag": "",
                 "lat": "",
                 "lon": "",
+                "region_name": "",
+                "r_region_name": "",
             }
             results.append(result)
         except Exception as e:
@@ -252,6 +256,17 @@ def process_json_format(chunk, seen_weibo_ids):
             # 添加到seen集合
             seen_weibo_ids.add(weibo_id)
 
+            # 解析ext字段获取region信息
+            region_name = ""
+            r_region_name = ""
+            if "ext" in data and data["ext"]:
+                try:
+                    ext_data = orjson.loads(data["ext"])
+                    region_name = ext_data.get("region_name", "")
+                    r_region_name = ext_data.get("r_region_name", "")
+                except:
+                    pass  # 如果解析失败，保持空值
+
             # 提取字段
             result = {
                 "weibo_id": weibo_id,
@@ -282,6 +297,8 @@ def process_json_format(chunk, seen_weibo_ids):
                 "tag": data.get("tag", ""),
                 "lat": data.get("lat", ""),
                 "lon": data.get("lon", ""),
+                "region_name": region_name,
+                "r_region_name": r_region_name,
             }
             results.append(result)
         except (orjson.JSONDecodeError, IndexError) as e:
