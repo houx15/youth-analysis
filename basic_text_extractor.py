@@ -105,7 +105,7 @@ def print_first_3_lines(file_path):
             for i, line in enumerate(file):
                 if i >= 3:
                     break
-                print(f"Line {i+1}: {line[:200]}")  # 只打印前200个字符
+                print(f"Line {i+1}: {line}")  # 只打印前200个字符
                 print("-" * 50)
     except Exception as e:
         print(f"读取文件时出错: {e}")
