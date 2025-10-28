@@ -28,8 +28,24 @@ OUTPUT_DIR = "content_similarity_analysis"
 # 确保输出目录存在
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# 官方账号ID列表（待填充）
+# 官方账号ID列表（从配置文件加载）
 OFFICIAL_ACCOUNT_IDS = set()
+
+
+def load_official_account_ids():
+    """从配置文件加载官方账号ID"""
+    global OFFICIAL_ACCOUNT_IDS
+
+    try:
+        from get_news_ids import load_news_user_ids
+
+        OFFICIAL_ACCOUNT_IDS = load_news_user_ids()
+        print(f"已加载 {len(OFFICIAL_ACCOUNT_IDS)} 个官方账号ID")
+    except ImportError:
+        print("警告: 无法导入 get_news_ids 模块，请确保已生成新闻账号ID")
+    except Exception as e:
+        print(f"加载官方账号ID时出错: {e}")
+
 
 # 通用停用词
 STOPWORDS = set(
@@ -237,15 +253,16 @@ def analyze_content_similarity(year):
     if data is None:
         return
 
+    # 如果ID列表为空，尝试从配置文件加载
+    if not OFFICIAL_ACCOUNT_IDS:
+        load_official_account_ids()
+
     # 检查官方账号ID
     if not OFFICIAL_ACCOUNT_IDS:
-        print("警告: 官方账号ID列表为空")
-        print("请使用命令添加官方账号ID:")
-        print("  python content_similarity_analyzer.py add_account --account_id 123456")
-        print("或直接在脚本中修改 OFFICIAL_ACCOUNT_IDS 变量")
+        print("警告: 官方账号ID列表为空，请先运行 get_news_ids.py 生成新闻账号ID文件")
         return
 
-    print(f"\n使用官方账号ID: {OFFICIAL_ACCOUNT_IDS}")
+    print(f"\n使用官方账号ID: 共 {len(OFFICIAL_ACCOUNT_IDS)} 个账号")
 
     # 提取内容
     content_groups = extract_content_by_group(data)
@@ -381,6 +398,10 @@ def main(year: int):
     """
     # 先尝试加载配置文件中的账号ID
     load_accounts_from_config()
+
+    # 如果没有从配置文件加载到ID，尝试从 get_news_ids 加载
+    if not OFFICIAL_ACCOUNT_IDS:
+        load_official_account_ids()
 
     analyze_content_similarity(year)
 

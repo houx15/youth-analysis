@@ -46,8 +46,23 @@ OUTPUT_DIR = "analysis_results"
 if not os.path.exists(OUTPUT_DIR):
     os.makedirs(OUTPUT_DIR)
 
-# 官方媒体user_id列表（待填充）
+# 官方媒体user_id列表（从配置文件加载）
 OFFICIAL_MEDIA_IDS = set()
+
+
+def load_official_media_ids():
+    """从配置文件加载官方媒体ID"""
+    global OFFICIAL_MEDIA_IDS
+
+    try:
+        from get_news_ids import load_news_user_ids
+
+        OFFICIAL_MEDIA_IDS = load_news_user_ids()
+        print(f"已加载 {len(OFFICIAL_MEDIA_IDS)} 个官方媒体账号ID")
+    except ImportError:
+        print("警告: 无法导入 get_news_ids 模块，请确保已生成新闻账号ID")
+    except Exception as e:
+        print(f"加载官方媒体ID时出错: {e}")
 
 
 def get_date_range(year):
@@ -216,8 +231,12 @@ def analyze_retweet_media(year):
     """分析转发官方媒体情况，特别关注性别差异"""
     print(f"\n开始分析 {year} 年转发官方媒体情况...")
 
+    # 如果ID列表为空，尝试从配置文件加载
     if not OFFICIAL_MEDIA_IDS:
-        print("警告: 官方媒体ID列表为空，请先在脚本中填充 OFFICIAL_MEDIA_IDS")
+        load_official_media_ids()
+
+    if not OFFICIAL_MEDIA_IDS:
+        print("警告: 官方媒体ID列表为空，请先运行 get_news_ids.py 生成新闻账号ID文件")
         return
 
     # 加载数据
@@ -323,6 +342,10 @@ def analyze_year(year: int, analysis_type: str = "all"):
         year: 年份
         analysis_type: 分析类型，'device', 'retweet', 'all'（默认：all）
     """
+    # 先加载官方媒体ID
+    if analysis_type in ["retweet", "all"]:
+        load_official_media_ids()
+
     print(f"开始分析 {year} 年数据，分析类型: {analysis_type}")
 
     if analysis_type in ["device", "all"]:
