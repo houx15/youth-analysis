@@ -71,7 +71,6 @@ def clean_weibo_data(year, month=None):
         for file_path in parquet_files:
             # 读取文件
             df = pd.read_parquet(file_path)
-            total_records_before += len(df)
 
             # 确保user_id是字符串类型
             df["user_id"] = df["user_id"].astype(int)
