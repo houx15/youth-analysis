@@ -115,6 +115,7 @@ def process_special_format_2020_06_30(chunk, seen_weibo_ids):
     """
     处理2020-06-30的特殊CSV格式
     seen_weibo_ids: set，用于实时去重
+    使用列表而不是字典来节约内存
     """
     results = []
     for line in chunk:
@@ -132,39 +133,39 @@ def process_special_format_2020_06_30(chunk, seen_weibo_ids):
             # 添加到seen集合
             seen_weibo_ids.add(weibo_id)
 
-            # 提取字段
-            result = {
-                "weibo_id": weibo_id,
-                "user_id": line_data[4].strip('"'),
-                "is_retweet": line_data[3].strip('"'),
-                "nick_name": line_data[5].strip('"'),
-                "user_type": line_data[7].strip('"'),
-                "weibo_content": line_data[9].strip('"'),
-                "zhuan": line_data[10].strip('"'),
-                "ping": line_data[11].strip('"'),
-                "zan": line_data[12].strip('"'),
-                "device": "",
-                "locate": "",
-                "time_stamp": line_data[17].strip('"'),
-                "r_user_id": line_data[13].strip('"'),
-                "r_nick_name": line_data[14].strip('"'),
-                "r_user_type": line_data[15].strip('"'),
-                "r_weibo_id": line_data[16].strip('"'),
-                "r_weibo_content": line_data[22].strip('"'),
-                "r_zhuan": line_data[20].strip('"'),
-                "r_ping": line_data[21].strip('"'),
-                "r_zan": "",
-                "r_device": "",
-                "r_location": "",
-                "r_time": line_data[19].strip('"'),
-                "r_time_stamp": line_data[18].strip('"'),
-                "src": "",
-                "tag": "",
-                "lat": "",
-                "lon": "",
-                "region_name": "",
-                "r_region_name": "",
-            }
+            # 使用列表而不是字典，按固定顺序存储字段
+            result = [
+                weibo_id,  # weibo_id
+                line_data[4].strip('"'),  # user_id
+                line_data[3].strip('"'),  # is_retweet
+                line_data[5].strip('"'),  # nick_name
+                line_data[7].strip('"'),  # user_type
+                line_data[9].strip('"'),  # weibo_content
+                line_data[10].strip('"'),  # zhuan
+                line_data[11].strip('"'),  # ping
+                line_data[12].strip('"'),  # zan
+                line_data[14].strip('"'),  # device
+                line_data[15].strip('"'),  # locate
+                line_data[17].strip('"'),  # time_stamp
+                line_data[18].strip('"'),  # r_user_id
+                line_data[19].strip('"'),  # r_nick_name
+                line_data[20].strip('"'),  # r_user_type
+                line_data[21].strip('"'),  # r_weibo_id
+                line_data[22].strip('"'),  # r_weibo_content
+                line_data[23].strip('"'),  # r_zhuan
+                line_data[24].strip('"'),  # r_ping
+                line_data[25].strip('"'),  # r_zan
+                line_data[27].strip('"'),  # r_device
+                line_data[28].strip('"'),  # r_location
+                line_data[29].strip('"'),  # r_time
+                line_data[30].strip('"'),  # r_time_stamp
+                line_data[32].strip('"'),  # src
+                line_data[33].strip('"'),  # tag
+                "",  # lat
+                "",  # lon
+                "",  # region_name
+                "",  # r_region_name
+            ]
             results.append(result)
         except Exception as e:
             continue
@@ -176,6 +177,7 @@ def process_old_format(chunk, seen_weibo_ids):
     """
     处理旧格式（2019年8月9日之前的\t分割格式）
     seen_weibo_ids: set，用于实时去重
+    使用列表而不是字典来节约内存
     """
     results = []
     for line in chunk:
@@ -192,39 +194,39 @@ def process_old_format(chunk, seen_weibo_ids):
             # 添加到seen集合
             seen_weibo_ids.add(weibo_id)
 
-            # 提取字段（基于旧格式的列位置）
-            result = {
-                "weibo_id": weibo_id,
-                "user_id": line_data[4],
-                "is_retweet": line_data[3],
-                "nick_name": line_data[5],
-                "user_type": line_data[7],
-                "weibo_content": line_data[9],
-                "zhuan": line_data[10],
-                "ping": line_data[11],
-                "zan": line_data[12],
-                "device": "",
-                "locate": "",
-                "time_stamp": line_data[17],
-                "r_user_id": line_data[13],
-                "r_nick_name": line_data[14],
-                "r_user_type": line_data[15],
-                "r_weibo_id": line_data[16],
-                "r_weibo_content": line_data[22],
-                "r_zhuan": line_data[20],
-                "r_ping": line_data[21],
-                "r_zan": "",
-                "r_device": "",
-                "r_location": "",
-                "r_time": line_data[19],
-                "r_time_stamp": line_data[18],
-                "src": "",
-                "tag": "",
-                "lat": "",
-                "lon": "",
-                "region_name": "",
-                "r_region_name": "",
-            }
+            # 使用列表而不是字典，按固定顺序存储字段
+            result = [
+                weibo_id,  # weibo_id
+                line_data[4],  # user_id
+                line_data[3],  # is_retweet
+                line_data[5],  # nick_name
+                line_data[7],  # user_type
+                line_data[9],  # weibo_content
+                line_data[10],  # zhuan
+                line_data[11],  # ping
+                line_data[12],  # zan
+                line_data[14],  # device
+                line_data[15],  # locate
+                line_data[17],  # time_stamp
+                line_data[18],  # r_user_id
+                line_data[19],  # r_nick_name
+                line_data[20],  # r_user_type
+                line_data[21],  # r_weibo_id
+                line_data[22],  # r_weibo_content
+                line_data[23],  # r_zhuan
+                line_data[24],  # r_ping
+                line_data[25],  # r_zan
+                line_data[27],  # r_device
+                line_data[28],  # r_location
+                line_data[29],  # r_time
+                line_data[30],  # r_time_stamp
+                line_data[32],  # src
+                line_data[33],  # tag
+                "",  # lat
+                "",  # lon
+                "",  # region_name
+                "",  # r_region_name
+            ]
             results.append(result)
         except Exception as e:
             continue
@@ -236,6 +238,7 @@ def process_json_format(chunk, seen_weibo_ids):
     """
     处理JSON格式（2019年8月9日及之后）
     seen_weibo_ids: set，用于实时去重
+    使用列表而不是字典来节约内存
     """
     results = []
     for line in chunk:
@@ -267,39 +270,39 @@ def process_json_format(chunk, seen_weibo_ids):
                 except:
                     pass  # 如果解析失败，保持空值
 
-            # 提取字段
-            result = {
-                "weibo_id": weibo_id,
-                "user_id": data.get("user_id", ""),
-                "is_retweet": data.get("is_retweet", ""),
-                "nick_name": data.get("nick_name", ""),
-                "user_type": data.get("user_type", ""),
-                "weibo_content": data.get("weibo_content", ""),
-                "zhuan": data.get("zhuan", ""),
-                "ping": data.get("ping", ""),
-                "zan": data.get("zhan", ""),
-                "device": data.get("device", ""),
-                "locate": data.get("locate", ""),
-                "time_stamp": data.get("time_stamp", ""),
-                "r_user_id": data.get("r_user_id", ""),
-                "r_nick_name": data.get("r_nick_name", ""),
-                "r_user_type": data.get("r_user_type", ""),
-                "r_weibo_id": data.get("r_weibo_id", ""),
-                "r_weibo_content": data.get("r_weibo_content", ""),
-                "r_zhuan": data.get("r_zhuan", ""),
-                "r_ping": data.get("r_ping", ""),
-                "r_zan": data.get("r_zhan", ""),
-                "r_device": data.get("r_device", ""),
-                "r_location": data.get("r_location", ""),
-                "r_time": data.get("r_time", ""),
-                "r_time_stamp": data.get("r_time_stamp", ""),
-                "src": data.get("src", ""),
-                "tag": data.get("tag", ""),
-                "lat": data.get("lat", ""),
-                "lon": data.get("lon", ""),
-                "region_name": region_name,
-                "r_region_name": r_region_name,
-            }
+            # 使用列表而不是字典，按固定顺序存储字段
+            result = [
+                weibo_id,  # weibo_id
+                data.get("user_id", ""),  # user_id
+                data.get("is_retweet", ""),  # is_retweet
+                data.get("nick_name", ""),  # nick_name
+                data.get("user_type", ""),  # user_type
+                data.get("weibo_content", ""),  # weibo_content
+                data.get("zhuan", ""),  # zhuan
+                data.get("ping", ""),  # ping
+                data.get("zhan", ""),  # zan
+                data.get("device", ""),  # device
+                data.get("locate", ""),  # locate
+                data.get("time_stamp", ""),  # time_stamp
+                data.get("r_user_id", ""),  # r_user_id
+                data.get("r_nick_name", ""),  # r_nick_name
+                data.get("r_user_type", ""),  # r_user_type
+                data.get("r_weibo_id", ""),  # r_weibo_id
+                data.get("r_weibo_content", ""),  # r_weibo_content
+                data.get("r_zhuan", ""),  # r_zhuan
+                data.get("r_ping", ""),  # r_ping
+                data.get("r_zhan", ""),  # r_zan
+                data.get("r_device", ""),  # r_device
+                data.get("r_location", ""),  # r_location
+                data.get("r_time", ""),  # r_time
+                data.get("r_time_stamp", ""),  # r_time_stamp
+                data.get("src", ""),  # src
+                data.get("tag", ""),  # tag
+                data.get("lat", ""),  # lat
+                data.get("lon", ""),  # lon
+                region_name,  # region_name
+                r_region_name,  # r_region_name
+            ]
             results.append(result)
         except (orjson.JSONDecodeError, IndexError) as e:
             continue
@@ -307,9 +310,11 @@ def process_json_format(chunk, seen_weibo_ids):
     return results
 
 
-def process_file(file_path, date):
+def process_file(file_path, date, output_parquet_path):
     """
-    处理单个文件，实时去重
+    处理单个文件，每个chunk直接存储，避免内存积累
+    使用列表格式数据，添加列名
+    由于Parquet不支持真正的append，我们使用临时文件然后合并
     """
     # 确定处理函数
     if date == datetime(2020, 6, 30):
@@ -319,13 +324,49 @@ def process_file(file_path, date):
     else:
         process_function = process_old_format
 
-    chunk_size = 500000
-    all_results = []
-    seen_weibo_ids = set()  # 在文件处理级别维护seen集合
+    # 定义列名
+    columns = [
+        "weibo_id",
+        "user_id",
+        "is_retweet",
+        "nick_name",
+        "user_type",
+        "weibo_content",
+        "zhuan",
+        "ping",
+        "zan",
+        "device",
+        "locate",
+        "time_stamp",
+        "r_user_id",
+        "r_nick_name",
+        "r_user_type",
+        "r_weibo_id",
+        "r_weibo_content",
+        "r_zhuan",
+        "r_ping",
+        "r_zan",
+        "r_device",
+        "r_location",
+        "r_time",
+        "r_time_stamp",
+        "src",
+        "tag",
+        "lat",
+        "lon",
+        "region_name",
+        "r_region_name",
+    ]
 
-    # 如果文件不存在，直接返回空列表
+    chunk_size = 500000
+    seen_weibo_ids = set()  # 在文件处理级别维护seen集合
+    total_records = 0
+    chunk_count = 0
+    temp_files = []  # 存储临时文件路径
+
+    # 如果文件不存在，直接返回
     if not os.path.exists(file_path):
-        return all_results
+        return total_records
 
     # 逐行读取文件
     with open(file_path, "r", encoding="utf-8", errors="replace") as file:
@@ -335,16 +376,49 @@ def process_file(file_path, date):
 
             # 当块大小达到限制时，处理该块
             if len(chunk) == chunk_size:
+                chunk_count += 1
                 results = process_function(chunk, seen_weibo_ids)
-                all_results.extend(results)
+                if results:
+                    # 写入临时文件
+                    temp_file = f"{output_parquet_path}.temp_{chunk_count}"
+                    df_chunk = pd.DataFrame(results, columns=columns)
+                    df_chunk.to_parquet(temp_file, engine="fastparquet", index=False)
+                    temp_files.append(temp_file)
+
+                    total_records += len(results)
+                    print(f"已处理 {total_records} 条记录，第 {chunk_count} 块...")
+
                 chunk = []  # 清空块
 
         # 处理最后一块（如果有剩余）
         if chunk:
+            chunk_count += 1
             results = process_function(chunk, seen_weibo_ids)
-            all_results.extend(results)
+            if results:
+                temp_file = f"{output_parquet_path}.temp_{chunk_count}"
+                df_chunk = pd.DataFrame(results, columns=columns)
+                df_chunk.to_parquet(temp_file, engine="fastparquet", index=False)
+                temp_files.append(temp_file)
+                total_records += len(results)
 
-    return all_results
+    # 合并所有临时文件
+    if temp_files:
+        print(f"开始合并 {len(temp_files)} 个临时文件...")
+        dfs = []
+        for temp_file in temp_files:
+            df = pd.read_parquet(temp_file, engine="fastparquet")
+            dfs.append(df)
+            # 删除临时文件
+            os.remove(temp_file)
+
+        # 合并所有DataFrame，使用压缩
+        final_df = pd.concat(dfs, ignore_index=True)
+        final_df.to_parquet(
+            output_parquet_path, engine="fastparquet", index=False, compression="gzip"
+        )
+        print(f"合并完成，最终文件: {output_parquet_path}")
+
+    return total_records
 
 
 def save_to_parquet(date, results):
@@ -394,22 +468,22 @@ def process_year(year, mode):
 
     for current_date in date_range:
         date_str = current_date.strftime("%Y-%m-%d")
+        output_parquet_path = f"{OUTPUT_DIR}/{date_str}.parquet"
 
         file_path = unzip_one_fresh_data_file(year, date_str)
         if file_path is None:
             continue
 
         start_timestamp = int(time.time())
-        results = process_file(file_path, current_date)
-        save_to_parquet(date_str, results)
+        total_records = process_file(file_path, current_date, output_parquet_path)
 
         log(
-            f"处理 {date_str} 完成，耗时 {int(time.time()) - start_timestamp} 秒，共 {len(results)} 条记录。",
+            f"处理 {date_str} 完成，耗时 {int(time.time()) - start_timestamp} 秒，共 {total_records} 条记录。",
             f"{year}_{mode}",
         )
+        print(f"finished {date_str} with {total_records} records")
 
         delete_unzipped_fresh_data_file(year, date_str)
-        print(f"finished {date_str} with {len(results)} records")
 
 
 def main(year: int, mode: int = 0, check: bool = False):

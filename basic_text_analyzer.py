@@ -77,8 +77,8 @@ def get_date_range(year):
     return date_list
 
 
-def load_data_for_year(year):
-    """加载指定年份的所有数据"""
+def load_data_for_year(year, analysis_type="all"):
+    """加载指定年份的数据，只加载必要的列以节省内存"""
     year_dir = os.path.join(DATA_DIR, str(year))
     if not os.path.exists(year_dir):
         print(f"未找到 {year} 年的数据目录: {year_dir}")
@@ -96,10 +96,26 @@ def load_data_for_year(year):
 
     print(f"找到 {len(parquet_files)} 个文件")
 
+    # 根据分析类型确定需要的列
+    if analysis_type == "device":
+        required_columns = ["user_id", "device", "nick_name"]
+    elif analysis_type == "retweet":
+        required_columns = ["user_id", "is_retweet", "r_user_id", "gender"]
+    else:  # all
+        required_columns = [
+            "user_id",
+            "device",
+            "nick_name",
+            "is_retweet",
+            "r_user_id",
+            "gender",
+        ]
+
     all_data = []
     for file_path in parquet_files:
         try:
-            df = pd.read_parquet(file_path)
+            # 只读取需要的列
+            df = pd.read_parquet(file_path, columns=required_columns)
             # 从文件名提取日期
             filename = os.path.basename(file_path)
             date_str = filename.replace(".parquet", "")
@@ -114,25 +130,37 @@ def load_data_for_year(year):
         return None
 
     result = pd.concat(all_data, ignore_index=True)
-    print(f"共加载 {len(result)} 条数据")
+    print(f"共加载 {len(result)} 条数据，列数: {len(result.columns)}")
     return result
 
 
 def analyze_device_changes(year):
-    """分析用户设备更换频率"""
+    """分析用户设备更换频率，只分析occurrence>=10的用户"""
     print(f"\n开始分析 {year} 年用户设备更换情况...")
 
-    # 加载数据
-    data = load_data_for_year(year)
+    # 加载数据，只加载设备分析需要的列
+    data = load_data_for_year(year, "device")
     if data is None:
         return
 
     print(f"共加载 {len(data)} 条数据")
 
+    # 统计每个用户的出现次数（不同日期的数量）
+    user_occurrence = data.groupby("user_id")["date"].nunique().reset_index()
+    user_occurrence.columns = ["user_id", "occurrence_count"]
+
+    # 只保留occurrence>=10的用户
+    active_users = user_occurrence[user_occurrence["occurrence_count"] >= 10]["user_id"]
+    print(f"出现次数>=10的用户数: {len(active_users)}")
+
+    # 过滤数据，只保留活跃用户
+    data_filtered = data[data["user_id"].isin(active_users)]
+    print(f"过滤后数据量: {len(data_filtered)} 条")
+
     # 创建用户每日设备表
     # 只取每天每个用户的最后一条微博的设备信息
     user_device_daily = (
-        data.groupby(["date", "user_id"])
+        data_filtered.groupby(["date", "user_id"])
         .agg({"device": "last", "nick_name": "last"})  # 取最后一条
         .reset_index()
     )
@@ -239,8 +267,8 @@ def analyze_retweet_media(year):
         print("警告: 官方媒体ID列表为空，请先运行 get_news_ids.py 生成新闻账号ID文件")
         return
 
-    # 加载数据
-    data = load_data_for_year(year)
+    # 加载数据，只加载转发分析需要的列
+    data = load_data_for_year(year, "retweet")
     if data is None:
         return
 
@@ -250,6 +278,10 @@ def analyze_retweet_media(year):
         print(f"数据包含性别字段，将进行性别分析")
     else:
         print(f"数据不包含性别字段，将进行基本分析")
+
+    # 排除官方媒体用户ID（避免官方媒体转发自己）
+    data = data[~data["user_id"].isin(OFFICIAL_MEDIA_IDS)]
+    print(f"排除官方媒体用户后，剩余 {len(data)} 条记录")
 
     # 只保留转发官方媒体的记录
     retweet_media = data[
@@ -264,9 +296,7 @@ def analyze_retweet_media(year):
 
     # 基本统计：每个用户的转发次数
     user_retweet_count = (
-        retweet_media.groupby("user_id")
-        .agg({"retweet_count": "size", "nick_name": "first"})
-        .reset_index()
+        retweet_media.groupby("user_id").size().reset_index(name="retweet_count")
     )
 
     # 如果有性别信息，添加性别字段
@@ -284,45 +314,71 @@ def analyze_retweet_media(year):
             user_gender, on="user_id", how="left"
         )
 
-        # 按性别统计
-        gender_stats = (
-            user_retweet_count.groupby("gender")
-            .agg({"user_id": "count", "retweet_count": ["sum", "mean", "median"]})
-            .round(2)
-        )
+        # 计算总体性别分布（用于计算占比）
+        total_gender_dist = data.groupby("gender").size()
+        print(f"\n总体性别分布:")
+        for gender in total_gender_dist.index:
+            print(f"  {gender}: {total_gender_dist[gender]} 人")
 
-        print(f"\n按性别转发统计:")
-        for gender in gender_stats.index:
-            count = gender_stats.loc[gender, ("user_id", "count")]
-            total_retweets = gender_stats.loc[gender, ("retweet_count", "sum")]
-            avg_retweets = gender_stats.loc[gender, ("retweet_count", "mean")]
-            median_retweets = gender_stats.loc[gender, ("retweet_count", "median")]
-            print(
-                f"  {gender}: {count} 人，总转发 {total_retweets} 次，平均 {avg_retweets:.2f} 次，中位数 {median_retweets:.2f} 次"
-            )
+        # 按性别统计转发情况
+        gender_stats = []
+        for gender in ["男", "女"]:
+            if gender in user_retweet_count["gender"].values:
+                gender_data = user_retweet_count[user_retweet_count["gender"] == gender]
+                retweet_users = len(gender_data)
+                total_retweets = gender_data["retweet_count"].sum()
+                avg_retweets = gender_data["retweet_count"].mean()
+                median_retweets = gender_data["retweet_count"].median()
+
+                # 计算占比和人均次数
+                total_users_of_gender = total_gender_dist.get(gender, 0)
+                retweet_ratio = (
+                    retweet_users / total_users_of_gender
+                    if total_users_of_gender > 0
+                    else 0
+                )
+                per_capita_retweets = (
+                    total_retweets / total_users_of_gender
+                    if total_users_of_gender > 0
+                    else 0
+                )
+
+                gender_stats.append(
+                    {
+                        "gender": gender,
+                        "retweet_users": retweet_users,
+                        "total_users": total_users_of_gender,
+                        "retweet_ratio": retweet_ratio,
+                        "total_retweets": total_retweets,
+                        "avg_retweets_per_user": avg_retweets,
+                        "median_retweets_per_user": median_retweets,
+                        "per_capita_retweets": per_capita_retweets,
+                    }
+                )
+
+                print(f"\n{gender}性转发统计:")
+                print(f"  转发用户数: {retweet_users} 人")
+                print(f"  总用户数: {total_users_of_gender} 人")
+                print(f"  转发占比: {retweet_ratio:.4f} ({retweet_ratio*100:.2f}%)")
+                print(f"  总转发次数: {total_retweets} 次")
+                print(f"  转发用户平均转发: {avg_retweets:.2f} 次")
+                print(f"  转发用户中位数: {median_retweets:.2f} 次")
+                print(f"  人均转发次数: {per_capita_retweets:.4f} 次")
+
+        # 保存性别统计摘要
+        gender_stats_df = pd.DataFrame(gender_stats)
+        gender_summary_file = os.path.join(
+            OUTPUT_DIR, f"retweet_media_gender_{year}.parquet"
+        )
+        gender_stats_df.to_parquet(
+            gender_summary_file, engine="fastparquet", index=False
+        )
+        print(f"性别统计摘要已保存到: {gender_summary_file}")
 
     # 保存详细结果
     output_file = os.path.join(OUTPUT_DIR, f"retweet_media_{year}.parquet")
     user_retweet_count.to_parquet(output_file, engine="fastparquet", index=False)
     print(f"转发官方媒体分析结果已保存到: {output_file}")
-
-    # 保存性别统计摘要
-    if has_gender:
-        gender_summary_file = os.path.join(
-            OUTPUT_DIR, f"retweet_media_gender_{year}.parquet"
-        )
-        gender_stats_reset = gender_stats.reset_index()
-        gender_stats_reset.columns = [
-            "gender",
-            "user_count",
-            "total_retweets",
-            "avg_retweets",
-            "median_retweets",
-        ]
-        gender_stats_reset.to_parquet(
-            gender_summary_file, engine="fastparquet", index=False
-        )
-        print(f"性别统计摘要已保存到: {gender_summary_file}")
 
     # 打印总体统计信息
     print(f"\n总体转发统计:")
