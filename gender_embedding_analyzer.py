@@ -257,17 +257,8 @@ def load_data_by_province(year):
     province_col = None
 
     # 先检查第一个文件确定省份字段名（只读取一行，减少内存占用）
-    try:
-        sample_df = pd.read_parquet(parquet_files[0], nrows=1)
-        if "province" in sample_df.columns:
-            province_col = "province"
-            required_columns.append("province")
-        elif "demographic_province" in sample_df.columns:
-            province_col = "demographic_province"
-            required_columns.append("demographic_province")
-        del sample_df  # 释放样本数据
-    except Exception as e:
-        print(f"⚠️  检查省份字段失败: {e}")
+    province_col = "province"
+    required_columns.append("province")
 
     if province_col is None:
         print(f"❌ 无法确定省份字段")
