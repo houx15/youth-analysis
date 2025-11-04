@@ -235,7 +235,7 @@ def preprocess_text(text):
 
 
 def load_data_by_province(year):
-    """按省份加载数据"""
+    """按省份加载数据（内存优化版本）"""
     year_dir = os.path.join(DATA_DIR, str(year))
     if not os.path.exists(year_dir):
         print(f"❌ 未找到 {year} 年的数据目录")
@@ -252,74 +252,105 @@ def load_data_by_province(year):
 
     print(f"📂 找到 {len(parquet_files)} 个文件，开始加载...")
 
+    # 只加载需要的列，减少内存占用
+    required_columns = ["weibo_content"]
+    province_col = None
+
+    # 先检查第一个文件确定省份字段名（只读取一行，减少内存占用）
+    try:
+        sample_df = pd.read_parquet(parquet_files[0], nrows=1)
+        if "province" in sample_df.columns:
+            province_col = "province"
+            required_columns.append("province")
+        elif "demographic_province" in sample_df.columns:
+            province_col = "demographic_province"
+            required_columns.append("demographic_province")
+        del sample_df  # 释放样本数据
+    except Exception as e:
+        print(f"⚠️  检查省份字段失败: {e}")
+
+    if province_col is None:
+        print(f"❌ 无法确定省份字段")
+        return None
+
     data_by_province = defaultdict(list)
 
-    for file_path in parquet_files:
+    for file_idx, file_path in enumerate(parquet_files):
         try:
-            df = pd.read_parquet(file_path)
-
-            # 确定省份字段
-            province_col = (
-                "province" if "province" in df.columns else "demographic_province"
-            )
-
-            if province_col not in df.columns:
-                print(f"⚠️  文件 {file_path} 没有省份信息，跳过")
-                continue
+            # 只读取需要的列
+            df = pd.read_parquet(file_path, columns=required_columns)
 
             # 过滤掉空值
-            df = df.dropna(subset=[province_col])
+            df = df.dropna(subset=[province_col, "weibo_content"])
 
-            # 按省份分组
+            # 按省份分组，使用字典直接聚合而不是append
             for province in df[province_col].unique():
-                province_data = df[df[province_col] == province]
+                province_data = df[df[province_col] == province].copy()
                 data_by_province[province].append(province_data)
+
+            # 及时释放内存
+            del df
+
+            if (file_idx + 1) % 10 == 0:
+                print(f"  已处理 {file_idx + 1}/{len(parquet_files)} 个文件...")
 
         except Exception as e:
             print(f"❌ 读取文件 {file_path} 失败: {e}")
             continue
 
-    # 合并每个省份的数据
+    # 合并每个省份的数据（使用concat但及时释放）
     print(f"\n📊 按省份分组，共 {len(data_by_province)} 个省份")
 
     result = {}
     for province, data_list in data_by_province.items():
+        # 合并数据
         combined_data = pd.concat(data_list, ignore_index=True)
-
-        # 过滤掉内容为空的行
-        combined_data = combined_data.dropna(subset=["weibo_content"])
+        # 立即释放原列表内存
+        del data_list
 
         if len(combined_data) > 1000:  # 至少1000条数据
             result[province] = combined_data
             print(f"  ✓ {province}: {len(combined_data):,} 条数据")
         else:
             print(f"  ✗ {province}: {len(combined_data):,} 条数据 (跳过，数据量不足)")
+            del combined_data
 
     return result
 
 
-def train_word2vec(texts, vector_size=300, window=5, min_count=20):
+def train_word2vec(texts, vector_size=300, window=5, min_count=20, workers=None):
     """
-    训练Word2Vec模型
+    训练Word2Vec模型（内存优化版本）
 
     参数调整说明：
     - vector_size: 300（更大的向量维度，更好的语义表达）
     - window: 5（上下文窗口）
     - min_count: 20（词频阈值，根据数据量调整）
+    - workers: 线程数，None则自动设置为CPU核心数-1
     """
     if not texts or len(texts) < 100:
         return None
+
+    # 自动设置workers，避免超过CPU核心数
+    if workers is None:
+        import multiprocessing
+
+        workers = max(1, multiprocessing.cpu_count() - 1)
+
+    # 限制workers数量，避免内存过度占用
+    workers = min(workers, 8)
 
     model = Word2Vec(
         sentences=texts,
         vector_size=vector_size,
         window=window,
         min_count=min_count,
-        workers=8,  # 多线程
+        workers=workers,  # 多线程，但限制数量
         epochs=10,
         sg=1,  # Skip-gram（对中小规模数据更好）
         negative=10,  # 负采样
         seed=42,  # 可重复性
+        max_vocab_size=None,  # 不限制词汇表大小，但可以通过min_count控制
     )
 
     return model
@@ -387,15 +418,23 @@ def analyze_province_embedding(data_by_province, year):
         print(f"🔍 处理省份: {province}")
         print(f"{'='*60}")
 
-        # 预处理文本
+        # 预处理文本（内存优化：使用itertuples而不是iterrows，分批处理）
+        # 先保存数据条数，因为后面会删除DataFrame
+        data_count = len(data)
+
         texts = []
-        for _, row in data.iterrows():
-            words = preprocess_text(row["weibo_content"])
+        # 使用itertuples比iterrows快得多且内存占用更少
+        for row in data.itertuples():
+            words = preprocess_text(row.weibo_content)
             if len(words) > 3:  # 至少3个词
                 texts.append(words)
 
+        # 处理完文本后立即释放DataFrame内存
+        del data
+
         if len(texts) < 100:
             print(f"  ❌ 文本量不足 ({len(texts)} 条)，跳过")
+            del texts
             continue
 
         print(f"  📝 有效文本: {len(texts):,} 条")
@@ -409,6 +448,13 @@ def analyze_province_embedding(data_by_province, year):
 
         vocab_size = len(model.wv)
         print(f"  ✓ 模型训练完成，词汇表大小: {vocab_size:,}")
+
+        # 训练完成后立即释放texts列表（可能占用大量内存）
+        text_count = len(texts)
+        del texts
+        import gc
+
+        gc.collect()  # 强制垃圾回收
 
         # 计算性别词向量
         male_vec, male_found = get_word_set_embedding(model, GENDER_WORDS["male"])
@@ -480,8 +526,8 @@ def analyze_province_embedding(data_by_province, year):
         bias_scores = [r["bias_score"] for r in occupation_results]
         stats = {
             "province": province,
-            "data_count": len(data),
-            "text_count": len(texts),
+            "data_count": data_count,
+            "text_count": text_count,
             "vocab_size": vocab_size,
             "occupations_found": len(found_occupations),
             "male_words_found": len(male_found),
@@ -499,11 +545,11 @@ def analyze_province_embedding(data_by_province, year):
         print(f"    标准差（隔离程度）: {stats['std_bias']:.3f}")
         print(f"    偏向范围: [{stats['min_bias']:+.3f}, {stats['max_bias']:+.3f}]")
 
-        # 保存详细结果
+        # 保存详细结果（先转换向量为列表，避免后续内存占用）
         result = {
             "province": province,
             "stats": stats,
-            "male_vec": male_vec.tolist(),
+            "male_vec": male_vec.tolist(),  # 转换为列表后，原始numpy数组可以释放
             "female_vec": female_vec.tolist(),
             "male_words_found": male_found,
             "female_words_found": female_found,
@@ -512,10 +558,18 @@ def analyze_province_embedding(data_by_province, year):
         }
         results.append(result)
 
+        # 保存结果后立即释放向量（已经转换为列表，原始numpy数组不再需要）
+        del male_vec
+        del female_vec
+
         # 保存模型
         model_path = os.path.join(OUTPUT_DIR, f"model_{year}_{province}.model")
         model.save(model_path)
         print(f"  💾 模型已保存: {model_path}")
+
+        # 保存模型后释放模型（释放内存）
+        del model
+        gc.collect()  # 再次垃圾回收
 
     return results, province_stats
 
