@@ -322,7 +322,7 @@ def analyze_retweet_media(year):
 
         # 按性别统计转发情况
         gender_stats = []
-        for gender in ["男", "女"]:
+        for gender in user_retweet_count["gender"].unique():
             if gender in user_retweet_count["gender"].values:
                 gender_data = user_retweet_count[user_retweet_count["gender"] == gender]
                 retweet_users = len(gender_data)
