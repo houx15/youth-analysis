@@ -358,7 +358,7 @@ def process_file(file_path, date, output_parquet_path):
         "r_region_name",
     ]
 
-    chunk_size = 500000
+    chunk_size = 5000000
     seen_weibo_ids = set()  # 在文件处理级别维护seen集合
     total_records = 0
     chunk_count = 0
@@ -382,7 +382,9 @@ def process_file(file_path, date, output_parquet_path):
                     # 写入临时文件
                     temp_file = f"{output_parquet_path}.temp_{chunk_count}"
                     df_chunk = pd.DataFrame(results, columns=columns)
-                    df_chunk.to_parquet(temp_file, engine="fastparquet", index=False)
+                    df_chunk.to_parquet(
+                        temp_file, engine="fastparquet", index=False, compression="gzip"
+                    )
                     temp_files.append(temp_file)
 
                     total_records += len(results)
@@ -397,26 +399,28 @@ def process_file(file_path, date, output_parquet_path):
             if results:
                 temp_file = f"{output_parquet_path}.temp_{chunk_count}"
                 df_chunk = pd.DataFrame(results, columns=columns)
-                df_chunk.to_parquet(temp_file, engine="fastparquet", index=False)
+                df_chunk.to_parquet(
+                    temp_file, engine="fastparquet", index=False, compression="gzip"
+                )
                 temp_files.append(temp_file)
                 total_records += len(results)
 
     # 合并所有临时文件
-    if temp_files:
-        print(f"开始合并 {len(temp_files)} 个临时文件...")
-        dfs = []
-        for temp_file in temp_files:
-            df = pd.read_parquet(temp_file, engine="fastparquet")
-            dfs.append(df)
-            # 删除临时文件
-            os.remove(temp_file)
+    # if temp_files:
+    #     print(f"开始合并 {len(temp_files)} 个临时文件...")
+    #     dfs = []
+    #     for temp_file in temp_files:
+    #         df = pd.read_parquet(temp_file, engine="fastparquet")
+    #         dfs.append(df)
+    #         # 删除临时文件
+    #         os.remove(temp_file)
 
-        # 合并所有DataFrame，使用压缩
-        final_df = pd.concat(dfs, ignore_index=True)
-        final_df.to_parquet(
-            output_parquet_path, engine="fastparquet", index=False, compression="gzip"
-        )
-        print(f"合并完成，最终文件: {output_parquet_path}")
+    #     # 合并所有DataFrame，使用压缩
+    #     final_df = pd.concat(dfs, ignore_index=True)
+    #     final_df.to_parquet(
+    #         output_parquet_path, engine="fastparquet", index=False, compression="gzip"
+    #     )
+    #     print(f"合并完成，最终文件: {output_parquet_path}")
 
     return total_records
 
