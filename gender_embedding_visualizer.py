@@ -216,37 +216,34 @@ def load_china_map(shapefile_path="configs/china.shp"):
     加载中国地图shapefile
 
     Args:
-        shapefile_path: shapefile路径，如果为None则尝试常见路径
+        shapefile_path: shapefile路径
 
     Returns:
-        GeoDataFrame
+        GeoDataFrame 或 None（如果加载失败）
     """
-    # 尝试常见的shapefile路径
-    possible_paths = [
-        shapefile_path,
-        "china_map/china_province.shp",
-        "data/china_map/china_province.shp",
-        "shapefiles/china_province.shp",
-        "../data/china_map/china_province.shp",
-    ]
+    if not shapefile_path or not os.path.exists(shapefile_path):
+        print(f"⚠️  地图文件不存在: {shapefile_path}")
+        return None
 
-    for path in possible_paths:
-        if path and os.path.exists(path):
-            print(f"✓ 加载地图文件: {path}")
-            gdf = gpd.read_file(path)
+    try:
+        print(f"正在加载地图文件: {shapefile_path}")
+        gdf = gpd.read_file(shapefile_path)
 
-            # 确保使用正确的CRS（中国常用的投影）
-            if gdf.crs is None:
-                gdf = gdf.set_crs("EPSG:4326")
+        if gdf.empty:
+            print(f"⚠️  地图文件为空")
+            return None
 
-            return gdf
+        print(f"✓ 成功加载，包含 {len(gdf)} 个地理要素")
 
-    print("⚠️  未找到中国地图shapefile文件")
-    print("   请提供shapefile路径，或将文件放在以下位置之一：")
-    for path in possible_paths[1:]:
-        print(f"   - {path}")
+        # 确保使用正确的CRS
+        if gdf.crs is None:
+            gdf = gdf.set_crs("EPSG:4326", allow_override=True)
 
-    return None
+        return gdf
+
+    except Exception as e:
+        print(f"❌ 加载地图文件失败: {e}")
+        return None
 
 
 def plot_china_map_segregation(stats_df, year, shapefile_path=None):
@@ -258,7 +255,9 @@ def plot_china_map_segregation(stats_df, year, shapefile_path=None):
         year: 年份
         shapefile_path: 中国地图shapefile路径（可选）
     """
-    # 加载地图
+    # 加载地图（如果没有指定路径，使用默认路径）
+    if shapefile_path is None:
+        shapefile_path = "configs/china.shp"
     china_map = load_china_map(shapefile_path)
 
     if china_map is None:
