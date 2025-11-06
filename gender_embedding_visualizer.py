@@ -186,6 +186,21 @@ def load_results(year):
     stats_df["province"] = stats_df["province"].apply(convert_province_code)
     occupation_df["province"] = occupation_df["province"].apply(convert_province_code)
 
+    # 过滤掉省份名为"未知"的数据
+    before_filter_stats = len(stats_df)
+    before_filter_occupation = len(occupation_df)
+
+    stats_df = stats_df[stats_df["province"] != "未知"].copy()
+    occupation_df = occupation_df[occupation_df["province"] != "未知"].copy()
+
+    filtered_stats = before_filter_stats - len(stats_df)
+    filtered_occupation = before_filter_occupation - len(occupation_df)
+
+    if filtered_stats > 0 or filtered_occupation > 0:
+        print(
+            f"  已过滤掉 {filtered_stats} 条统计数据和 {filtered_occupation} 条职业数据（省份为'未知'）"
+        )
+
     # 检查转换结果
     unique_provinces = stats_df["province"].unique()
     print(
