@@ -11,6 +11,7 @@
 """
 
 import os
+import glob
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -211,17 +212,42 @@ def load_results(year):
     return stats_df, occupation_df
 
 
-def load_china_map(shapefile_path="configs/china.shp"):
+def load_china_map(shapefile_path=None):
     """
     加载中国地图shapefile
 
     Args:
-        shapefile_path: shapefile路径
+        shapefile_path: shapefile路径或文件夹路径（如果为None，自动查找configs/china_shp文件夹）
 
     Returns:
         GeoDataFrame 或 None（如果加载失败）
     """
-    if not shapefile_path or not os.path.exists(shapefile_path):
+    # 如果没有指定路径，尝试从configs/china_shp文件夹加载
+    if shapefile_path is None:
+        shapefile_dir = "configs/china_shp"
+        if os.path.exists(shapefile_dir) and os.path.isdir(shapefile_dir):
+            # 查找文件夹中的.shp文件
+            shp_files = glob.glob(os.path.join(shapefile_dir, "*.shp"))
+            if shp_files:
+                shapefile_path = shp_files[0]  # 使用找到的第一个.shp文件
+                print(f"自动找到地图文件: {shapefile_path}")
+            else:
+                print(f"⚠️  在 {shapefile_dir} 中未找到.shp文件")
+                return None
+        else:
+            print(f"⚠️  地图文件夹不存在: {shapefile_dir}")
+            return None
+
+    # 如果是文件夹路径，查找其中的.shp文件
+    if os.path.isdir(shapefile_path):
+        shp_files = glob.glob(os.path.join(shapefile_path, "*.shp"))
+        if shp_files:
+            shapefile_path = shp_files[0]
+        else:
+            print(f"⚠️  在 {shapefile_path} 中未找到.shp文件")
+            return None
+
+    if not os.path.exists(shapefile_path):
         print(f"⚠️  地图文件不存在: {shapefile_path}")
         return None
 
@@ -234,6 +260,7 @@ def load_china_map(shapefile_path="configs/china.shp"):
             return None
 
         print(f"✓ 成功加载，包含 {len(gdf)} 个地理要素")
+        print(f"  地图列名: {gdf.columns.tolist()}")
 
         # 确保使用正确的CRS
         if gdf.crs is None:
@@ -255,9 +282,7 @@ def plot_china_map_segregation(stats_df, year, shapefile_path=None):
         year: 年份
         shapefile_path: 中国地图shapefile路径（可选）
     """
-    # 加载地图（如果没有指定路径，使用默认路径）
-    if shapefile_path is None:
-        shapefile_path = "configs/china.shp"
+    # 加载地图（自动从configs/china_shp文件夹加载）
     china_map = load_china_map(shapefile_path)
 
     if china_map is None:
@@ -269,9 +294,13 @@ def plot_china_map_segregation(stats_df, year, shapefile_path=None):
     # 打印shapefile的列名，帮助调试
     print(f"  Shapefile列名: {china_map.columns.tolist()}")
 
-    # 自动识别省份名称列（常见的列名）
+    # 自动识别省份名称列（humdata adm1数据通常使用ADMIN1或NAME_1）
     possible_name_cols = [
-        "NAME",
+        "ADMIN1",  # humdata标准列名
+        "admin1",
+        "NAME_1",  # humdata常用列名
+        "name_1",
+        "NAME",  # 其他可能的列名
         "name",
         "PROV",
         "prov",
@@ -279,6 +308,8 @@ def plot_china_map_segregation(stats_df, year, shapefile_path=None):
         "province",
         "NAME_CH",
         "name_ch",
+        "FCNAME",  # 中文名称
+        "fcname",
     ]
     name_col = None
     for col in possible_name_cols:
@@ -405,8 +436,8 @@ def plot_china_map_segregation(stats_df, year, shapefile_path=None):
     )
 
     plt.tight_layout()
-    map_file = os.path.join(OUTPUT_DIR, f"segregation_map_{year}.png")
-    plt.savefig(map_file, dpi=300, bbox_inches="tight")
+    map_file = os.path.join(OUTPUT_DIR, f"segregation_map_{year}.pdf")
+    plt.savefig(map_file, format="pdf", bbox_inches="tight")
     print(f"✓ 中国地图已保存: {map_file}")
     plt.close()
 
@@ -490,8 +521,8 @@ def plot_regional_map(china_map, china_map_merged, stats_df, year, name_col):
     )
 
     plt.tight_layout()
-    regional_map_file = os.path.join(OUTPUT_DIR, f"segregation_map_regional_{year}.png")
-    plt.savefig(regional_map_file, dpi=300, bbox_inches="tight")
+    regional_map_file = os.path.join(OUTPUT_DIR, f"segregation_map_regional_{year}.pdf")
+    plt.savefig(regional_map_file, format="pdf", bbox_inches="tight")
     print(f"✓ 区域地图已保存: {regional_map_file}")
     plt.close()
 
@@ -541,8 +572,8 @@ def plot_static_alternatives(stats_df, year):
     ax.grid(axis="x", alpha=0.3, linestyle="--")
 
     plt.tight_layout()
-    map_file = os.path.join(OUTPUT_DIR, f"segregation_by_region_{year}.png")
-    plt.savefig(map_file, dpi=300, bbox_inches="tight")
+    map_file = os.path.join(OUTPUT_DIR, f"segregation_by_region_{year}.pdf")
+    plt.savefig(map_file, format="pdf", bbox_inches="tight")
     print(f"✓ 区域柱状图已保存: {map_file}")
     plt.close()
 
@@ -589,8 +620,8 @@ def plot_province_ranking(stats_df, year):
     ax.legend(handles=legend_elements, loc="lower right", fontsize=9, title="地理区域")
 
     plt.tight_layout()
-    ranking_file = os.path.join(OUTPUT_DIR, f"segregation_ranking_{year}.png")
-    plt.savefig(ranking_file, dpi=300, bbox_inches="tight")
+    ranking_file = os.path.join(OUTPUT_DIR, f"segregation_ranking_{year}.pdf")
+    plt.savefig(ranking_file, format="pdf", bbox_inches="tight")
     print(f"✓ 省份排名图已保存: {ranking_file}")
     plt.close()
 
@@ -630,8 +661,8 @@ def plot_province_clustering(occupation_df, stats_df, year):
     ax.grid(axis="y", alpha=0.3, linestyle="--")
 
     plt.tight_layout()
-    cluster_file = os.path.join(OUTPUT_DIR, f"province_clustering_{year}.png")
-    plt.savefig(cluster_file, dpi=300, bbox_inches="tight")
+    cluster_file = os.path.join(OUTPUT_DIR, f"province_clustering_{year}.pdf")
+    plt.savefig(cluster_file, format="pdf", bbox_inches="tight")
     print(f"✓ 省份聚类图已保存: {cluster_file}")
     plt.close()
 
@@ -665,8 +696,8 @@ def plot_province_clustering(occupation_df, stats_df, year):
     )
 
     plt.tight_layout()
-    similarity_file = os.path.join(OUTPUT_DIR, f"province_similarity_{year}.png")
-    plt.savefig(similarity_file, dpi=300, bbox_inches="tight")
+    similarity_file = os.path.join(OUTPUT_DIR, f"province_similarity_{year}.pdf")
+    plt.savefig(similarity_file, format="pdf", bbox_inches="tight")
     print(f"✓ 省份相似度矩阵已保存: {similarity_file}")
     plt.close()
 
@@ -772,8 +803,8 @@ def plot_province_comparison(stats_df, year):
     plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha="right")
 
     plt.tight_layout()
-    comparison_file = os.path.join(OUTPUT_DIR, f"province_comparison_{year}.png")
-    plt.savefig(comparison_file, dpi=300, bbox_inches="tight")
+    comparison_file = os.path.join(OUTPUT_DIR, f"province_comparison_{year}.pdf")
+    plt.savefig(comparison_file, format="pdf", bbox_inches="tight")
     print(f"✓ 省份对比图已保存: {comparison_file}")
     plt.close()
 
@@ -847,8 +878,8 @@ def plot_occupation_by_province(occupation_df, occupation_name, year):
     ax2.grid(axis="x", alpha=0.3)
 
     plt.tight_layout()
-    occ_file = os.path.join(OUTPUT_DIR, f"occupation_{occupation_name}_{year}.png")
-    plt.savefig(occ_file, dpi=300, bbox_inches="tight")
+    occ_file = os.path.join(OUTPUT_DIR, f"occupation_{occupation_name}_{year}.pdf")
+    plt.savefig(occ_file, format="pdf", bbox_inches="tight")
     print(f"✓ 职业分析图已保存: {occ_file}")
     plt.close()
 
@@ -1029,13 +1060,13 @@ def main(year: int, shapefile: str = None):
     print(f"{'='*70}\n")
 
     print(f"生成的文件包括:")
-    print(f"  1. segregation_map_{year}.png - 中国地图（性别隔离程度）")
-    print(f"  2. segregation_map_regional_{year}.png - 中国地图（按区域着色）")
-    print(f"  3. segregation_ranking_{year}.png - 省份排名图")
-    print(f"  4. province_clustering_{year}.png - 省份聚类树状图")
-    print(f"  5. province_similarity_{year}.png - 省份相似度热力图")
-    print(f"  6. province_comparison_{year}.png - 省份多维度对比")
-    print(f"  7. occupation_[职业名]_{year}.png - 各职业的省份分析")
+    print(f"  1. segregation_map_{year}.pdf - 中国地图（性别隔离程度）")
+    print(f"  2. segregation_map_regional_{year}.pdf - 中国地图（按区域着色）")
+    print(f"  3. segregation_ranking_{year}.pdf - 省份排名图")
+    print(f"  4. province_clustering_{year}.pdf - 省份聚类树状图")
+    print(f"  5. province_similarity_{year}.pdf - 省份相似度热力图")
+    print(f"  6. province_comparison_{year}.pdf - 省份多维度对比")
+    print(f"  7. occupation_[职业名]_{year}.pdf - 各职业的省份分析")
     print(f"  8. visualization_summary_{year}.txt - 文字总结报告\n")
 
 
