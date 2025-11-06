@@ -311,7 +311,7 @@ def plot_china_map_segregation(stats_df, year, shapefile_path=None):
 
     # 自动识别省份名称列（humdata adm1数据通常使用ADMIN1或NAME_1）
     possible_name_cols = [
-        "ADMIN1",  # humdata标准列名
+        "ADM1_ZH",  # humdata标准列名
         "admin1",
         "NAME_1",  # humdata常用列名
         "name_1",
