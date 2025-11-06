@@ -28,6 +28,51 @@ OUTPUT_DIR = "embedding_analysis"
 # 确保输出目录存在
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# 省份编码映射（GB/T 2260 中华人民共和国行政区划代码）
+# 将数字编码转换为省份名称
+PROVINCE_CODE_TO_NAME = {
+    "11": "北京",
+    "12": "天津",
+    "13": "河北",
+    "14": "山西",
+    "15": "内蒙古",
+    "21": "辽宁",
+    "22": "吉林",
+    "23": "黑龙江",
+    "31": "上海",
+    "32": "江苏",
+    "33": "浙江",
+    "34": "安徽",
+    "35": "福建",
+    "36": "江西",
+    "37": "山东",
+    "41": "河南",
+    "42": "湖北",
+    "43": "湖南",
+    "44": "广东",
+    "45": "广西",
+    "46": "海南",
+    "50": "重庆",
+    "51": "四川",
+    "52": "贵州",
+    "53": "云南",
+    "54": "西藏",
+    "61": "陕西",
+    "62": "甘肃",
+    "63": "青海",
+    "64": "宁夏",
+    "65": "新疆",
+    "71": "台湾",
+    "81": "香港",
+    "82": "澳门",
+    # 处理可能的非标准编码（如果数据中有）
+    "100": "未知",  # 非标准编码，需要根据实际情况调整
+    "400": "未知",  # 非标准编码，需要根据实际情况调整
+}
+
+# 反向映射：省份名称到编码（用于调试）
+PROVINCE_NAME_TO_CODE = {v: k for k, v in PROVINCE_CODE_TO_NAME.items() if v != "未知"}
+
 # 性别词表（扩展版）
 GENDER_WORDS = {
     "male": [
@@ -274,6 +319,37 @@ def load_data_by_province(year):
             # 过滤掉空值
             df = df.dropna(subset=[province_col, "weibo_content"])
 
+            # 将省份编码转换为省份名称（如果数据是编码格式）
+            # 尝试将编码转换为名称
+            def convert_province_code(code):
+                if pd.isna(code):
+                    return None
+                # 统一转换为字符串格式处理
+                if isinstance(code, (int, float)):
+                    code_str = str(int(code))  # 去掉小数点
+                else:
+                    code_str = str(code).strip()
+
+                # 如果是编码，转换为名称
+                if code_str in PROVINCE_CODE_TO_NAME:
+                    return PROVINCE_CODE_TO_NAME[code_str]
+                # 如果已经是名称，直接返回
+                elif code_str in PROVINCE_NAME_TO_CODE.values():
+                    return code_str
+                # 如果都不匹配，可能是未知编码，返回原值并打印警告
+                else:
+                    # 只在第一次遇到时打印警告
+                    if not hasattr(convert_province_code, "_warned_codes"):
+                        convert_province_code._warned_codes = set()
+                    if code_str not in convert_province_code._warned_codes:
+                        print(f"  ⚠️  发现未知省份编码: {code_str}，将保留原值")
+                        convert_province_code._warned_codes.add(code_str)
+                    return code_str  # 返回原值（可能是未知编码）
+
+            df[province_col] = df[province_col].apply(convert_province_code)
+            # 过滤掉转换失败或为None的省份
+            df = df.dropna(subset=[province_col])
+
             # 按省份分组，使用字典直接聚合而不是append
             for province in df[province_col].unique():
                 province_data = df[df[province_col] == province].copy()
@@ -291,6 +367,12 @@ def load_data_by_province(year):
 
     # 合并每个省份的数据（使用concat但及时释放）
     print(f"\n📊 按省份分组，共 {len(data_by_province)} 个省份")
+
+    # 统计转换后的省份
+    converted_provinces = sorted(data_by_province.keys())
+    print(
+        f"  转换后的省份列表: {', '.join(converted_provinces[:10])}{'...' if len(converted_provinces) > 10 else ''}"
+    )
 
     result = {}
     for province, data_list in data_by_province.items():

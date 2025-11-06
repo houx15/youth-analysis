@@ -40,6 +40,48 @@ INPUT_DIR = "embedding_analysis"
 OUTPUT_DIR = "embedding_visualization"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# 省份编码映射（GB/T 2260 中华人民共和国行政区划代码）
+# 如果analyzer输出的省份是编码格式，将编码转换为省份名称
+PROVINCE_CODE_TO_NAME = {
+    "11": "北京",
+    "12": "天津",
+    "13": "河北",
+    "14": "山西",
+    "15": "内蒙古",
+    "21": "辽宁",
+    "22": "吉林",
+    "23": "黑龙江",
+    "31": "上海",
+    "32": "江苏",
+    "33": "浙江",
+    "34": "安徽",
+    "35": "福建",
+    "36": "江西",
+    "37": "山东",
+    "41": "河南",
+    "42": "湖北",
+    "43": "湖南",
+    "44": "广东",
+    "45": "广西",
+    "46": "海南",
+    "50": "重庆",
+    "51": "四川",
+    "52": "贵州",
+    "53": "云南",
+    "54": "西藏",
+    "61": "陕西",
+    "62": "甘肃",
+    "63": "青海",
+    "64": "宁夏",
+    "65": "新疆",
+    "71": "台湾",
+    "81": "香港",
+    "82": "澳门",
+    # 处理可能的非标准编码
+    "100": "未知",
+    "400": "未知",
+}
+
 # 省份名称标准化映射（处理shapefile中的命名差异）
 PROVINCE_NAME_MAPPING = {
     "北京": "北京市",
@@ -107,9 +149,61 @@ def load_results(year):
     stats_df = pd.read_csv(stats_file)
     occupation_df = pd.read_csv(occupation_file)
 
+    # 将省份编码转换为省份名称（如果analyzer输出的是编码格式）
+    def convert_province_code(province):
+        """将省份编码转换为省份名称"""
+        if pd.isna(province):
+            return province
+        # 统一转换为字符串格式处理
+        if isinstance(province, (int, float)):
+            code_str = str(int(province))  # 去掉小数点
+        else:
+            code_str = str(province).strip()
+
+        # 如果是编码，转换为名称
+        if code_str in PROVINCE_CODE_TO_NAME:
+            return PROVINCE_CODE_TO_NAME[code_str]
+        # 如果已经是名称，直接返回
+        elif code_str in PROVINCE_TO_REGION:
+            return code_str
+        # 如果都不匹配，返回原值
+        return code_str
+
+    # 转换省份编码
+    print(f"  正在检查并转换省份编码...")
+    original_provinces = set(stats_df["province"].unique())
+
+    # 统计有多少是编码格式
+    code_count = sum(
+        1 for p in original_provinces if str(p).strip() in PROVINCE_CODE_TO_NAME
+    )
+    name_count = len(original_provinces) - code_count
+
+    if code_count > 0:
+        print(f"  发现 {code_count} 个编码格式的省份，{name_count} 个名称格式的省份")
+
+    stats_df["province"] = stats_df["province"].apply(convert_province_code)
+    occupation_df["province"] = occupation_df["province"].apply(convert_province_code)
+
+    # 检查转换结果
+    unique_provinces = stats_df["province"].unique()
+    print(
+        f"  转换后的省份: {', '.join(sorted(unique_provinces)[:15])}{'...' if len(unique_provinces) > 15 else ''}"
+    )
+
+    # 检查是否有未识别的省份
+    unknown_provinces = [p for p in unique_provinces if p not in PROVINCE_TO_REGION]
+    if unknown_provinces:
+        print(f"  ⚠️  以下省份未在区域映射中找到: {', '.join(unknown_provinces)}")
+        print(f"     这些省份可能来自非标准编码，将标记为'未知区域'")
+
     # 添加地理区域信息
     stats_df["region"] = stats_df["province"].map(PROVINCE_TO_REGION)
     occupation_df["region"] = occupation_df["province"].map(PROVINCE_TO_REGION)
+
+    # 处理未识别的省份
+    stats_df["region"] = stats_df["region"].fillna("未知区域")
+    occupation_df["region"] = occupation_df["region"].fillna("未知区域")
 
     print(f"✓ 加载了 {len(stats_df)} 个省份的数据")
     print(f"✓ 加载了 {len(occupation_df)} 条职业-省份记录")
