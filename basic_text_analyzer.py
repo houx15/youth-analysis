@@ -320,6 +320,14 @@ def analyze_retweet_media(year):
         for gender in total_gender_dist.index:
             print(f"  {gender}: {total_gender_dist[gender]} 人")
 
+        # 统计每个性别中有转发行为的用户数（不管是否转发官方媒体）
+        users_with_retweet = (
+            data[data["is_retweet"] == "1"]
+            .groupby("gender")["user_id"]
+            .nunique()
+            .to_dict()
+        )
+
         # 按性别统计转发情况
         gender_stats = []
         for gender in user_retweet_count["gender"].unique():
@@ -343,6 +351,14 @@ def analyze_retweet_media(year):
                     else 0
                 )
 
+                # 计算有转发行为的用户数和转发官方媒体账号记录者占比
+                users_with_retweet_behavior = users_with_retweet.get(gender, 0)
+                retweet_media_ratio = (
+                    retweet_users / users_with_retweet_behavior
+                    if users_with_retweet_behavior > 0
+                    else 0
+                )
+
                 gender_stats.append(
                     {
                         "gender": gender,
@@ -353,6 +369,8 @@ def analyze_retweet_media(year):
                         "avg_retweets_per_user": avg_retweets,
                         "median_retweets_per_user": median_retweets,
                         "per_capita_retweets": per_capita_retweets,
+                        "users_with_retweet_behavior": users_with_retweet_behavior,
+                        "retweet_media_ratio": retweet_media_ratio,
                     }
                 )
 
@@ -360,6 +378,10 @@ def analyze_retweet_media(year):
                 print(f"  转发用户数: {retweet_users} 人")
                 print(f"  总用户数: {total_users_of_gender} 人")
                 print(f"  转发占比: {retweet_ratio:.4f} ({retweet_ratio*100:.2f}%)")
+                print(f"  有转发行为的用户数: {users_with_retweet_behavior} 人")
+                print(
+                    f"  转发官方媒体账号记录者占比: {retweet_media_ratio:.4f} ({retweet_media_ratio*100:.2f}%)"
+                )
                 print(f"  总转发次数: {total_retweets} 次")
                 print(f"  转发用户平均转发: {avg_retweets:.2f} 次")
                 print(f"  转发用户中位数: {median_retweets:.2f} 次")
