@@ -38,6 +38,12 @@ import numpy as np
 from datetime import datetime, timedelta
 from collections import defaultdict
 import fire
+import matplotlib.pyplot as plt
+import matplotlib
+
+matplotlib.rcParams["font.sans-serif"] = ["Arial Unicode MS", "SimHei", "DejaVu Sans"]
+matplotlib.rcParams["axes.unicode_minus"] = False
+import seaborn as sns
 
 DATA_DIR = "cleaned_weibo_cov"
 OUTPUT_DIR = "analysis_results"
@@ -100,7 +106,14 @@ def load_data_for_year(year, analysis_type="all"):
     if analysis_type == "device":
         required_columns = ["user_id", "device", "nick_name"]
     elif analysis_type == "retweet":
-        required_columns = ["user_id", "is_retweet", "r_user_id", "gender"]
+        required_columns = [
+            "user_id",
+            "is_retweet",
+            "r_user_id",
+            "gender",
+            "time_stamp",
+            "r_time_stamp",
+        ]
     else:  # all
         required_columns = [
             "user_id",
@@ -294,7 +307,40 @@ def analyze_retweet_media(year):
 
     print(f"共找到 {len(retweet_media)} 条转发官方媒体的记录")
 
-    # 基本统计：每个用户的转发次数
+    # 计算转发间隔（转发时间 - 原微博时间）
+    # 处理时间戳字段，转换为数值类型（秒）
+    has_interval_data = False
+    if (
+        "time_stamp" in retweet_media.columns
+        and "r_time_stamp" in retweet_media.columns
+    ):
+        # 尝试将时间戳转换为数值类型
+        try:
+            retweet_media = retweet_media.copy()
+            retweet_media["time_stamp_num"] = pd.to_numeric(
+                retweet_media["time_stamp"], errors="coerce"
+            )
+            retweet_media["r_time_stamp_num"] = pd.to_numeric(
+                retweet_media["r_time_stamp"], errors="coerce"
+            )
+            # 计算转发间隔（秒）
+            retweet_media["retweet_interval"] = (
+                retweet_media["r_time_stamp_num"] - retweet_media["time_stamp_num"]
+            )
+            # 标记有效的转发间隔（大于0且不为NaN）
+            valid_intervals = retweet_media[
+                (retweet_media["retweet_interval"] > 0)
+                & (retweet_media["retweet_interval"].notna())
+            ]
+            print(f"其中 {len(valid_intervals)} 条记录有有效的转发间隔数据")
+            has_interval_data = len(valid_intervals) > 0
+        except Exception as e:
+            print(f"计算转发间隔时出错: {e}，将跳过转发间隔分析")
+            retweet_media["retweet_interval"] = None
+    else:
+        retweet_media["retweet_interval"] = None
+
+    # 基本统计：每个用户的转发次数（使用所有转发记录）
     user_retweet_count = (
         retweet_media.groupby("user_id").size().reset_index(name="retweet_count")
     )
@@ -359,6 +405,20 @@ def analyze_retweet_media(year):
                     else 0
                 )
 
+                # 计算平均转发间隔（秒）
+                avg_retweet_interval = None
+                median_retweet_interval = None
+                if "retweet_interval" in retweet_media.columns:
+                    gender_retweet_data = retweet_media[
+                        retweet_media["gender"] == gender
+                    ]
+                    valid_intervals = gender_retweet_data[
+                        gender_retweet_data["retweet_interval"].notna()
+                    ]["retweet_interval"]
+                    if len(valid_intervals) > 0:
+                        avg_retweet_interval = valid_intervals.mean()
+                        median_retweet_interval = valid_intervals.median()
+
                 gender_stats.append(
                     {
                         "gender": gender,
@@ -371,6 +431,8 @@ def analyze_retweet_media(year):
                         "per_capita_retweets": per_capita_retweets,
                         "users_with_retweet_behavior": users_with_retweet_behavior,
                         "retweet_media_ratio": retweet_media_ratio,
+                        "avg_retweet_interval_seconds": avg_retweet_interval,
+                        "median_retweet_interval_seconds": median_retweet_interval,
                     }
                 )
 
@@ -386,6 +448,36 @@ def analyze_retweet_media(year):
                 print(f"  转发用户平均转发: {avg_retweets:.2f} 次")
                 print(f"  转发用户中位数: {median_retweets:.2f} 次")
                 print(f"  人均转发次数: {per_capita_retweets:.4f} 次")
+                if avg_retweet_interval is not None:
+                    # 将秒转换为更易读的格式
+                    hours = avg_retweet_interval / 3600
+                    minutes = (avg_retweet_interval % 3600) / 60
+                    seconds = avg_retweet_interval % 60
+                    if hours >= 1:
+                        print(
+                            f"  平均转发间隔: {avg_retweet_interval:.0f} 秒 ({hours:.1f} 小时)"
+                        )
+                    elif minutes >= 1:
+                        print(
+                            f"  平均转发间隔: {avg_retweet_interval:.0f} 秒 ({minutes:.1f} 分钟)"
+                        )
+                    else:
+                        print(f"  平均转发间隔: {avg_retweet_interval:.0f} 秒")
+                    if median_retweet_interval is not None:
+                        median_hours = median_retweet_interval / 3600
+                        median_minutes = (median_retweet_interval % 3600) / 60
+                        if median_hours >= 1:
+                            print(
+                                f"  中位转发间隔: {median_retweet_interval:.0f} 秒 ({median_hours:.1f} 小时)"
+                            )
+                        elif median_minutes >= 1:
+                            print(
+                                f"  中位转发间隔: {median_retweet_interval:.0f} 秒 ({median_minutes:.1f} 分钟)"
+                            )
+                        else:
+                            print(f"  中位转发间隔: {median_retweet_interval:.0f} 秒")
+                else:
+                    print(f"  平均转发间隔: 无数据")
 
         # 保存性别统计摘要
         gender_stats_df = pd.DataFrame(gender_stats)
@@ -396,6 +488,151 @@ def analyze_retweet_media(year):
             gender_summary_file, engine="fastparquet", index=False
         )
         print(f"性别统计摘要已保存到: {gender_summary_file}")
+
+        # 绘制转发次数和转发间隔的分布对比图
+        if has_gender and len(user_retweet_count) > 0:
+            # 准备转发次数数据（每个用户的转发次数，按性别分组）
+            retweet_count_data = user_retweet_count[["gender", "retweet_count"]].copy()
+            retweet_count_data = retweet_count_data[
+                retweet_count_data["gender"].notna()
+            ]
+
+            # 准备转发间隔数据（每条转发记录的间隔，按性别分组）
+            interval_data = None
+            if "retweet_interval" in retweet_media.columns:
+                interval_df = retweet_media[["gender", "retweet_interval"]].copy()
+                interval_df = interval_df[
+                    (interval_df["gender"].notna())
+                    & (interval_df["retweet_interval"].notna())
+                    & (interval_df["retweet_interval"] > 0)
+                ]
+                if len(interval_df) > 0:
+                    interval_data = interval_df
+
+            # 绘制转发次数分布对比图
+            if len(retweet_count_data) > 0:
+                fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+                # 左图：箱线图
+                ax1 = axes[0]
+                genders = retweet_count_data["gender"].unique()
+                box_data = [
+                    retweet_count_data[retweet_count_data["gender"] == g][
+                        "retweet_count"
+                    ].values
+                    for g in genders
+                ]
+                bp = ax1.boxplot(box_data, labels=genders, patch_artist=True)
+                # 设置箱线图颜色
+                colors = ["#FF6B6B", "#4ECDC4", "#95E1D3", "#F38181"]
+                for patch, color in zip(bp["boxes"], colors[: len(bp["boxes"])]):
+                    patch.set_facecolor(color)
+                    patch.set_alpha(0.7)
+                ax1.set_xlabel("性别", fontsize=12)
+                ax1.set_ylabel("转发次数", fontsize=12)
+                ax1.set_title(
+                    f"{year}年转发官方媒体次数分布对比（箱线图）",
+                    fontsize=13,
+                    fontweight="bold",
+                )
+                ax1.grid(True, alpha=0.3)
+
+                # 右图：KDE图
+                ax2 = axes[1]
+                # 检查所有数据的最大值，决定是否使用对数变换
+                max_count = retweet_count_data["retweet_count"].max()
+                use_log = max_count > 100
+
+                for gender in genders:
+                    gender_data = retweet_count_data[
+                        retweet_count_data["gender"] == gender
+                    ]["retweet_count"]
+                    # 对数据进行对数变换以便更好地展示分布（如果数据范围很大）
+                    if use_log:
+                        log_data = np.log1p(gender_data)
+                        sns.kdeplot(log_data, ax=ax2, label=f"{gender}性", linewidth=2)
+                    else:
+                        sns.kdeplot(
+                            gender_data, ax=ax2, label=f"{gender}性", linewidth=2
+                        )
+                if use_log:
+                    ax2.set_xlabel("转发次数（对数变换）", fontsize=12)
+                else:
+                    ax2.set_xlabel("转发次数", fontsize=12)
+                ax2.set_ylabel("密度", fontsize=12)
+                ax2.set_title(
+                    f"{year}年转发官方媒体次数分布对比（KDE）",
+                    fontsize=13,
+                    fontweight="bold",
+                )
+                ax2.legend()
+                ax2.grid(True, alpha=0.3)
+
+                plt.tight_layout()
+                fig_path = os.path.join(
+                    OUTPUT_DIR, f"retweet_count_distribution_{year}.pdf"
+                )
+                plt.savefig(fig_path, format="pdf", bbox_inches="tight", dpi=300)
+                plt.close()
+                print(f"转发次数分布对比图已保存到: {fig_path}")
+
+            # 绘制转发间隔分布对比图
+            if interval_data is not None and len(interval_data) > 0:
+                fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+                # 左图：箱线图（使用对数变换，因为间隔可能差异很大）
+                ax1 = axes[0]
+                genders = interval_data["gender"].unique()
+                # 转换为小时以便更好地展示
+                interval_hours = interval_data.copy()
+                interval_hours["interval_hours"] = (
+                    interval_hours["retweet_interval"] / 3600
+                )
+                box_data = [
+                    interval_hours[interval_hours["gender"] == g][
+                        "interval_hours"
+                    ].values
+                    for g in genders
+                ]
+                bp = ax1.boxplot(box_data, labels=genders, patch_artist=True)
+                # 设置箱线图颜色
+                colors = ["#FF6B6B", "#4ECDC4", "#95E1D3", "#F38181"]
+                for patch, color in zip(bp["boxes"], colors[: len(bp["boxes"])]):
+                    patch.set_facecolor(color)
+                    patch.set_alpha(0.7)
+                ax1.set_xlabel("性别", fontsize=12)
+                ax1.set_ylabel("转发间隔（小时）", fontsize=12)
+                ax1.set_title(
+                    f"{year}年转发间隔分布对比（箱线图）",
+                    fontsize=13,
+                    fontweight="bold",
+                )
+                ax1.grid(True, alpha=0.3)
+
+                # 右图：KDE图（使用对数变换）
+                ax2 = axes[1]
+                for gender in genders:
+                    gender_data = interval_hours[interval_hours["gender"] == gender][
+                        "interval_hours"
+                    ]
+                    # 使用对数变换以便更好地展示分布
+                    log_data = np.log1p(gender_data)
+                    sns.kdeplot(log_data, ax=ax2, label=f"{gender}性", linewidth=2)
+                ax2.set_xlabel("转发间隔（小时，对数变换）", fontsize=12)
+                ax2.set_ylabel("密度", fontsize=12)
+                ax2.set_title(
+                    f"{year}年转发间隔分布对比（KDE）", fontsize=13, fontweight="bold"
+                )
+                ax2.legend()
+                ax2.grid(True, alpha=0.3)
+
+                plt.tight_layout()
+                fig_path = os.path.join(
+                    OUTPUT_DIR, f"retweet_interval_distribution_{year}.pdf"
+                )
+                plt.savefig(fig_path, format="pdf", bbox_inches="tight", dpi=300)
+                plt.close()
+                print(f"转发间隔分布对比图已保存到: {fig_path}")
 
     # 保存详细结果
     output_file = os.path.join(OUTPUT_DIR, f"retweet_media_{year}.parquet")
