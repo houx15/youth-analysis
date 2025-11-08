@@ -96,18 +96,8 @@ def load_official_media_ids():
     try:
         from get_news_ids import load_news_user_ids
 
-        raw_ids = load_news_user_ids()
-        # 将字符串ID转换为整数（因为user_id通常是int64类型）
-        # 同时保留字符串版本以兼容不同情况
-        OFFICIAL_MEDIA_IDS = set()
-        for id_str in raw_ids:
-            try:
-                # 尝试转换为整数
-                id_int = int(id_str)
-                OFFICIAL_MEDIA_IDS.add(id_int)
-            except (ValueError, TypeError):
-                # 如果转换失败，保留原字符串
-                OFFICIAL_MEDIA_IDS.add(id_str)
+        # 直接使用字符串ID（因为r_user_id是字符串格式）
+        OFFICIAL_MEDIA_IDS = load_news_user_ids()
         print(f"已加载 {len(OFFICIAL_MEDIA_IDS)} 个官方媒体账号ID")
     except ImportError:
         print("警告: 无法导入 get_news_ids 模块，请确保已生成新闻账号ID")
@@ -167,7 +157,8 @@ def load_official_media_content(year):
         try:
             df = pd.read_parquet(file_path, columns=["user_id", "weibo_content"])
             # 只保留官方媒体账号发布的内容
-            official_df = df[df["user_id"].isin(OFFICIAL_MEDIA_IDS)]
+            # 将user_id转换为字符串进行比较
+            official_df = df[df["user_id"].astype(str).isin(OFFICIAL_MEDIA_IDS)]
 
             for content in official_df["weibo_content"]:
                 if pd.notna(content) and content != "":
@@ -295,7 +286,8 @@ def analyze_news_density_by_gender(year, news_vocab):
             )
 
             # 排除官方媒体用户
-            df = df[~df["user_id"].isin(OFFICIAL_MEDIA_IDS)]
+            # 将user_id转换为字符串进行比较
+            df = df[~df["user_id"].astype(str).isin(OFFICIAL_MEDIA_IDS)]
 
             # 只保留有性别信息的记录
             df = df[df["gender"].notna()]

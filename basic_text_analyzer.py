@@ -63,18 +63,8 @@ def load_official_media_ids():
     try:
         from get_news_ids import load_news_user_ids
 
-        raw_ids = load_news_user_ids()
-        # 将字符串ID转换为整数（因为user_id通常是int64类型）
-        # 同时保留字符串版本以兼容不同情况
-        OFFICIAL_MEDIA_IDS = set()
-        for id_str in raw_ids:
-            try:
-                # 尝试转换为整数
-                id_int = int(id_str)
-                OFFICIAL_MEDIA_IDS.add(id_int)
-            except (ValueError, TypeError):
-                # 如果转换失败，保留原字符串
-                OFFICIAL_MEDIA_IDS.add(id_str)
+        # 直接使用字符串ID（因为r_user_id是字符串格式）
+        OFFICIAL_MEDIA_IDS = load_news_user_ids()
         print(f"已加载 {len(OFFICIAL_MEDIA_IDS)} 个官方媒体账号ID")
     except ImportError:
         print("警告: 无法导入 get_news_ids 模块，请确保已生成新闻账号ID")
@@ -304,12 +294,15 @@ def analyze_retweet_media(year):
         print(f"数据不包含性别字段，将进行基本分析")
 
     # 排除官方媒体用户ID（避免官方媒体转发自己）
-    data = data[~data["user_id"].isin(OFFICIAL_MEDIA_IDS)]
+    # 将user_id转换为字符串进行比较
+    data = data[~data["user_id"].astype(str).isin(OFFICIAL_MEDIA_IDS)]
     print(f"排除官方媒体用户后，剩余 {len(data)} 条记录")
 
     # 只保留转发官方媒体的记录
+    # r_user_id已经是字符串格式，user_id需要转换为字符串
     retweet_media = data[
-        (data["is_retweet"] == "1") & (data["r_user_id"].isin(OFFICIAL_MEDIA_IDS))
+        (data["is_retweet"] == "1")
+        & (data["r_user_id"].astype(str).isin(OFFICIAL_MEDIA_IDS))
     ]
 
     if len(retweet_media) == 0:
