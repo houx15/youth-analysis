@@ -329,7 +329,7 @@ def analyze_retweet_media(year):
             )
             # 计算转发间隔（秒）
             retweet_media["retweet_interval"] = (
-                retweet_media["r_time_stamp_num"] - retweet_media["time_stamp_num"]
+                retweet_media["time_stamp_num"] - retweet_media["r_time_stamp_num"]
             )
             # 标记有效的转发间隔（大于0且不为NaN）
             valid_intervals = retweet_media[
