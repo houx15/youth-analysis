@@ -373,25 +373,38 @@ def analyze_news_density(year):
     print(f"开始分析 {year} 年新闻密度（News Density）")
     print(f"{'='*60}")
 
-    # 1. 加载官方媒体内容
-    official_texts, official_segmented = load_official_media_content(year)
-    if not official_segmented or len(official_segmented) == 0:
-        print("错误: 无法加载官方媒体内容")
-        return
+    news_vocab_file = os.path.join("configs", f"news_vocabulary_{year}.txt")
+    has_vocab = False
 
-    # 2. 构建官方媒体核心新闻词表
-    # 使用分词后的文本列表（词列表的列表）
-    news_vocab = build_news_vocabulary(official_segmented, top_n=5000)
-    if not news_vocab:
-        print("错误: 无法构建新闻词表")
-        return
+    if os.path.exists(news_vocab_file):
+        has_vocab = True
+        with open(news_vocab_file, "r", encoding="utf-8") as f:
+            news_vocab = set(line.strip() for line in f)
+    else:
+        print(f"未找到新闻词表文件: {news_vocab_file}")
 
-    # 3. 保存新闻词表
-    vocab_file = os.path.join(OUTPUT_DIR, f"news_vocabulary_{year}.txt")
-    with open(vocab_file, "w", encoding="utf-8") as f:
-        for word in sorted(news_vocab):
-            f.write(word + "\n")
-    print(f"新闻词表已保存到: {vocab_file}")
+    if not has_vocab:
+        # 1. 加载官方媒体内容
+        official_texts, official_segmented = load_official_media_content(year)
+        if not official_segmented or len(official_segmented) == 0:
+            print("错误: 无法加载官方媒体内容")
+            return
+
+        # 2. 构建官方媒体核心新闻词表
+        # 使用分词后的文本列表（词列表的列表）
+        news_vocab = build_news_vocabulary(official_segmented, top_n=5000)
+        if not news_vocab:
+            print("错误: 无法构建新闻词表")
+            return
+
+        # 3. 保存新闻词表
+        vocab_file = os.path.join(OUTPUT_DIR, f"news_vocabulary_{year}.txt")
+        with open(vocab_file, "w", encoding="utf-8") as f:
+            for word in sorted(news_vocab):
+                f.write(word + "\n")
+        print(f"新闻词表已保存到: {vocab_file}")
+        print("请人工检查")
+        return
 
     # 4. 分析不同性别的news density
     gender_densities = analyze_news_density_by_gender(year, news_vocab)
