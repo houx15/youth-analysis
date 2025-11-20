@@ -114,6 +114,11 @@ def build_keyword_pattern():
 # 预编译正则表达式模式字符串（全局变量，只编译一次）
 KEYWORD_PATTERN = build_keyword_pattern()
 
+# 链接匹配正则表达式（用于识别URL）
+URL_PATTERN = re.compile(
+    r"(https?://[^\s]+|t\.cn/[^\s]+|http://[^\s]+|www\.[^\s]+)", re.IGNORECASE
+)
+
 
 def process_single_temp_file(
     temp_file_path: str, date_str: str
@@ -288,11 +293,197 @@ def process_year(year: int, mode: int = 0):
     process_date_range(start_str, end_str)
 
 
+def extract_original_content(content: str) -> str:
+    """
+    从微博内容中提取原始内容，去除转发部分
+    使用//分割，保留第0个部分（原始内容）
+
+    Args:
+        content: 微博内容
+
+    Returns:
+        提取的原始内容
+    """
+    if pd.isna(content) or not content:
+        return ""
+
+    content_str = str(content)
+    # 使用//分割，保留第一部分（原始内容）
+    parts = content_str.split("//")
+    if parts:
+        return parts[0].strip()
+    return content_str
+
+
+def keyword_in_url(content: str) -> bool:
+    """
+    检查关键词是否出现在链接中
+
+    Args:
+        content: 微博内容
+
+    Returns:
+        如果关键词出现在链接中返回True，否则返回False
+    """
+    if pd.isna(content) or not content:
+        return False
+
+    content_str = str(content)
+    # 查找所有链接
+    urls = URL_PATTERN.findall(content_str)
+
+    if not urls:
+        return False
+
+    # 检查链接中是否包含关键词（只检查链接部分，不检查整个内容）
+    for url in urls:
+        url_lower = url.lower()
+        # 检查这个链接中是否包含任何关键词
+        for keyword in AI_KEYWORDS:
+            keyword_lower = keyword.lower()
+            # 确保关键词是作为完整单词或子串出现在URL中
+            if keyword_lower in url_lower:
+                return True
+
+    return False
+
+
+def clean_single_date(date_str: str) -> int:
+    """
+    清洗单个日期的数据，去除误匹配的记录
+
+    Args:
+        date_str: 日期字符串，格式为 yyyy-mm-dd
+
+    Returns:
+        清洗后保留的记录数量
+    """
+    start_time = time.time()
+
+    input_file = os.path.join(OUTPUT_DIR, f"{date_str}.parquet")
+
+    if not os.path.exists(input_file):
+        log(f"未找到 {date_str} 的数据文件: {input_file}")
+        return 0
+
+    try:
+        log(f"正在清洗: {date_str}")
+
+        # 读取数据
+        df = pd.read_parquet(input_file, engine="fastparquet")
+        original_count = len(df)
+
+        if original_count == 0:
+            log(f"  {date_str}: 数据为空，跳过清洗")
+            return 0
+
+        # 1. 提取原始内容（去除转发部分）
+        df["original_content"] = df["weibo_content"].apply(extract_original_content)
+
+        # 2. 检查原始内容中是否包含关键词（去除转发后的内容）
+        mask_has_keyword = (
+            df["original_content"]
+            .astype(str)
+            .str.lower()
+            .str.contains(KEYWORD_PATTERN, na=False, regex=True)
+        )
+
+        # 3. 检查关键词是否在链接中（如果是，则剔除）
+        mask_keyword_in_url = df["weibo_content"].apply(keyword_in_url)
+
+        # 最终筛选：原始内容包含关键词 且 关键词不在链接中
+        final_mask = mask_has_keyword & (~mask_keyword_in_url)
+
+        # 筛选数据
+        cleaned_df = df[final_mask].copy()
+
+        # 删除临时列
+        cleaned_df = cleaned_df.drop(columns=["original_content"], errors="ignore")
+
+        removed_count = original_count - len(cleaned_df)
+
+        if len(cleaned_df) == 0:
+            log(f"  {date_str}: 清洗后无有效记录，删除原文件")
+            os.remove(input_file)
+            elapsed_time = int(time.time() - start_time)
+            log(
+                f"  {date_str}: 原始 {original_count} 条，剔除 {removed_count} 条，耗时 {elapsed_time} 秒"
+            )
+            return 0
+
+        # 保存清洗后的数据（覆盖原文件）
+        cleaned_df.to_parquet(
+            input_file, engine="fastparquet", index=False, compression="gzip"
+        )
+
+        elapsed_time = int(time.time() - start_time)
+        log(
+            f"  {date_str}: 原始 {original_count} 条，剔除 {removed_count} 条，保留 {len(cleaned_df)} 条，耗时 {elapsed_time} 秒"
+        )
+
+        return len(cleaned_df)
+
+    except Exception as e:
+        error_msg = f"清洗 {date_str} 时出错: {e}"
+        log(error_msg)
+        import traceback
+
+        traceback.print_exc()
+        return 0
+
+
+def clean_date_range(start_date: str, end_date: str):
+    """
+    清洗日期范围内的所有数据
+
+    Args:
+        start_date: 开始日期，格式为 yyyy-mm-dd
+        end_date: 结束日期，格式为 yyyy-mm-dd
+    """
+    start = datetime.strptime(start_date, "%Y-%m-%d")
+    end = datetime.strptime(end_date, "%Y-%m-%d")
+
+    current_date = start
+    total_original = 0
+    total_cleaned = 0
+
+    while current_date <= end:
+        date_str = current_date.strftime("%Y-%m-%d")
+        cleaned_count = clean_single_date(date_str)
+        total_cleaned += cleaned_count
+        current_date += timedelta(days=1)
+
+    log(f"\n清洗完成！共保留 {total_cleaned} 条记录")
+
+
+def clean_year(year: int, mode: int = 0):
+    """
+    清洗指定年份的数据
+
+    Args:
+        year: 年份
+        mode: 处理模式，0=上半年，1=下半年（默认：0）
+    """
+    start_date_options = [datetime(year, 1, 1), datetime(year, 7, 1)]
+    end_date_options = [datetime(year, 6, 30), datetime(year, 12, 31)]
+    start_date = start_date_options[mode]
+    end_date = end_date_options[mode]
+
+    start_str = start_date.strftime("%Y-%m-%d")
+    end_str = end_date.strftime("%Y-%m-%d")
+
+    log(f"开始清洗 {year} 年，模式 {'下半年' if mode == 1 else '上半年'}")
+    log(f"日期范围: {start_str} 到 {end_str}")
+
+    clean_date_range(start_str, end_str)
+
+
 def main(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     year: Optional[int] = None,
     mode: int = 0,
+    clean: bool = False,
 ):
     """
     主函数
@@ -302,20 +493,38 @@ def main(
         end_date: 结束日期，格式为 yyyy-mm-dd（与start_date一起使用）
         year: 年份（与mode一起使用）
         mode: 处理模式，0=上半年，1=下半年（默认：0，与year一起使用）
+        clean: 是否执行清洗模式（默认：False）
     """
-    if start_date and end_date:
-        # 使用日期范围模式
-        process_date_range(start_date, end_date)
-    elif year:
-        # 使用年份模式
-        process_year(year, mode)
+    if clean:
+        # 清洗模式
+        if start_date and end_date:
+            clean_date_range(start_date, end_date)
+        elif year:
+            clean_year(year, mode)
+        else:
+            log("清洗模式：请提供 start_date 和 end_date，或者提供 year 参数")
+            log("示例:")
+            log(
+                "  python ai_content_extractor.py --clean --start_date 2024-01-01 --end_date 2024-12-31"
+            )
+            log("  python ai_content_extractor.py --clean --year 2024 --mode 0")
     else:
-        log("请提供 start_date 和 end_date，或者提供 year 参数")
-        log("示例:")
-        log(
-            "  python ai_content_extractor.py --start_date 2024-01-01 --end_date 2024-12-31"
-        )
-        log("  python ai_content_extractor.py --year 2024 --mode 0")
+        # 正常提取模式
+        if start_date and end_date:
+            # 使用日期范围模式
+            process_date_range(start_date, end_date)
+        elif year:
+            # 使用年份模式
+            process_year(year, mode)
+        else:
+            log("请提供 start_date 和 end_date，或者提供 year 参数")
+            log("示例:")
+            log(
+                "  python ai_content_extractor.py --start_date 2024-01-01 --end_date 2024-12-31"
+            )
+            log("  python ai_content_extractor.py --year 2024 --mode 0")
+            log("\n清洗模式:")
+            log("  python ai_content_extractor.py --clean --year 2024 --mode 0")
 
 
 if __name__ == "__main__":
