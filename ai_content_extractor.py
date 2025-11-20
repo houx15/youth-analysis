@@ -12,7 +12,6 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 AI_KEYWORDS = [
-    "ai",
     "人工智能",
     "transformer",
     "agi",
@@ -37,12 +36,12 @@ AI_KEYWORDS = [
     "deepseek",
     "sora",
     "通义千问",
+    "千问",
     "火山引擎",
     "豆包",
     "腾讯元宝",
-    "可灵",
+    "可灵ai",
     "qwen",
-    "qwq",
     "doubao",
     "kimi",
     "stable diffusion",
@@ -54,7 +53,6 @@ AI_KEYWORDS = [
     "openrouter",
     "辛顿",
     "copilot",
-    "奥特曼",
     "李飞飞",
     "andrej karpathy",
     "lecun",
@@ -63,7 +61,7 @@ AI_KEYWORDS = [
     "rlhf",
     "agent",
     "vibe coding",
-    "RAG",
+    "rag",
     "prompt",
     "即梦",
     "智谱",
@@ -72,7 +70,7 @@ AI_KEYWORDS = [
     "梁文锋",
     "智能体",
     "提示词",
-    "GLM",
+    "glm",
 ]
 
 # 输入数据目录（basic_text_extractor处理后的数据）
