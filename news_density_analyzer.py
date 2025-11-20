@@ -21,6 +21,7 @@ import seaborn as sns
 import fire
 from tqdm import tqdm
 import glob
+import pickle
 
 matplotlib.rcParams["font.sans-serif"] = ["Arial Unicode MS", "SimHei", "DejaVu Sans"]
 matplotlib.rcParams["axes.unicode_minus"] = False
@@ -258,6 +259,37 @@ def calculate_news_density(content, news_vocab):
     return density
 
 
+def calculate_news_density_fast(content, news_vocab):
+    """快速计算news density（基于字符长度，不需要分词）
+
+    直接检查news_vocab中的词在清理后的文本中的出现，
+    计算占有的字符长度除以语句总长度。
+    """
+    if pd.isna(content) or content == "":
+        return 0.0
+
+    # 清理文本（删除链接、特殊字符等）
+    cleaned_text = sentence_cleaner(content)
+    if cleaned_text == "" or cleaned_text == "转发微博":
+        return 0.0
+
+    total_length = len(cleaned_text)
+    if total_length == 0:
+        return 0.0
+
+    # 计算新闻词汇在文本中占有的字符长度
+    news_char_length = 0
+    for word in news_vocab:
+        # 计算该词在文本中出现的所有位置的总字符长度
+        count = cleaned_text.count(word)
+        if count > 0:
+            news_char_length += len(word) * count
+
+    # news density = 新闻词汇字符长度 / 总字符长度
+    density = news_char_length / total_length if total_length > 0 else 0.0
+    return density
+
+
 def analyze_news_density_by_gender(year, news_vocab):
     """分析不同性别的news density"""
     print(f"\n开始分析 {year} 年不同性别的news density...")
@@ -276,8 +308,8 @@ def analyze_news_density_by_gender(year, news_vocab):
 
     print(f"找到 {len(parquet_files)} 个文件")
 
-    # 排除官方媒体用户ID（避免官方媒体转发自己）
-    gender_densities = defaultdict(list)
+    # 使用字典存储每个性别的numpy数组
+    gender_densities = {}
 
     for file_path in tqdm(parquet_files, desc="计算news density"):
         try:
@@ -286,36 +318,83 @@ def analyze_news_density_by_gender(year, news_vocab):
             )
 
             # 排除官方媒体用户
-            # 将user_id转换为字符串进行比较
             df = df[~df["user_id"].astype(str).isin(OFFICIAL_MEDIA_IDS)]
 
             # 只保留有性别信息的记录
             df = df[df["gender"].notna()]
 
-            for _, row in df.iterrows():
-                density = calculate_news_density(row["weibo_content"], news_vocab)
-                # 记录所有内容的density（包括0），以便完整分析分布
-                gender_densities[row["gender"]].append(density)
+            # 按性别分组
+            for gender in df["gender"].unique():
+                gender_df = df[df["gender"] == gender]
+                n_rows = len(gender_df)
+
+                if n_rows == 0:
+                    continue
+
+                # 为该性别创建对应长度的numpy数组（全为NaN）
+                if gender not in gender_densities:
+                    # 如果是第一次遇到该性别，创建空列表用于后续合并
+                    gender_densities[gender] = []
+
+                # 创建当前批次的numpy数组
+                arr = np.full(n_rows, np.nan, dtype=np.float64)
+
+                # 按行计算并更新numpy数组对应值
+                for idx, content in enumerate(gender_df["weibo_content"]):
+                    arr[idx] = calculate_news_density_fast(content, news_vocab)
+
+                # 将当前批次的数组添加到列表中
+                gender_densities[gender].append(arr)
 
         except Exception as e:
             print(f"处理文件 {file_path} 时出错: {e}")
             continue
 
-    return gender_densities
+    # 合并所有批次的数组
+    result = {}
+    for gender, arr_list in gender_densities.items():
+        # 使用concatenate合并所有数组
+        combined_arr = np.concatenate(arr_list)
+        result[gender] = combined_arr.tolist()
+
+    return result
 
 
-def visualize_news_density_distribution(gender_densities, year):
-    """可视化news density的分布差异"""
+def visualize_news_density_distribution(
+    gender_densities, year, max_samples_per_gender=100000
+):
+    """可视化news density的分布差异
+
+    Args:
+        gender_densities: 字典，键为性别，值为density列表
+        year: 年份
+        max_samples_per_gender: 每个性别最多采样的数据点数，避免PDF文件过大
+    """
     print(f"\n开始绘制news density分布对比图...")
 
     if not gender_densities:
         print("警告: 没有数据可绘制")
         return
 
-    # 准备数据
+    # 准备数据并进行采样，避免数据点过多导致PDF文件过大
     plot_data = []
     for gender, densities in gender_densities.items():
-        for density in densities:
+        densities_array = np.array(densities)
+        n_samples = len(densities_array)
+
+        # 如果数据点太多，进行随机采样
+        if n_samples > max_samples_per_gender:
+            print(
+                f"  {gender}性: {n_samples:,} 个数据点，采样至 {max_samples_per_gender:,} 个"
+            )
+            sampled_indices = np.random.choice(
+                n_samples, size=max_samples_per_gender, replace=False
+            )
+            sampled_densities = densities_array[sampled_indices]
+        else:
+            sampled_densities = densities_array
+
+        for density in sampled_densities:
             plot_data.append({"gender": gender, "news_density": density})
 
     if len(plot_data) == 0:
@@ -323,6 +402,7 @@ def visualize_news_density_distribution(gender_densities, year):
         return
 
     df_plot = pd.DataFrame(plot_data)
+    print(f"  用于绘图的数据点总数: {len(df_plot):,}")
 
     # 创建图表
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
@@ -345,11 +425,22 @@ def visualize_news_density_distribution(gender_densities, year):
     )
     ax1.grid(True, alpha=0.3)
 
-    # 右图：KDE图
+    # 右图：KDE图（使用采样后的数据）
     ax2 = axes[1]
     for gender in genders:
         gender_data = df_plot[df_plot["gender"] == gender]["news_density"]
-        sns.kdeplot(gender_data, ax=ax2, label=f"{gender}性", linewidth=2)
+        # 使用bw_adjust参数控制KDE的平滑度，避免过度密集的曲线
+        # 注意：即使KDE画出来是一条线，但当数据点非常多时，
+        # matplotlib的PDF后端会存储大量路径点，导致文件巨大
+        # 因此需要对数据进行采样，或使用bw_adjust使曲线更平滑
+        sns.kdeplot(
+            gender_data,
+            ax=ax2,
+            label=f"{gender}性",
+            linewidth=2,
+            bw_adjust=0.5,  # 增加带宽调整，使曲线更平滑，减少PDF文件大小
+            gridsize=200,  # 限制KDE评估的网格点数，进一步减少路径点数量
+        )
     ax2.set_xlabel("News Density", fontsize=12)
     ax2.set_ylabel("密度", fontsize=12)
     ax2.set_title(
@@ -362,9 +453,20 @@ def visualize_news_density_distribution(gender_densities, year):
 
     plt.tight_layout()
     fig_path = os.path.join(OUTPUT_DIR, f"news_density_distribution_{year}.pdf")
-    plt.savefig(fig_path, format="pdf", bbox_inches="tight", dpi=300)
+    # 使用rasterized=True可以进一步减小PDF文件大小（将某些元素栅格化）
+    plt.savefig(
+        fig_path,
+        format="pdf",
+        bbox_inches="tight",
+        dpi=300,
+        rasterized=True,  # 栅格化复杂图形元素，减小文件大小
+    )
     plt.close()
+
+    # 检查文件大小
+    file_size_mb = os.path.getsize(fig_path) / (1024 * 1024)
     print(f"News Density分布对比图已保存到: {fig_path}")
+    print(f"  文件大小: {file_size_mb:.2f} MB")
 
 
 def analyze_news_density(year):
@@ -406,11 +508,41 @@ def analyze_news_density(year):
         print("请人工检查")
         return
 
-    # 4. 分析不同性别的news density
-    gender_densities = analyze_news_density_by_gender(year, news_vocab)
-    if not gender_densities:
-        print("错误: 无法计算news density")
-        return
+    # 4. 分析不同性别的news density（检查是否已有保存的数据）
+    gender_densities_file = os.path.join(OUTPUT_DIR, f"gender_densities_{year}.pkl")
+
+    if os.path.exists(gender_densities_file):
+        print(f"\n找到已保存的gender_densities数据: {gender_densities_file}")
+        print("正在加载...")
+        try:
+            with open(gender_densities_file, "rb") as f:
+                gender_densities = pickle.load(f)
+            print(f"✓ 成功加载 {len(gender_densities)} 个性别的数据")
+            for gender, densities in gender_densities.items():
+                print(f"  {gender}: {len(densities):,} 条数据")
+        except Exception as e:
+            print(f"加载失败: {e}")
+            print("将重新计算...")
+            gender_densities = analyze_news_density_by_gender(year, news_vocab)
+            if not gender_densities:
+                print("错误: 无法计算news density")
+                return
+            # 保存计算结果
+            print(f"\n保存gender_densities到: {gender_densities_file}")
+            with open(gender_densities_file, "wb") as f:
+                pickle.dump(gender_densities, f)
+            print("✓ 保存成功")
+    else:
+        print(f"\n未找到已保存的数据，开始计算...")
+        gender_densities = analyze_news_density_by_gender(year, news_vocab)
+        if not gender_densities:
+            print("错误: 无法计算news density")
+            return
+        # 保存计算结果
+        print(f"\n保存gender_densities到: {gender_densities_file}")
+        with open(gender_densities_file, "wb") as f:
+            pickle.dump(gender_densities, f)
+        print("✓ 保存成功")
 
     # 5. 打印统计信息
     print(f"\n{'='*60}")
@@ -454,9 +586,133 @@ def analyze_news_density(year):
     print(f"{'='*60}")
 
 
+def visualize_from_saved_stats(year):
+    """Generate boxplot-style visualization from saved statistics
+
+    This function reads the saved statistics file and generates boxplot-style charts
+    to visualize gender differences in news density.
+    Note: Since we only have summary statistics (mean, median, std), we create
+    a boxplot-style visualization based on these statistics.
+    """
+    print(f"\n{'='*60}")
+    print(f"Generating News Density visualization for year {year} from saved data")
+    print(f"{'='*60}")
+
+    # 1. Read statistics file
+    stats_file = os.path.join(OUTPUT_DIR, f"news_density_stats_{year}.parquet")
+    if not os.path.exists(stats_file):
+        print(f"Error: Statistics file not found: {stats_file}")
+        print("Please run analyze_news_density function first to generate statistics")
+        return
+
+    stats_df = pd.read_parquet(stats_file, engine="fastparquet")
+    print(f"\nLoaded statistics:")
+    print(stats_df.to_string())
+
+    if len(stats_df) < 2:
+        print("Warning: Insufficient data for gender comparison")
+        return
+
+    # 2. Create bar chart with error bars showing mean and standard deviation
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+
+    genders = stats_df["gender"].values
+    means = stats_df["mean"].values
+    stds = stats_df["std"].values
+
+    # Colors for different genders
+    colors = ["#FF6B6B", "#4ECDC4", "#95E1D3", "#F38181"]
+    bar_colors = colors[: len(genders)]
+
+    # Create bar chart with error bars
+    positions = np.arange(1, len(genders) + 1)
+    width = 0.6
+
+    # Draw bars
+    bars = ax.bar(
+        positions,
+        means,
+        width=width,
+        color=bar_colors,
+        alpha=0.7,
+        edgecolor="black",
+        linewidth=1.5,
+        label="Mean",
+    )
+
+    # Add error bars (standard deviation)
+    ax.errorbar(
+        positions,
+        means,
+        yerr=stds,
+        fmt="none",
+        color="black",
+        capsize=8,
+        capthick=2,
+        linewidth=2,
+        label="±1 SD",
+    )
+
+    # Add value labels on bars
+    for i, (bar, mean, std) in enumerate(zip(bars, means, stds)):
+        height = bar.get_height()
+        # Label with mean value
+        ax.text(
+            bar.get_x() + bar.get_width() / 2.0,
+            height + std + 0.01 * max(means),
+            f"{mean:.4f}",
+            ha="center",
+            va="bottom",
+            fontsize=11,
+            fontweight="bold",
+        )
+        # Label with SD value
+        ax.text(
+            bar.get_x() + bar.get_width() / 2.0,
+            height + std / 2,
+            f"SD: {std:.4f}",
+            ha="center",
+            va="center",
+            fontsize=9,
+            style="italic",
+        )
+
+    # Set labels and title
+    ax.set_xticks(positions)
+    ax.set_xticklabels(genders, fontsize=12, fontweight="bold")
+    ax.set_ylabel("News Density", fontsize=13, fontweight="bold")
+    ax.set_title(
+        f"News Density by Gender ({year})",
+        fontsize=14,
+        fontweight="bold",
+        pad=15,
+    )
+    ax.grid(True, alpha=0.3, axis="y", linestyle="--")
+
+    # Ensure y-axis starts from 0 or slightly below
+    y_min = max(0, min(means - stds) * 1.1)
+    ax.set_ylim(bottom=y_min)
+
+    # Add legend
+    ax.legend(loc="upper right", fontsize=10, framealpha=0.9)
+
+    plt.tight_layout()
+    fig_path = os.path.join(OUTPUT_DIR, f"news_density_boxplot_{year}.pdf")
+    plt.savefig(fig_path, format="pdf", bbox_inches="tight", dpi=300)
+    plt.close()
+
+    file_size_mb = os.path.getsize(fig_path) / (1024 * 1024)
+    print(f"\n✓ Boxplot saved to: {fig_path}")
+    print(f"  File size: {file_size_mb:.2f} MB")
+    print(f"\n{'='*60}")
+    print(f"Visualization completed!")
+    print(f"{'='*60}")
+
+
 if __name__ == "__main__":
     fire.Fire(
         {
             "analyze": analyze_news_density,
+            "visualize": visualize_from_saved_stats,
         }
     )
