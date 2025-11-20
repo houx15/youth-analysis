@@ -451,7 +451,7 @@ def check_year_format(year):
         print(f"\n开始检查 {year} 年1月1日文件格式: {file_path}")
         print_first_3_lines(file_path)
         print("\n格式检查完成\n")
-        delete_unzipped_fresh_data_file(year, date_str)
+        # delete_unzipped_fresh_data_file(year, date_str)
     else:
         print(f"无法解压 {year} 年1月1日的数据文件")
 
