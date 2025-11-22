@@ -357,6 +357,27 @@ def remove_urls(content: str) -> str:
     return cleaned_content
 
 
+def remove_mentions(content: str) -> str:
+    """
+    从内容中移除所有@某人的格式（@+用户名+空格）
+
+    Args:
+        content: 微博内容
+
+    Returns:
+        移除@某人后的内容
+    """
+    if pd.isna(content) or not content:
+        return ""
+
+    content_str = str(content)
+    # 匹配 @+用户名+空格 的格式
+    # @后面跟着非空格非@的字符，直到遇到空格或字符串结束
+    mention_pattern = re.compile(r"@[^\s@]+(?=\s|$)")
+    cleaned_content = mention_pattern.sub("", content_str)
+    return cleaned_content
+
+
 def keyword_in_url(content: str) -> bool:
     """
     检查关键词是否出现在链接中
@@ -435,9 +456,12 @@ def clean_single_date(date_str: str) -> int:
         # 2. 从原始内容中移除URL
         df["content_without_url"] = df["original_content"].apply(remove_urls)
 
-        # 3. 检查移除URL后的内容中是否包含关键词
+        # 3. 从内容中移除@某人
+        df["content_cleaned"] = df["content_without_url"].apply(remove_mentions)
+
+        # 4. 检查清理后的内容中是否包含关键词
         mask_has_keyword = (
-            df["content_without_url"]
+            df["content_cleaned"]
             .astype(str)
             .str.lower()
             .str.contains(KEYWORD_PATTERN, na=False, regex=True)
@@ -450,7 +474,10 @@ def clean_single_date(date_str: str) -> int:
         cleaned_df = df[final_mask].copy()
 
         # 删除临时列
-        cleaned_df = cleaned_df.drop(columns=["original_content"], errors="ignore")
+        cleaned_df = cleaned_df.drop(
+            columns=["original_content", "content_without_url"],
+            errors="ignore",
+        )
 
         removed_count = original_count - len(cleaned_df)
 
