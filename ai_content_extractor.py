@@ -28,7 +28,6 @@ AI_KEYWORDS = [
     "perplexity",
     "gpt",
     "claude",
-    "gemini",
     "grok",
     "llama",
     "moonshot",
@@ -100,10 +99,27 @@ def log(text, lid=None):
 def build_keyword_pattern():
     """
     构建正则表达式模式字符串，用于高效匹配所有AI关键词
-    转义特殊字符并构建 OR 模式
+    转义特殊字符并构建 OR 模式，确保英文关键词只匹配完整单词
     """
-    # 转义特殊字符并转换为小写
-    escaped_keywords = [re.escape(kw.lower()) for kw in AI_KEYWORDS]
+    escaped_keywords = []
+    for kw in AI_KEYWORDS:
+        kw_lower = kw.lower()
+        # 转义特殊字符
+        escaped = re.escape(kw_lower)
+
+        # 判断是否为英文关键词（如果包含中文字符，则认为不是纯英文）
+        has_chinese = bool(re.search(r"[\u4e00-\u9fff]", kw))
+
+        if has_chinese:
+            # 中文关键词：不做边界处理，保持简单匹配
+            pattern = escaped
+        else:
+            # 英文关键词：确保前后不是英文字母（可以是空格、中文、标点等）
+            # 例如："rag" 不会匹配到 "mirage" 中的 "rag"，但可以匹配 "rag中文" 或 "中文rag"
+            pattern = f"(?<![a-zA-Z]){escaped}(?![a-zA-Z])"
+
+        escaped_keywords.append(pattern)
+
     # 使用 | 连接所有关键词
     pattern = "|".join(escaped_keywords)
     return pattern
@@ -114,7 +130,16 @@ KEYWORD_PATTERN = build_keyword_pattern()
 
 # 链接匹配正则表达式（用于识别URL）
 URL_PATTERN = re.compile(
-    r"(https?://[^\s]+|t\.cn/[^\s]+|http://[^\s]+|www\.[^\s]+)", re.IGNORECASE
+    r"""                      # 多行写法易读
+    (?<![\w/.])               # 前面不能是字母、数字、/ 或 .
+    (?:                       # 开始匹配
+        https?://[^\s，。！？、\"<>{}|]+  |   # 普通 http(s)
+        www\.[^\s，。！？、\"<>{}|]+     |   # www 开头
+        t\.cn/[^\s，。！？、\"<>{}|]+         # 微博短链
+    )
+    (?![\w/.])                # 后面同样不能是字母、/ 或 .
+    """,
+    re.IGNORECASE | re.VERBOSE,
 )
 
 
@@ -313,6 +338,25 @@ def extract_original_content(content: str) -> str:
     return content_str
 
 
+def remove_urls(content: str) -> str:
+    """
+    从内容中移除所有URL链接
+
+    Args:
+        content: 微博内容
+
+    Returns:
+        移除URL后的内容
+    """
+    if pd.isna(content) or not content:
+        return ""
+
+    content_str = str(content)
+    # 移除所有匹配的URL
+    cleaned_content = URL_PATTERN.sub("", content_str)
+    return cleaned_content
+
+
 def keyword_in_url(content: str) -> bool:
     """
     检查关键词是否出现在链接中
@@ -339,8 +383,18 @@ def keyword_in_url(content: str) -> bool:
         # 检查这个链接中是否包含任何关键词
         for keyword in AI_KEYWORDS:
             keyword_lower = keyword.lower()
-            # 确保关键词是作为完整单词或子串出现在URL中
-            if keyword_lower in url_lower:
+            # 判断是否为英文关键词
+            has_chinese = bool(re.search(r"[\u4e00-\u9fff]", keyword))
+
+            if has_chinese:
+                # 中文关键词：不做边界处理，保持简单匹配
+                pattern = re.escape(keyword_lower)
+            else:
+                # 英文关键词：确保前后不是英文字母（可以是空格、中文、标点等）
+                pattern = f"(?<![a-zA-Z]){re.escape(keyword_lower)}(?![a-zA-Z])"
+
+            # 使用正则表达式匹配，确保英文关键词只匹配完整单词
+            if re.search(pattern, url_lower):
                 return True
 
     return False
@@ -378,19 +432,19 @@ def clean_single_date(date_str: str) -> int:
         # 1. 提取原始内容（去除转发部分）
         df["original_content"] = df["weibo_content"].apply(extract_original_content)
 
-        # 2. 检查原始内容中是否包含关键词（去除转发后的内容）
+        # 2. 从原始内容中移除URL
+        df["content_without_url"] = df["original_content"].apply(remove_urls)
+
+        # 3. 检查移除URL后的内容中是否包含关键词
         mask_has_keyword = (
-            df["original_content"]
+            df["content_without_url"]
             .astype(str)
             .str.lower()
             .str.contains(KEYWORD_PATTERN, na=False, regex=True)
         )
 
-        # 3. 检查关键词是否在链接中（如果是，则剔除）
-        mask_keyword_in_url = df["weibo_content"].apply(keyword_in_url)
-
-        # 最终筛选：原始内容包含关键词 且 关键词不在链接中
-        final_mask = mask_has_keyword & (~mask_keyword_in_url)
+        # 最终筛选：移除URL后的内容包含关键词
+        final_mask = mask_has_keyword
 
         # 筛选数据
         cleaned_df = df[final_mask].copy()
