@@ -458,8 +458,6 @@ def visualize_news_density_distribution(
         fig_path,
         format="pdf",
         bbox_inches="tight",
-        dpi=300,
-        rasterized=True,  # 栅格化复杂图形元素，减小文件大小
     )
     plt.close()
 
