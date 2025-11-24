@@ -11,6 +11,8 @@ import pandas as pd
 from datetime import datetime, timedelta
 from typing import Optional
 
+BASE_DIR = "ai_attitudes"
+
 AI_KEYWORDS = [
     "人工智能",
     "transformer",
@@ -75,7 +77,7 @@ AI_KEYWORDS = [
 # 输入数据目录（basic_text_extractor处理后的数据）
 INPUT_DIR = os.path.expanduser("~/cleaned_weibo_data")
 # 输出数据目录
-OUTPUT_DIR = "ai_weibo_text"
+OUTPUT_DIR = BASE_DIR + "/ai_weibo_text"
 
 # 确保输出目录存在
 if not os.path.exists(OUTPUT_DIR):
