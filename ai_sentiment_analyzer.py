@@ -659,6 +659,7 @@ def get_target_dates(
         # 移动到下一天
         current_date += timedelta(days=1)
 
+    print(f"目标日期列表: {target_dates}")
     return target_dates
 
 
