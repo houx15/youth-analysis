@@ -86,7 +86,7 @@ class AISentimentAnalyzer:
         self.model = model
         logger.info(f"初始化情感分析器，使用模型: {model}, base_url: {base_url}")
 
-    def _build_prompt(self, row: pd.Series) -> str:
+    def _build_prompt(self, row: pd.Series) -> tuple[str, str]:
         """
         构建中文分析提示词
 
@@ -94,14 +94,28 @@ class AISentimentAnalyzer:
             row: 微博数据行
 
         Returns:
-            构建的提示词字符串
+            (system_prompt, user_content) 元组
         """
+
+        # System prompt: 使用新的 prompt 内容
+        system_prompt = """
+你将阅读一段用户在微博上发布的文本。请分析该文本对AI技术的观点，为其分配一个意见标签。你的输出必须是一个 JSON 对象，只包含字段 "opinion"，取值为 -2、-1、0、1、2 或 "cannot tell"。
+ 
+标签定义：
+2 = 对AI技术表达强烈的积极态度，明确主张AI技术利大于弊，并认为其对社会带来显著正面影响（如明显提升生活便利性、改善健康与医疗、带来经济机会、提高学习和工作效率、改善安全性、为研究和创新提供帮助等，或表达对使用AI的依赖或信任）。
+1 = 整体倾向正面，但态度温和或带有一定保留（表达支持但语气不强；认为“总体有益”但同时提到风险或局限；表达期待、兴趣或积极看法，但无强烈赞美）。
+0 = 客观中立或难以判断倾向（同时提到利弊，但无明确倾向）。
+-1 = 整体倾向负面，但态度温和或带有一定保留（表达担忧或反对但未完全否定AI；认为“有风险或者有弊端”但承认某些益处；表达谨慎、不安或负面看法，但无强烈否定）。
+-2 = 对AI技术表达强烈的消极态度，明确主张AI技术弊大于利，并认为其对社会带来显著负面影响（如加剧失业、经济增长泡沫、隐私风险、边缘群体偏见、错误信息或谣言、安全威胁等，或表达对AI的抗拒或不信任）。
+"cannot tell" = 文本未表达对AI的任何态度（如内容与AI无关，或未反映观点）。
+请仅返回一个JSON对象，例如：
+{
+"opinion": 1
+}
+""".strip()
+
         weibo_content = str(row.get("weibo_content", "") or "")
-        user_id = str(row.get("user_id", "") or "")
         is_retweet = row.get("is_retweet", False)
-        zhuan = row.get("zhuan", 0) or 0
-        ping = row.get("ping", 0) or 0
-        zan = row.get("zan", 0) or 0
         time_stamp = row.get("time_stamp", None)
 
         # 构建内容部分
@@ -128,24 +142,9 @@ class AISentimentAnalyzer:
             f"是否转发: {'是 (//后面为转发内容)' if is_retweet else '否'}"
         )
 
-        content = "\n".join(content_parts)
+        user_prompt = "\n".join(content_parts)
 
-        prompt = f"""请分析以下微博内容，判断作者对人工智能（AI）技术的情感倾向。
-
-{content}
-
-请根据上述内容，将作者对AI技术的情感倾向分类为以下四类之一：
-- "positive"（积极）：内容表达了对AI技术的积极看法、热情或支持态度
-- "negative"（消极）：内容表达了对AI技术的消极看法、担忧或批评态度
-- "neutral"（中性）：内容提到了AI但没有表达明确的积极或消极立场
-- "cannot tell"（无法判断）：内容没有包含足够的信息来判断对AI技术的情感倾向
-
-请仅返回一个JSON对象，格式如下：
-{{
-    "sentiment": "positive" 或 "negative" 或 "neutral" 或 "cannot tell"
-}}"""
-
-        return prompt
+        return system_prompt, user_prompt
 
     def analyze_single(self, row: pd.Series) -> Dict[str, Any]:
         """
@@ -155,54 +154,54 @@ class AISentimentAnalyzer:
             row: 微博数据行
 
         Returns:
-            分析结果字典
+            分析结果字典，包含 sentiment/opinion 和 token 使用统计
         """
-        prompt = self._build_prompt(row)
+        system_prompt, user_prompt = self._build_prompt(row)
 
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {
-                        "role": "system",
-                        "content": "你是一位擅长分析社交媒体内容情感态度倾向的专家。请提供准确、简洁的分析。",
-                    },
-                    {"role": "user", "content": prompt},
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
                 ],
             )
 
             response_text = response.choices[0].message.content.strip()
 
+            # 提取 token 使用统计
+            usage = response.usage
+            token_stats = {
+                "prompt_tokens": usage.prompt_tokens if usage else 0,
+                "completion_tokens": usage.completion_tokens if usage else 0,
+                "total_tokens": usage.total_tokens if usage else 0,
+                "cached_tokens": getattr(usage, "cached_tokens", 0) if usage else 0,
+            }
+
             # 尝试提取JSON
+            opinion = None
             try:
                 json_start = response_text.find("{")
                 json_end = response_text.rfind("}") + 1
                 if json_start != -1 and json_end > json_start:
                     json_text = response_text[json_start:json_end]
                     analysis = json.loads(json_text)
-                    sentiment = analysis.get("sentiment")
-                else:
-                    sentiment = None
+                    opinion = analysis.get("opinion")
             except json.JSONDecodeError:
-                sentiment = None
-
-            # 标准化情感分类
-            sentiment = (sentiment or "").lower().strip() or None
-            if sentiment and sentiment not in [
-                "positive",
-                "negative",
-                "neutral",
-                "cannot tell",
-            ]:
-                sentiment = None
+                opinion = None
 
             return {
-                "sentiment": sentiment,
+                "opinion": opinion,
+                **token_stats,
             }
         except Exception as e:
             logger.error(f"分析单条微博时出错: {e}")
             return {
-                "sentiment": None,
+                "opinion": None,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "cached_tokens": 0,
             }
 
     def analyze_batch(
@@ -233,7 +232,11 @@ class AISentimentAnalyzer:
                     "weibo_content": row.get("weibo_content", ""),
                     "is_retweet": row.get("is_retweet", False),
                     "time_stamp": row.get("time_stamp", ""),
-                    "sentiment": analysis["sentiment"],
+                    "opinion": analysis["opinion"],
+                    "prompt_tokens": analysis.get("prompt_tokens", 0),
+                    "completion_tokens": analysis.get("completion_tokens", 0),
+                    "total_tokens": analysis.get("total_tokens", 0),
+                    "cached_tokens": analysis.get("cached_tokens", 0),
                 }
                 results.append(result)
 
@@ -251,7 +254,11 @@ class AISentimentAnalyzer:
                         "weibo_content": row.get("weibo_content", ""),
                         "is_retweet": row.get("is_retweet", False),
                         "time_stamp": row.get("time_stamp", ""),
-                        "sentiment": None,
+                        "opinion": None,
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                        "cached_tokens": 0,
                     }
                 )
 
@@ -364,23 +371,46 @@ def generate_summary(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     Returns:
         摘要字典
     """
-    sentiments = [r["sentiment"] for r in results if r.get("sentiment")]
+    opinions = [r.get("opinion") for r in results if r.get("opinion") is not None]
 
     summary = {
         "total_analyzed": len(results),
-        "positive": sentiments.count("positive"),
-        "negative": sentiments.count("negative"),
-        "neutral": sentiments.count("neutral"),
-        "cannot_tell": sentiments.count("cannot tell"),
+        "opinion_2": opinions.count(2),
+        "opinion_1": opinions.count(1),
+        "opinion_0": opinions.count(0),
+        "opinion_-1": opinions.count(-1),
+        "opinion_-2": opinions.count(-2),
+        "cannot_tell": opinions.count("cannot tell"),
     }
 
     # 计算百分比
     total = summary["total_analyzed"]
     if total > 0:
-        summary["positive_pct"] = round(summary["positive"] / total * 100, 2)
-        summary["negative_pct"] = round(summary["negative"] / total * 100, 2)
-        summary["neutral_pct"] = round(summary["neutral"] / total * 100, 2)
+        summary["opinion_2_pct"] = round(summary["opinion_2"] / total * 100, 2)
+        summary["opinion_1_pct"] = round(summary["opinion_1"] / total * 100, 2)
+        summary["opinion_0_pct"] = round(summary["opinion_0"] / total * 100, 2)
+        summary["opinion_-1_pct"] = round(summary["opinion_-1"] / total * 100, 2)
+        summary["opinion_-2_pct"] = round(summary["opinion_-2"] / total * 100, 2)
         summary["cannot_tell_pct"] = round(summary["cannot_tell"] / total * 100, 2)
+
+    # 统计 token 使用情况
+    total_prompt_tokens = sum(r.get("prompt_tokens", 0) for r in results)
+    total_completion_tokens = sum(r.get("completion_tokens", 0) for r in results)
+    total_tokens = sum(r.get("total_tokens", 0) for r in results)
+    total_cached_tokens = sum(r.get("cached_tokens", 0) for r in results)
+
+    summary["token_usage"] = {
+        "total_prompt_tokens": total_prompt_tokens,
+        "total_completion_tokens": total_completion_tokens,
+        "total_tokens": total_tokens,
+        "total_cached_tokens": total_cached_tokens,
+        "avg_prompt_tokens": round(total_prompt_tokens / total, 2) if total > 0 else 0,
+        "avg_completion_tokens": (
+            round(total_completion_tokens / total, 2) if total > 0 else 0
+        ),
+        "avg_total_tokens": round(total_tokens / total, 2) if total > 0 else 0,
+        "avg_cached_tokens": round(total_cached_tokens / total, 2) if total > 0 else 0,
+    }
 
     return summary
 
@@ -517,10 +547,35 @@ def analyze(
     # 打印摘要
     print("\n=== AI内容情感分析摘要 ===")
     print(f"总分析数量: {summary['total_analyzed']}")
-    print(f"积极: {summary['positive']} ({summary.get('positive_pct', 0)}%)")
-    print(f"消极: {summary['negative']} ({summary.get('negative_pct', 0)}%)")
-    print(f"中性: {summary['neutral']} ({summary.get('neutral_pct', 0)}%)")
+    print(
+        f"Opinion 2 (强烈积极): {summary['opinion_2']} ({summary.get('opinion_2_pct', 0)}%)"
+    )
+    print(
+        f"Opinion 1 (温和积极): {summary['opinion_1']} ({summary.get('opinion_1_pct', 0)}%)"
+    )
+    print(
+        f"Opinion 0 (中性): {summary['opinion_0']} ({summary.get('opinion_0_pct', 0)}%)"
+    )
+    print(
+        f"Opinion -1 (温和消极): {summary['opinion_-1']} ({summary.get('opinion_-1_pct', 0)}%)"
+    )
+    print(
+        f"Opinion -2 (强烈消极): {summary['opinion_-2']} ({summary.get('opinion_-2_pct', 0)}%)"
+    )
     print(f"无法判断: {summary['cannot_tell']} ({summary.get('cannot_tell_pct', 0)}%)")
+
+    # 打印 token 使用统计
+    token_usage = summary.get("token_usage", {})
+    print(f"\n=== Token 使用统计 ===")
+    print(f"总 Prompt Tokens: {token_usage.get('total_prompt_tokens', 0)}")
+    print(f"总 Completion Tokens: {token_usage.get('total_completion_tokens', 0)}")
+    print(f"总 Tokens: {token_usage.get('total_tokens', 0)}")
+    print(f"总 Cached Tokens: {token_usage.get('total_cached_tokens', 0)}")
+    print(f"平均 Prompt Tokens: {token_usage.get('avg_prompt_tokens', 0)}")
+    print(f"平均 Completion Tokens: {token_usage.get('avg_completion_tokens', 0)}")
+    print(f"平均 Total Tokens: {token_usage.get('avg_total_tokens', 0)}")
+    print(f"平均 Cached Tokens: {token_usage.get('avg_cached_tokens', 0)}")
+
     print(f"\n结果已保存到: {output_path}")
 
     logger.info("=== AI内容情感分析完成 ===")
