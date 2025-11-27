@@ -403,11 +403,11 @@ def generate_summary(results: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     summary = {
         "total_analyzed": len(results),
-        "opinion_2": opinions.count(2),
-        "opinion_1": opinions.count(1),
-        "opinion_0": opinions.count(0),
-        "opinion_-1": opinions.count(-1),
-        "opinion_-2": opinions.count(-2),
+        "opinion_2": opinions.count("2"),
+        "opinion_1": opinions.count("1"),
+        "opinion_0": opinions.count("0"),
+        "opinion_-1": opinions.count("-1"),
+        "opinion_-2": opinions.count("-2"),
         "cannot_tell": opinions.count("cannot tell"),
     }
 
