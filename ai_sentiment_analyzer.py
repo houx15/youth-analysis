@@ -723,7 +723,7 @@ def generate_final_summary(
     # 确定要合并的组
     if groups is None:
         if merge_all_groups:
-            groups = [1, 2, 3, 4, 5]
+            groups = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
         else:
             logger.warning("未指定要合并的组，且 merge_all_groups=False")
             return
