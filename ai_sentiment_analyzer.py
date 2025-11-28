@@ -302,15 +302,17 @@ def load_parquet_files(
 
     dfs = []
     for file in parquet_files:
-        df = pd.read_parquet(file, columns=[
-                    "weibo_id",
-                    "weibo_content",
-                    "is_retweet",
-                    "time_stamp",
-                ],
-                engine="fastparquet",
-            )
-            dfs.append(df)
+        df = pd.read_parquet(
+            file,
+            columns=[
+                "weibo_id",
+                "weibo_content",
+                "is_retweet",
+                "time_stamp",
+            ],
+            engine="fastparquet",
+        )
+        dfs.append(df)
 
     combined = pd.concat(dfs, ignore_index=True)
     logger.info(f"共加载 {len(combined)} 条微博数据")
@@ -620,7 +622,7 @@ def get_analyzed_weibo_ids(results_file: Path) -> set[str]:
 
 
 def generate_final_summary(
-    output_dir: Union[str, Path] = DEFAULT_OUTPUT_DIR, 
+    output_dir: Union[str, Path] = DEFAULT_OUTPUT_DIR,
     summary_file_name: str = "analyze_all_summary.json",
     input_dir: Union[str, Path] = DEFAULT_INPUT_DIR,
 ):
@@ -699,24 +701,24 @@ def generate_final_summary(
 
     # ========== 新增功能：合并原始数据并计算统计结果 ==========
     logger.info("=== 开始合并原始数据 ===")
-    
+
     # 1. 准备分析结果数据：只保留weibo_id和opinion，确保weibo_id为str格式
     results_merge_df = all_results_df[["weibo_id", "opinion"]].copy()
     results_merge_df["weibo_id"] = results_merge_df["weibo_id"].astype(str)
-    
+
     target_dates = set()
     for group in groups:
         dates = get_group_date_range(group)
         target_dates.update(dates)
-    
+
     target_dates = sorted(list(target_dates))
-    
+
     input_path = Path(input_dir)
     parquet_files = []
     for date_str in target_dates:
         parquet_file = input_path / f"{date_str}.parquet"
         parquet_files.append(parquet_file)
-    
+
     original_dfs = []
     for file in parquet_files:
         df = pd.read_parquet(
@@ -727,35 +729,40 @@ def generate_final_summary(
         # 确保weibo_id为str格式
         df["weibo_id"] = df["weibo_id"].astype(str)
         original_dfs.append(df)
-    
+
     original_df = pd.concat(original_dfs, ignore_index=True)
     logger.info(f"共加载 {len(original_df)} 条原始数据")
-    
+
     merged_df = results_merge_df.merge(
         original_df,
         on="weibo_id",
         how="inner",  # 只保留两边都有的数据
     )
     logger.info(f"合并后共有 {len(merged_df)} 条记录")
-    
+
     original_merged_count = len(merged_df)
     merged_df = merged_df.drop_duplicates(subset=["weibo_id"], keep="first")
     if len(merged_df) < original_merged_count:
-        logger.info(f"合并数据去重后: {original_merged_count} -> {len(merged_df)} 条记录")
-    
+        logger.info(
+            f"合并数据去重后: {original_merged_count} -> {len(merged_df)} 条记录"
+        )
+
     # 5. 删除opinion为cannot tell或None的记录（先过滤，避免后续处理无效数据）
     logger.info("删除opinion为cannot tell或None的记录...")
     before_opinion_filter = len(merged_df)
     merged_df = merged_df[
-        (merged_df["opinion"].notna()) & 
-        (merged_df["opinion"] != "cannot tell") &
-        (merged_df["opinion"] != "")
+        (merged_df["opinion"].notna())
+        & (merged_df["opinion"] != "cannot tell")
+        & (merged_df["opinion"] != "")
     ]
     if len(merged_df) < before_opinion_filter:
-        logger.info(f"删除无效opinion后: {before_opinion_filter} -> {len(merged_df)} 条记录")
-    
+        logger.info(
+            f"删除无效opinion后: {before_opinion_filter} -> {len(merged_df)} 条记录"
+        )
+
     # 6. 将time_stamp转为+8时区的日期
     logger.info("转换时间戳为+8时区日期...")
+
     # time_stamp可能是字符串或数字，需要统一处理
     def convert_timestamp_to_date(ts):
         try:
@@ -770,14 +777,16 @@ def generate_final_summary(
             return dt_cst.date()
         except (ValueError, TypeError, OSError) as e:
             return None
-    
+
     merged_df["date"] = merged_df["time_stamp"].apply(convert_timestamp_to_date)
     # 删除转换失败的记录
     before_date_filter = len(merged_df)
     merged_df = merged_df[merged_df["date"].notna()]
     if len(merged_df) < before_date_filter:
-        logger.info(f"删除时间戳转换失败的记录: {before_date_filter} -> {len(merged_df)} 条记录")
-    
+        logger.info(
+            f"删除时间戳转换失败的记录: {before_date_filter} -> {len(merged_df)} 条记录"
+        )
+
     # 7. 保存合并后的数据为parquet
     merged_output_file = output_path / "merged_data.parquet"
     merged_df.to_parquet(
@@ -786,47 +795,56 @@ def generate_final_summary(
         index=False,
     )
     logger.info(f"合并后的数据已保存到 {merged_output_file}")
-    
+
     # 确保opinion是数值类型（用于计算平均值）
     merged_df["opinion"] = pd.to_numeric(merged_df["opinion"], errors="coerce")
     # 确保zan是数值类型
     merged_df["zan"] = pd.to_numeric(merged_df["zan"], errors="coerce").fillna(0)
     # 给所有zan都+1，避免为0导致数据丢失的情况
     merged_df["zan"] = merged_df["zan"] + 1
-    
+
     # 7.1 每个date的平均opinion
     daily_avg = merged_df.groupby("date")["opinion"].mean().reset_index()
     daily_avg.columns = ["date", "avg_opinion"]
-    
+
     # 7.2 每个date用点赞数加权的平均opinion（weighted_opinion）
     # 加权平均 = sum(opinion * zan) / sum(zan)
     # 使用更高效的方法：先计算乘积，再分组求和
     merged_df["opinion_zan"] = merged_df["opinion"] * merged_df["zan"]
-    daily_weighted = merged_df.groupby("date").agg({
-        "opinion_zan": "sum",
-        "zan": "sum",
-    }).reset_index()
+    daily_weighted = (
+        merged_df.groupby("date")
+        .agg(
+            {
+                "opinion_zan": "sum",
+                "zan": "sum",
+            }
+        )
+        .reset_index()
+    )
     # 计算加权平均：如果zan总和为0，使用普通平均；否则使用加权平均
     daily_weighted["weighted_opinion"] = daily_weighted.apply(
-        lambda row: row["opinion_zan"] / row["zan"],
-        axis=1
+        lambda row: row["opinion_zan"] / row["zan"], axis=1
     )
     daily_weighted = daily_weighted[["date", "weighted_opinion"]]
-    
+
     # 7.3 每个date，按照user_id聚合计算每个user在那个date的平均opinion之后，当天user_avg_opinion
     # 先计算每个user在每个date的平均opinion
-    user_daily_avg = merged_df.groupby(["date", "user_id"])["opinion"].mean().reset_index()
+    user_daily_avg = (
+        merged_df.groupby(["date", "user_id"])["opinion"].mean().reset_index()
+    )
     user_daily_avg.columns = ["date", "user_id", "user_daily_avg_opinion"]
     # 然后计算每个date的所有user的平均opinion（即user_avg_opinion）
-    daily_user_avg = user_daily_avg.groupby("date")["user_daily_avg_opinion"].mean().reset_index()
+    daily_user_avg = (
+        user_daily_avg.groupby("date")["user_daily_avg_opinion"].mean().reset_index()
+    )
     daily_user_avg.columns = ["date", "user_avg_opinion"]
-    
+
     # 合并三个结果
     final_stats = daily_avg.merge(daily_weighted, on="date", how="outer")
     final_stats = final_stats.merge(daily_user_avg, on="date", how="outer")
     # 按日期排序
     final_stats = final_stats.sort_values("date").reset_index(drop=True)
-    
+
     # 9. 保存统计结果为parquet
     stats_output_file = output_path / "weibo_daily_opinion.parquet"
     final_stats.to_parquet(
