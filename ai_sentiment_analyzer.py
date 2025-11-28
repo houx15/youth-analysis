@@ -838,13 +838,14 @@ def generate_final_summary(
 
     # 7. 保存合并后的数据为parquet
     merged_output_file = output_path / "merged_data.parquet"
-    # date转为str
-    merged_df["date"] = merged_df["date"].astype(str)
+    # date转为yyyy-mm-dd的str
+    merged_df["date"] = merged_df["date"].dt.strftime("%Y-%m-%d")
     merged_df.to_parquet(merged_output_file, engine="fastparquet", index=False)
     logger.info(f"合并后的数据已保存到 {merged_output_file}")
 
     # 9. 保存统计结果为parquet
     stats_output_file = output_path / "weibo_daily_opinion.parquet"
+    final_stats["date"] = final_stats["date"].dt.strftime("%Y-%m-%d")
     final_stats.to_parquet(
         stats_output_file,
         engine="fastparquet",
