@@ -773,8 +773,8 @@ def generate_final_summary(
             dt = datetime.fromtimestamp(ts, tz=timezone.utc)
             # 转换为+8时区
             dt_cst = dt.astimezone(timezone(timedelta(hours=8)))
-            # 返回日期（date对象）
-            return dt_cst.date()
+            # 返回datetime对象（只保留日期部分，时间设为00:00:00）
+            return dt_cst.replace(hour=0, minute=0, second=0, microsecond=0)
         except (ValueError, TypeError, OSError) as e:
             return None
 
@@ -838,7 +838,7 @@ def generate_final_summary(
 
     # 7. 保存合并后的数据为parquet
     merged_output_file = output_path / "merged_data.parquet"
-    # date转为yyyy-mm-dd的str
+    # date转为yyyy-mm-dd的str（datetime对象可以使用.dt.strftime）
     merged_df["date"] = merged_df["date"].dt.strftime("%Y-%m-%d")
     merged_df.to_parquet(merged_output_file, engine="fastparquet", index=False)
     logger.info(f"合并后的数据已保存到 {merged_output_file}")
@@ -852,6 +852,7 @@ def generate_final_summary(
         index=False,
     )
     logger.info(f"日期级别统计结果已保存到 {stats_output_file}")
+    logger.info(f"所有日期：{final_stats['date'].tolist()}")
     logger.info(f"共 {len(final_stats)} 个日期的统计数据")
 
 
