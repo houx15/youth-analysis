@@ -828,7 +828,7 @@ def generate_final_summary(
     final_stats = final_stats.sort_values("date").reset_index(drop=True)
     
     # 9. 保存统计结果为parquet
-    stats_output_file = output_path / "daily_opinion_stats.parquet"
+    stats_output_file = output_path / "weibo_daily_opinion.parquet"
     final_stats.to_parquet(
         stats_output_file,
         engine="fastparquet",
