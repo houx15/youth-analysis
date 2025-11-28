@@ -73,14 +73,10 @@ class AISentimentAnalyzer:
         if not api_key:
             raise ValueError("请设置OPENAI_API_KEY环境变量，或在代码中直接配置API密钥")
 
-        # 如果没有提供base_url，使用configs中的默认值
         if base_url is None:
             base_url = OPENAI_BASE_URL
-
-        # 构建OpenAI客户端参数
         client_kwargs = {"api_key": api_key}
-        if base_url:
-            client_kwargs["base_url"] = base_url
+        client_kwargs["base_url"] = base_url
 
         self.client = OpenAI(**client_kwargs)
         self.model = model
@@ -120,23 +116,11 @@ class AISentimentAnalyzer:
 
         # 构建内容部分
         content_parts = []
+        content_parts.append(f"微博内容: {weibo_content}")
 
-        if weibo_content:
-            content_parts.append(f"微博内容: {weibo_content}")
-
-        # 将timestamp转为年月日时分秒
-        if time_stamp:
-            try:
-                # 尝试将timestamp转换为数字
-                if isinstance(time_stamp, str):
-                    time_stamp = float(time_stamp)
-                date_time = datetime.fromtimestamp(time_stamp).strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                )
-                content_parts.append(f"发布时间: {date_time}")
-            except (ValueError, TypeError, OSError):
-                # 如果转换失败，使用原始值
-                content_parts.append(f"发布时间: {time_stamp}")
+        time_stamp = float(time_stamp)
+        date_time = datetime.fromtimestamp(time_stamp).strftime("%Y-%m-%d %H:%M:%S")
+        content_parts.append(f"发布时间: {date_time}")
 
         content_parts.append(
             f"是否转发: {'是 (//后面为转发内容)' if is_retweet else '否'}"
@@ -308,39 +292,17 @@ def load_parquet_files(
     Returns:
         包含所有微博数据的DataFrame
     """
+    parquet_files = []
     if input_file:
-        input_path = Path(input_file)
-        if not input_path.exists():
-            raise FileNotFoundError(f"输入文件不存在: {input_file}")
-        logger.info(f"从 {input_file} 加载数据")
-        df = pd.read_parquet(
-            input_path,
-            columns=[
-                "weibo_id",
-                "weibo_content",
-                "is_retweet",
-                "time_stamp",
-            ],
-            engine="fastparquet",
-        )
-        return df
-
-    input_path = Path(input_dir)
-    if not input_path.exists():
-        raise FileNotFoundError(f"输入目录不存在: {input_dir}")
-
-    parquet_files = sorted(input_path.glob("*.parquet"))
-    if not parquet_files:
-        raise FileNotFoundError(f"在 {input_dir} 中未找到parquet文件")
+        parquet_files.append(input_file)
+    elif input_path:
+        parquet_files = sorted(input_path.glob("*.parquet"))
 
     logger.info(f"找到 {len(parquet_files)} 个parquet文件")
 
     dfs = []
-    for pf in tqdm(parquet_files, desc="加载parquet文件"):
-        try:
-            df = pd.read_parquet(
-                pf,
-                columns=[
+    for file in parquet_files:
+        df = pd.read_parquet(file, columns=[
                     "weibo_id",
                     "weibo_content",
                     "is_retweet",
@@ -349,11 +311,6 @@ def load_parquet_files(
                 engine="fastparquet",
             )
             dfs.append(df)
-        except Exception as e:
-            logger.warning(f"加载文件 {pf} 时出错: {e}，跳过")
-
-    if not dfs:
-        raise ValueError("没有成功加载任何数据文件")
 
     combined = pd.concat(dfs, ignore_index=True)
     logger.info(f"共加载 {len(combined)} 条微博数据")
@@ -494,7 +451,7 @@ def sample(
     return str(output_path)
 
 
-def analyze(
+def sample_analysis_pipeline(
     sampled_file: Union[str, Path] = DEFAULT_SAMPLED_FILE,
     output_dir: Union[str, Path] = DEFAULT_OUTPUT_DIR,
     delay: float = DEFAULT_DELAY,
@@ -645,36 +602,6 @@ def get_group_date_range(group: int) -> tuple[str, str]:
     return group_ranges[group]
 
 
-def get_target_dates(
-    start_date_str: str = "2024-03-01", end_date_str: str = "2025-03-20"
-) -> List[str]:
-    """
-    生成指定日期范围内每个月1日、10日、20日的日期列表
-
-    Args:
-        start_date_str: 开始日期，格式为 YYYY-MM-DD
-        end_date_str: 结束日期，格式为 YYYY-MM-DD
-
-    Returns:
-        日期字符串列表，格式为 YYYY-MM-DD
-    """
-    start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
-    end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
-
-    target_dates = []
-    current_date = start_date
-
-    while current_date <= end_date:
-        # 检查是否是1日、10日或20日
-        if current_date.day in [1, 10, 20]:
-            target_dates.append(current_date.strftime("%Y-%m-%d"))
-        # 移动到下一天
-        current_date += timedelta(days=1)
-
-    print(f"目标日期列表: {target_dates}")
-    return target_dates
-
-
 def get_analyzed_weibo_ids(results_file: Path) -> set[str]:
     """
     从结果文件中读取已分析的weibo_id
@@ -687,24 +614,14 @@ def get_analyzed_weibo_ids(results_file: Path) -> set[str]:
     """
     if not results_file.exists():
         return set()
-
-    try:
-        df = pd.read_csv(results_file, encoding="utf-8-sig")
-        if "weibo_id" in df.columns:
-            # 过滤掉空值
-            analyzed_ids = df["weibo_id"].dropna().astype(str).unique()
-            return set(analyzed_ids)
-        return set()
-    except Exception as e:
-        logger.warning(f"读取已分析weibo_id时出错: {e}")
-        return set()
+    df = pd.read_csv(results_file, encoding="utf-8-sig")
+    analyzed_ids = df["weibo_id"].dropna().astype(str).unique()
+    return set(analyzed_ids)
 
 
 def generate_final_summary(
     output_dir: Union[str, Path],
     summary_file_name: str = "analyze_all_summary.json",
-    merge_all_groups: bool = True,
-    groups: Optional[List[int]] = None,
 ):
     """
     从结果文件生成最终摘要并保存（支持合并多个组的结果）
@@ -720,112 +637,65 @@ def generate_final_summary(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    # 确定要合并的组
-    if groups is None:
-        if merge_all_groups:
-            groups = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
-        else:
-            logger.warning("未指定要合并的组，且 merge_all_groups=False")
-            return
-
+    groups = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
     # 收集所有组的结果文件
     all_results_dfs = []
-    existing_groups = []
 
     for group in groups:
         results_file = output_path / f"analyze_all_results_group_{group}.csv"
-        if results_file.exists():
-            try:
-                df = pd.read_csv(results_file, encoding="utf-8-sig")
-                if len(df) > 0:
-                    all_results_dfs.append(df)
-                    existing_groups.append(group)
-                    logger.info(f"加载组 {group} 的结果: {len(df)} 条记录")
-            except Exception as e:
-                logger.warning(f"读取组 {group} 的结果文件时出错: {e}")
-        else:
-            logger.warning(f"组 {group} 的结果文件不存在: {results_file}")
+        df = pd.read_csv(results_file, encoding="utf-8-sig")
+        all_results_dfs.append(df)
+    # 合并所有组的结果
+    all_results_df = pd.concat(all_results_dfs, ignore_index=True)
 
-    if not all_results_dfs:
-        logger.warning("没有找到任何结果文件，无法生成摘要")
+    # 去重（基于weibo_id）
+    original_count = len(all_results_df)
+    all_results_df = all_results_df.drop_duplicates(subset=["weibo_id"], keep="first")
+    if len(all_results_df) < original_count:
+        logger.info(f"去重后: {original_count} -> {len(all_results_df)} 条记录")
+
+    if len(all_results_df) == 0:
+        logger.warning("合并后的结果为空，无法生成摘要")
         return
 
-    try:
-        # 合并所有组的结果
-        all_results_df = pd.concat(all_results_dfs, ignore_index=True)
-
-        # 去重（基于weibo_id）
-        original_count = len(all_results_df)
-        all_results_df = all_results_df.drop_duplicates(
-            subset=["weibo_id"], keep="first"
+    # 映射列名以匹配 generate_summary 的期望格式
+    if "input_token" in all_results_df.columns:
+        all_results_df = all_results_df.rename(
+            columns={
+                "input_token": "prompt_tokens",
+                "output_token": "completion_tokens",
+                "cached_token": "cached_tokens",
+            }
         )
-        if len(all_results_df) < original_count:
-            logger.info(f"去重后: {original_count} -> {len(all_results_df)} 条记录")
+    all_results = all_results_df.to_dict("records")
 
-        if len(all_results_df) == 0:
-            logger.warning("合并后的结果为空，无法生成摘要")
-            return
+    summary = generate_summary(all_results)
 
-        # 映射列名以匹配 generate_summary 的期望格式
-        if "input_token" in all_results_df.columns:
-            all_results_df = all_results_df.rename(
-                columns={
-                    "input_token": "prompt_tokens",
-                    "output_token": "completion_tokens",
-                    "cached_token": "cached_tokens",
-                }
-            )
-        all_results = all_results_df.to_dict("records")
+    # 保存摘要
+    summary_file = output_path / summary_file_name
+    with open(summary_file, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+    logger.info(f"摘要已保存到 {summary_file}")
 
-        summary = generate_summary(all_results)
-
-        # 添加组信息到摘要
-        summary["groups_merged"] = existing_groups
-        summary["groups_count"] = len(existing_groups)
-
-        # 保存摘要
-        summary_file = output_path / summary_file_name
-        with open(summary_file, "w", encoding="utf-8") as f:
-            json.dump(summary, f, indent=2, ensure_ascii=False)
-        logger.info(f"摘要已保存到 {summary_file}")
-
-        # 打印摘要
-        print("\n=== 批量分析摘要（合并所有组） ===")
-        print(f"合并的组: {existing_groups}")
-        print(f"总分析数量: {summary['total_analyzed']}")
-        print(
-            f"Opinion 2 (强烈积极): {summary['opinion_2']} ({summary.get('opinion_2_pct', 0)}%)"
-        )
-        print(
-            f"Opinion 1 (温和积极): {summary['opinion_1']} ({summary.get('opinion_1_pct', 0)}%)"
-        )
-        print(
-            f"Opinion 0 (中性): {summary['opinion_0']} ({summary.get('opinion_0_pct', 0)}%)"
-        )
-        print(
-            f"Opinion -1 (温和消极): {summary['opinion_-1']} ({summary.get('opinion_-1_pct', 0)}%)"
-        )
-        print(
-            f"Opinion -2 (强烈消极): {summary['opinion_-2']} ({summary.get('opinion_-2_pct', 0)}%)"
-        )
-        print(
-            f"无法判断: {summary['cannot_tell']} ({summary.get('cannot_tell_pct', 0)}%)"
-        )
-
-        # 打印 token 使用统计
-        token_usage = summary.get("token_usage", {})
-        print(f"\n=== Token 使用统计 ===")
-        print(f"总 Prompt Tokens: {token_usage.get('total_prompt_tokens', 0)}")
-        print(f"总 Completion Tokens: {token_usage.get('total_completion_tokens', 0)}")
-        print(f"总 Tokens: {token_usage.get('total_tokens', 0)}")
-        print(f"总 Cached Tokens: {token_usage.get('total_cached_tokens', 0)}")
-        print(f"平均 Prompt Tokens: {token_usage.get('avg_prompt_tokens', 0)}")
-        print(f"平均 Completion Tokens: {token_usage.get('avg_completion_tokens', 0)}")
-        print(f"平均 Total Tokens: {token_usage.get('avg_total_tokens', 0)}")
-        print(f"平均 Cached Tokens: {token_usage.get('avg_cached_tokens', 0)}")
-
-    except Exception as e:
-        logger.error(f"生成摘要时出错: {e}")
+    # 打印摘要
+    print("\n=== 批量分析摘要（合并所有组） ===")
+    print(f"总分析数量: {summary['total_analyzed']}")
+    print(
+        f"Opinion 2 (强烈积极): {summary['opinion_2']} ({summary.get('opinion_2_pct', 0)}%)"
+    )
+    print(
+        f"Opinion 1 (温和积极): {summary['opinion_1']} ({summary.get('opinion_1_pct', 0)}%)"
+    )
+    print(
+        f"Opinion 0 (中性): {summary['opinion_0']} ({summary.get('opinion_0_pct', 0)}%)"
+    )
+    print(
+        f"Opinion -1 (温和消极): {summary['opinion_-1']} ({summary.get('opinion_-1_pct', 0)}%)"
+    )
+    print(
+        f"Opinion -2 (强烈消极): {summary['opinion_-2']} ({summary.get('opinion_-2_pct', 0)}%)"
+    )
+    print(f"无法判断: {summary['cannot_tell']} ({summary.get('cannot_tell_pct', 0)}%)")
 
 
 def append_single_result_to_csv(
@@ -850,19 +720,6 @@ def append_single_result_to_csv(
     # 检查文件是否存在，决定是否需要写入表头
     file_exists = results_file.exists()
     write_header = not file_exists
-
-    if file_exists:
-        try:
-            # 尝试读取文件，检查是否有表头
-            with open(results_file, "r", encoding="utf-8-sig") as f:
-                first_line = f.readline().strip()
-                # 如果第一行是表头，则不需要再写
-                if first_line.startswith("weibo_id") or first_line.startswith(
-                    "weibo_id,opinion"
-                ):
-                    write_header = False
-        except Exception:
-            write_header = True
 
     # 打开文件，追加写入
     with open(results_file, "a", encoding="utf-8-sig", newline="") as f:
@@ -919,8 +776,7 @@ def analyze_all(
     logger.info(f"已分析 {len(analyzed_weibo_ids)} 条微博")
 
     # 获取目标日期列表（用于筛选输入文件）
-    target_dates = get_group_date_range(group)  # get_target_dates(start_date, end_date)
-    # logger.info(f"目标日期范围: {start_date} 到 {end_date}")
+    target_dates = get_group_date_range(group)
     logger.info(f"共 {len(target_dates)} 个目标日期：{target_dates}")
 
     # 初始化分析器
