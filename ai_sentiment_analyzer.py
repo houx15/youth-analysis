@@ -726,6 +726,8 @@ def generate_final_summary(
             columns=["weibo_id", "user_id", "zan", "time_stamp"],
             engine="fastparquet",
         )
+        date_str = file.name.split(".")[0]
+        df["date"] = datetime.strptime(date_str, "%Y-%m-%d")
         # 确保weibo_id为str格式
         df["weibo_id"] = df["weibo_id"].astype(str)
         original_dfs.append(df)
@@ -761,31 +763,31 @@ def generate_final_summary(
         )
 
     # 6. 将time_stamp转为+8时区的日期
-    logger.info("转换时间戳为+8时区日期...")
+    # logger.info("转换时间戳为+8时区日期...")
 
-    # time_stamp可能是字符串或数字，需要统一处理
-    def convert_timestamp_to_date(ts):
-        try:
-            # 如果是字符串，尝试转换为float
-            if isinstance(ts, str):
-                ts = float(ts)
-            # 转换为datetime（假设是UTC时间戳）
-            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-            # 转换为+8时区
-            dt_cst = dt.astimezone(timezone(timedelta(hours=8)))
-            # 返回datetime对象（只保留日期部分，时间设为00:00:00）
-            return dt_cst.replace(hour=0, minute=0, second=0, microsecond=0)
-        except (ValueError, TypeError, OSError) as e:
-            return None
+    # # time_stamp可能是字符串或数字，需要统一处理
+    # def convert_timestamp_to_date(ts):
+    #     try:
+    #         # 如果是字符串，尝试转换为float
+    #         if isinstance(ts, str):
+    #             ts = float(ts)
+    #         # 转换为datetime（假设是UTC时间戳）
+    #         dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+    #         # 转换为+8时区
+    #         dt_cst = dt.astimezone(timezone(timedelta(hours=8)))
+    #         # 返回datetime对象（只保留日期部分，时间设为00:00:00）
+    #         return dt_cst.replace(hour=0, minute=0, second=0, microsecond=0)
+    #     except (ValueError, TypeError, OSError) as e:
+    #         return None
 
-    merged_df["date"] = merged_df["time_stamp"].apply(convert_timestamp_to_date)
+    # merged_df["date"] = merged_df["time_stamp"].apply(convert_timestamp_to_date)
     # 删除转换失败的记录
-    before_date_filter = len(merged_df)
-    merged_df = merged_df[merged_df["date"].notna()]
-    if len(merged_df) < before_date_filter:
-        logger.info(
-            f"删除时间戳转换失败的记录: {before_date_filter} -> {len(merged_df)} 条记录"
-        )
+    # before_date_filter = len(merged_df)
+    # merged_df = merged_df[merged_df["date"].notna()]
+    # if len(merged_df) < before_date_filter:
+    #     logger.info(
+    #         f"删除时间戳转换失败的记录: {before_date_filter} -> {len(merged_df)} 条记录"
+    #     )
 
     # 确保opinion是数值类型（用于计算平均值）
     merged_df["opinion"] = pd.to_numeric(merged_df["opinion"], errors="coerce")
