@@ -295,8 +295,8 @@ def load_parquet_files(
     parquet_files = []
     if input_file:
         parquet_files.append(input_file)
-    elif input_path:
-        parquet_files = sorted(input_path.glob("*.parquet"))
+    elif input_dir:
+        parquet_files = sorted(input_dir.glob("*.parquet"))
 
     logger.info(f"找到 {len(parquet_files)} 个parquet文件")
 
@@ -1041,7 +1041,7 @@ if __name__ == "__main__":
     fire.Fire(
         {
             "sample": sample,
-            "analyze": analyze,
+            "analyze_sample": sample_analysis_pipeline,
             "analyze_all": analyze_all,
             "generate_summary": generate_final_summary,
         }
