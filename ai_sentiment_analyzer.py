@@ -787,15 +787,6 @@ def generate_final_summary(
             f"删除时间戳转换失败的记录: {before_date_filter} -> {len(merged_df)} 条记录"
         )
 
-    # 7. 保存合并后的数据为parquet
-    merged_output_file = output_path / "merged_data.parquet"
-    merged_df.to_parquet(
-        merged_output_file,
-        engine="fastparquet",
-        index=False,
-    )
-    logger.info(f"合并后的数据已保存到 {merged_output_file}")
-
     # 确保opinion是数值类型（用于计算平均值）
     merged_df["opinion"] = pd.to_numeric(merged_df["opinion"], errors="coerce")
     # 确保zan是数值类型
@@ -844,6 +835,13 @@ def generate_final_summary(
     final_stats = final_stats.merge(daily_user_avg, on="date", how="outer")
     # 按日期排序
     final_stats = final_stats.sort_values("date").reset_index(drop=True)
+
+    # 7. 保存合并后的数据为parquet
+    merged_output_file = output_path / "merged_data.parquet"
+    # date转为str
+    merged_df["date"] = merged_df["date"].astype(str)
+    merged_df.to_parquet(merged_output_file, engine="fastparquet", index=False)
+    logger.info(f"合并后的数据已保存到 {merged_output_file}")
 
     # 9. 保存统计结果为parquet
     stats_output_file = output_path / "weibo_daily_opinion.parquet"
