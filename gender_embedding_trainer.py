@@ -26,7 +26,7 @@ from datetime import datetime, timedelta
 warnings.filterwarnings("ignore")
 
 DATA_DIR_2020 = "cleaned_weibo_cov"
-DATA_DIR_2024 = "~/cleaned_weibo_data"
+DATA_DIR_2024 = "../cleaned_weibo_data"
 PREPARED_DIR_2024 = "gender_embedding/prepared_weibo_2024"
 OUTPUT_DIR = "gender_embedding/embedding_models"
 
@@ -196,6 +196,7 @@ def prepare_2024_data_by_month_group(year, start_month, end_month):
         print(f"\n处理日期: {date_str}")
 
         pattern = os.path.join(DATA_DIR_2024, f"{date_str}.parquet.temp_*")
+        print(pattern)
         temp_files = sorted(glob.glob(pattern))
 
         if not temp_files:
