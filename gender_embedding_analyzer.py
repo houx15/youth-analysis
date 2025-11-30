@@ -1,77 +1,33 @@
 """
-性别和职业词的embedding分析
+性别和职业词的embedding分析器
 
 功能：
-1. 按省份分组数据训练Word2Vec模型
+1. 加载已训练的Word2Vec模型
 2. 计算职业词与性别词的关联度（分别计算与男性词、女性词的相似度）
 3. 比较不同省份模型的差异
+4. 生成分析报告和可视化数据
 
-输入数据：cleaned_weibo_cov/{year}/ 下的parquet文件
+输入：embedding_models/{year}/ 下的模型文件
+输出：embedding_analysis/{year}/ 下的分析结果
 """
 
 import os
 import pandas as pd
 import numpy as np
 from gensim.models import Word2Vec
-from collections import defaultdict
-import jieba
 import fire
 from sklearn.preprocessing import normalize
 import warnings
 import json
+import glob
 
 warnings.filterwarnings("ignore")
 
-DATA_DIR = "cleaned_weibo_cov"
+MODEL_DIR = "embedding_models"
 OUTPUT_DIR = "embedding_analysis"
 
 # 确保输出目录存在
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-# 省份编码映射（GB/T 2260 中华人民共和国行政区划代码）
-# 将数字编码转换为省份名称
-PROVINCE_CODE_TO_NAME = {
-    "11": "北京",
-    "12": "天津",
-    "13": "河北",
-    "14": "山西",
-    "15": "内蒙古",
-    "21": "辽宁",
-    "22": "吉林",
-    "23": "黑龙江",
-    "31": "上海",
-    "32": "江苏",
-    "33": "浙江",
-    "34": "安徽",
-    "35": "福建",
-    "36": "江西",
-    "37": "山东",
-    "41": "河南",
-    "42": "湖北",
-    "43": "湖南",
-    "44": "广东",
-    "45": "广西",
-    "46": "海南",
-    "50": "重庆",
-    "51": "四川",
-    "52": "贵州",
-    "53": "云南",
-    "54": "西藏",
-    "61": "陕西",
-    "62": "甘肃",
-    "63": "青海",
-    "64": "宁夏",
-    "65": "新疆",
-    "71": "台湾",
-    "81": "香港",
-    "82": "澳门",
-    # 处理可能的非标准编码（如果数据中有）
-    "100": "未知",  # 非标准编码，需要根据实际情况调整
-    "400": "未知",  # 非标准编码，需要根据实际情况调整
-}
-
-# 反向映射：省份名称到编码（用于调试）
-PROVINCE_NAME_TO_CODE = {v: k for k, v in PROVINCE_CODE_TO_NAME.items() if v != "未知"}
 
 # 性别词表（扩展版）
 GENDER_WORDS = {
@@ -218,216 +174,6 @@ ALL_OCCUPATIONS = []
 for category in OCCUPATION_WORDS.values():
     ALL_OCCUPATIONS.extend(category)
 
-# 通用停用词
-STOPWORDS = set(
-    [
-        "的",
-        "是",
-        "了",
-        "在",
-        "有",
-        "和",
-        "就",
-        "不",
-        "人",
-        "都",
-        "一",
-        "一个",
-        "上",
-        "也",
-        "很",
-        "到",
-        "说",
-        "要",
-        "去",
-        "你",
-        "会",
-        "着",
-        "没有",
-        "看",
-        "好",
-        "自己",
-        "这",
-        "那",
-        "我",
-        "他",
-        "她",
-        "我们",
-        "你们",
-        "他们",
-        "她们",
-        "什么",
-        "怎么",
-        "这个",
-        "那个",
-    ]
-)
-
-
-def preprocess_text(text):
-    """预处理文本，分词并过滤停用词"""
-    if pd.isna(text) or text == "":
-        return []
-
-    text = str(text)
-    words = jieba.cut(text)
-    words = [
-        w.strip()
-        for w in words
-        if w.strip() and w not in STOPWORDS and len(w.strip()) > 1
-    ]
-    return words
-
-
-def load_data_by_province(year):
-    """按省份加载数据（内存优化版本）"""
-    year_dir = os.path.join(DATA_DIR, str(year))
-    if not os.path.exists(year_dir):
-        print(f"❌ 未找到 {year} 年的数据目录")
-        return None
-
-    import glob
-
-    pattern = os.path.join(year_dir, "*.parquet")
-    parquet_files = sorted(glob.glob(pattern))
-
-    if not parquet_files:
-        print(f"❌ 未找到 {year} 年的数据文件")
-        return None
-
-    print(f"📂 找到 {len(parquet_files)} 个文件，开始加载...")
-
-    # 只加载需要的列，减少内存占用
-    required_columns = ["weibo_content"]
-    province_col = None
-
-    # 先检查第一个文件确定省份字段名（只读取一行，减少内存占用）
-    province_col = "province"
-    required_columns.append("province")
-
-    if province_col is None:
-        print(f"❌ 无法确定省份字段")
-        return None
-
-    data_by_province = defaultdict(list)
-
-    for file_idx, file_path in enumerate(parquet_files):
-        try:
-            # 只读取需要的列
-            df = pd.read_parquet(file_path, columns=required_columns)
-
-            # 过滤掉空值
-            df = df.dropna(subset=[province_col, "weibo_content"])
-
-            # 将省份编码转换为省份名称（如果数据是编码格式）
-            # 尝试将编码转换为名称
-            def convert_province_code(code):
-                if pd.isna(code):
-                    return None
-                # 统一转换为字符串格式处理
-                if isinstance(code, (int, float)):
-                    code_str = str(int(code))  # 去掉小数点
-                else:
-                    code_str = str(code).strip()
-
-                # 如果是编码，转换为名称
-                if code_str in PROVINCE_CODE_TO_NAME:
-                    return PROVINCE_CODE_TO_NAME[code_str]
-                # 如果已经是名称，直接返回
-                elif code_str in PROVINCE_NAME_TO_CODE.values():
-                    return code_str
-                # 如果都不匹配，可能是未知编码，返回原值并打印警告
-                else:
-                    # 只在第一次遇到时打印警告
-                    if not hasattr(convert_province_code, "_warned_codes"):
-                        convert_province_code._warned_codes = set()
-                    if code_str not in convert_province_code._warned_codes:
-                        print(f"  ⚠️  发现未知省份编码: {code_str}，将保留原值")
-                        convert_province_code._warned_codes.add(code_str)
-                    return code_str  # 返回原值（可能是未知编码）
-
-            df[province_col] = df[province_col].apply(convert_province_code)
-            # 过滤掉转换失败或为None的省份
-            df = df.dropna(subset=[province_col])
-
-            # 按省份分组，使用字典直接聚合而不是append
-            for province in df[province_col].unique():
-                province_data = df[df[province_col] == province].copy()
-                data_by_province[province].append(province_data)
-
-            # 及时释放内存
-            del df
-
-            if (file_idx + 1) % 10 == 0:
-                print(f"  已处理 {file_idx + 1}/{len(parquet_files)} 个文件...")
-
-        except Exception as e:
-            print(f"❌ 读取文件 {file_path} 失败: {e}")
-            continue
-
-    # 合并每个省份的数据（使用concat但及时释放）
-    print(f"\n📊 按省份分组，共 {len(data_by_province)} 个省份")
-
-    # 统计转换后的省份
-    converted_provinces = sorted(data_by_province.keys())
-    print(
-        f"  转换后的省份列表: {', '.join(converted_provinces[:10])}{'...' if len(converted_provinces) > 10 else ''}"
-    )
-
-    result = {}
-    for province, data_list in data_by_province.items():
-        # 合并数据
-        combined_data = pd.concat(data_list, ignore_index=True)
-        # 立即释放原列表内存
-        del data_list
-
-        if len(combined_data) > 1000:  # 至少1000条数据
-            result[province] = combined_data
-            print(f"  ✓ {province}: {len(combined_data):,} 条数据")
-        else:
-            print(f"  ✗ {province}: {len(combined_data):,} 条数据 (跳过，数据量不足)")
-            del combined_data
-
-    return result
-
-
-def train_word2vec(texts, vector_size=300, window=5, min_count=20, workers=None):
-    """
-    训练Word2Vec模型（内存优化版本）
-
-    参数调整说明：
-    - vector_size: 300（更大的向量维度，更好的语义表达）
-    - window: 5（上下文窗口）
-    - min_count: 20（词频阈值，根据数据量调整）
-    - workers: 线程数，None则自动设置为CPU核心数-1
-    """
-    if not texts or len(texts) < 100:
-        return None
-
-    # 自动设置workers，避免超过CPU核心数
-    if workers is None:
-        import multiprocessing
-
-        workers = max(1, multiprocessing.cpu_count() - 1)
-
-    # 限制workers数量，避免内存过度占用
-    workers = min(workers, 8)
-
-    model = Word2Vec(
-        sentences=texts,
-        vector_size=vector_size,
-        window=window,
-        min_count=min_count,
-        workers=workers,  # 多线程，但限制数量
-        epochs=10,
-        sg=1,  # Skip-gram（对中小规模数据更好）
-        negative=10,  # 负采样
-        seed=42,  # 可重复性
-        max_vocab_size=None,  # 不限制词汇表大小，但可以通过min_count控制
-    )
-
-    return model
-
 
 def get_word_embedding(model, word):
     """获取词向量"""
@@ -481,168 +227,158 @@ def compute_gender_bias(occupation_vec, male_vec, female_vec):
     return bias_score, male_sim, female_sim
 
 
-def analyze_province_embedding(data_by_province, year):
-    """分析每个省份的embedding"""
+def load_models(year, province_filter=None):
+    """加载指定年份的所有模型"""
+    year_model_dir = os.path.join(MODEL_DIR, str(year))
+    if not os.path.exists(year_model_dir):
+        print(f"❌ 未找到 {year} 年的模型目录: {year_model_dir}")
+        return {}
+
+    pattern = os.path.join(year_model_dir, "model_*.model")
+    model_files = sorted(glob.glob(pattern))
+
+    if not model_files:
+        print(f"❌ 未找到 {year} 年的模型文件")
+        return {}
+
+    print(f"📂 找到 {len(model_files)} 个模型文件")
+
+    models = {}
+    for model_path in model_files:
+        # 从文件名提取省份名称
+        filename = os.path.basename(model_path)
+        province = filename.replace("model_", "").replace(".model", "")
+
+        # 如果指定了省份过滤，只加载该省份
+        if province_filter and province != province_filter:
+            continue
+
+        try:
+            model = Word2Vec.load(model_path)
+            models[province] = model
+            print(f"  ✓ 已加载: {province} (词汇量: {len(model.wv):,})")
+        except Exception as e:
+            print(f"  ❌ 加载失败: {province} - {e}")
+
+    return models
+
+
+def analyze_model(province, model):
+    """分析单个省份的模型"""
+    print(f"\n{'='*60}")
+    print(f"🔍 分析省份: {province}")
+    print(f"{'='*60}")
+
+    vocab_size = len(model.wv)
+    print(f"  📊 词汇表大小: {vocab_size:,}")
+
+    # 计算性别词向量
+    male_vec, male_found = get_word_set_embedding(model, GENDER_WORDS["male"])
+    female_vec, female_found = get_word_set_embedding(model, GENDER_WORDS["female"])
+
+    if male_vec is None or female_vec is None:
+        print(f"  ❌ 性别词向量计算失败")
+        return None
+
+    print(f"  ✓ 找到男性词: {len(male_found)}/{len(GENDER_WORDS['male'])} 个")
+    print(f"    {', '.join(male_found[:10])}{'...' if len(male_found) > 10 else ''}")
+    print(f"  ✓ 找到女性词: {len(female_found)}/{len(GENDER_WORDS['female'])} 个")
+    print(f"    {', '.join(female_found[:10])}{'...' if len(female_found) > 10 else ''}")
+
+    # 计算每个职业词的性别偏向
+    occupation_results = []
+    found_occupations = []
+
+    for occupation in ALL_OCCUPATIONS:
+        occ_vec = get_word_embedding(model, occupation)
+        if occ_vec is not None:
+            bias_score, male_sim, female_sim = compute_gender_bias(
+                occ_vec, male_vec, female_vec
+            )
+
+            occupation_results.append(
+                {
+                    "occupation": occupation,
+                    "bias_score": float(bias_score),
+                    "male_similarity": float(male_sim),
+                    "female_similarity": float(female_sim),
+                }
+            )
+            found_occupations.append(occupation)
+
+    if not occupation_results:
+        print(f"  ❌ 没有找到任何职业词")
+        return None
+
+    print(f"  ✓ 找到职业词: {len(found_occupations)}/{len(ALL_OCCUPATIONS)} 个")
+
+    # 排序并展示结果
+    occupation_results_sorted = sorted(
+        occupation_results, key=lambda x: x["bias_score"], reverse=True
+    )
+
+    print(f"\n  📊 职业性别偏向分析:")
+    print(f"\n  🔵 最偏女性的职业 (Top 5):")
+    for i, occ in enumerate(occupation_results_sorted[:5], 1):
+        print(
+            f"    {i}. {occ['occupation']:8s} | 偏向分数: {occ['bias_score']:+.3f} "
+            f"| 女性相似度: {occ['female_similarity']:.3f} "
+            f"| 男性相似度: {occ['male_similarity']:.3f}"
+        )
+
+    print(f"\n  🔴 最偏男性的职业 (Top 5):")
+    for i, occ in enumerate(occupation_results_sorted[-5:][::-1], 1):
+        print(
+            f"    {i}. {occ['occupation']:8s} | 偏向分数: {occ['bias_score']:+.3f} "
+            f"| 女性相似度: {occ['female_similarity']:.3f} "
+            f"| 男性相似度: {occ['male_similarity']:.3f}"
+        )
+
+    # 计算统计指标
+    bias_scores = [r["bias_score"] for r in occupation_results]
+    stats = {
+        "province": province,
+        "vocab_size": vocab_size,
+        "occupations_found": len(found_occupations),
+        "male_words_found": len(male_found),
+        "female_words_found": len(female_found),
+        "mean_bias": float(np.mean(bias_scores)),
+        "std_bias": float(np.std(bias_scores)),
+        "min_bias": float(np.min(bias_scores)),
+        "max_bias": float(np.max(bias_scores)),
+        "range_bias": float(np.max(bias_scores) - np.min(bias_scores)),
+    }
+
+    print(f"\n  📈 统计指标:")
+    print(f"    平均偏向: {stats['mean_bias']:+.3f}")
+    print(f"    标准差（隔离程度）: {stats['std_bias']:.3f}")
+    print(f"    偏向范围: [{stats['min_bias']:+.3f}, {stats['max_bias']:+.3f}]")
+
+    # 返回分析结果
+    result = {
+        "province": province,
+        "stats": stats,
+        "male_vec": male_vec.tolist(),
+        "female_vec": female_vec.tolist(),
+        "male_words_found": male_found,
+        "female_words_found": female_found,
+        "occupations_found": found_occupations,
+        "occupation_results": occupation_results,
+    }
+
+    return result
+
+
+def analyze_all_models(models):
+    """分析所有省份的模型"""
     results = []
     province_stats = []
 
-    for province, data in data_by_province.items():
-        print(f"\n{'='*60}")
-        print(f"🔍 处理省份: {province}")
-        print(f"{'='*60}")
-
-        # 预处理文本（内存优化：使用itertuples而不是iterrows，分批处理）
-        # 先保存数据条数，因为后面会删除DataFrame
-        data_count = len(data)
-
-        texts = []
-        # 使用itertuples比iterrows快得多且内存占用更少
-        for row in data.itertuples():
-            words = preprocess_text(row.weibo_content)
-            if len(words) > 3:  # 至少3个词
-                texts.append(words)
-
-        # 处理完文本后立即释放DataFrame内存
-        del data
-
-        if len(texts) < 100:
-            print(f"  ❌ 文本量不足 ({len(texts)} 条)，跳过")
-            del texts
-            continue
-
-        print(f"  📝 有效文本: {len(texts):,} 条")
-
-        # 训练模型
-        print(f"  🔧 训练Word2Vec模型...")
-        model = train_word2vec(texts)
-        if model is None:
-            print(f"  ❌ 训练模型失败")
-            continue
-
-        vocab_size = len(model.wv)
-        print(f"  ✓ 模型训练完成，词汇表大小: {vocab_size:,}")
-
-        # 训练完成后立即释放texts列表（可能占用大量内存）
-        text_count = len(texts)
-        del texts
-        import gc
-
-        gc.collect()  # 强制垃圾回收
-
-        # 计算性别词向量
-        male_vec, male_found = get_word_set_embedding(model, GENDER_WORDS["male"])
-        female_vec, female_found = get_word_set_embedding(model, GENDER_WORDS["female"])
-
-        if male_vec is None or female_vec is None:
-            print(f"  ❌ 性别词向量计算失败")
-            continue
-
-        print(f"  ✓ 找到男性词: {len(male_found)}/{len(GENDER_WORDS['male'])} 个")
-        print(
-            f"    {', '.join(male_found[:10])}{'...' if len(male_found) > 10 else ''}"
-        )
-        print(f"  ✓ 找到女性词: {len(female_found)}/{len(GENDER_WORDS['female'])} 个")
-        print(
-            f"    {', '.join(female_found[:10])}{'...' if len(female_found) > 10 else ''}"
-        )
-
-        # 计算每个职业词的性别偏向
-        occupation_results = []
-        found_occupations = []
-
-        for occupation in ALL_OCCUPATIONS:
-            occ_vec = get_word_embedding(model, occupation)
-            if occ_vec is not None:
-                bias_score, male_sim, female_sim = compute_gender_bias(
-                    occ_vec, male_vec, female_vec
-                )
-
-                occupation_results.append(
-                    {
-                        "occupation": occupation,
-                        "bias_score": float(bias_score),
-                        "male_similarity": float(male_sim),
-                        "female_similarity": float(female_sim),
-                    }
-                )
-                found_occupations.append(occupation)
-
-        if not occupation_results:
-            print(f"  ❌ 没有找到任何职业词")
-            continue
-
-        print(f"  ✓ 找到职业词: {len(found_occupations)}/{len(ALL_OCCUPATIONS)} 个")
-
-        # 排序并展示结果
-        occupation_results_sorted = sorted(
-            occupation_results, key=lambda x: x["bias_score"], reverse=True
-        )
-
-        print(f"\n  📊 职业性别偏向分析:")
-        print(f"\n  🔵 最偏女性的职业 (Top 5):")
-        for i, occ in enumerate(occupation_results_sorted[:5], 1):
-            print(
-                f"    {i}. {occ['occupation']:8s} | 偏向分数: {occ['bias_score']:+.3f} "
-                f"| 女性相似度: {occ['female_similarity']:.3f} "
-                f"| 男性相似度: {occ['male_similarity']:.3f}"
-            )
-
-        print(f"\n  🔴 最偏男性的职业 (Top 5):")
-        for i, occ in enumerate(occupation_results_sorted[-5:][::-1], 1):
-            print(
-                f"    {i}. {occ['occupation']:8s} | 偏向分数: {occ['bias_score']:+.3f} "
-                f"| 女性相似度: {occ['female_similarity']:.3f} "
-                f"| 男性相似度: {occ['male_similarity']:.3f}"
-            )
-
-        # 计算统计指标
-        bias_scores = [r["bias_score"] for r in occupation_results]
-        stats = {
-            "province": province,
-            "data_count": data_count,
-            "text_count": text_count,
-            "vocab_size": vocab_size,
-            "occupations_found": len(found_occupations),
-            "male_words_found": len(male_found),
-            "female_words_found": len(female_found),
-            "mean_bias": float(np.mean(bias_scores)),
-            "std_bias": float(np.std(bias_scores)),
-            "min_bias": float(np.min(bias_scores)),
-            "max_bias": float(np.max(bias_scores)),
-            "range_bias": float(np.max(bias_scores) - np.min(bias_scores)),
-        }
-        province_stats.append(stats)
-
-        print(f"\n  📈 统计指标:")
-        print(f"    平均偏向: {stats['mean_bias']:+.3f}")
-        print(f"    标准差（隔离程度）: {stats['std_bias']:.3f}")
-        print(f"    偏向范围: [{stats['min_bias']:+.3f}, {stats['max_bias']:+.3f}]")
-
-        # 保存详细结果（先转换向量为列表，避免后续内存占用）
-        result = {
-            "province": province,
-            "stats": stats,
-            "male_vec": male_vec.tolist(),  # 转换为列表后，原始numpy数组可以释放
-            "female_vec": female_vec.tolist(),
-            "male_words_found": male_found,
-            "female_words_found": female_found,
-            "occupations_found": found_occupations,
-            "occupation_results": occupation_results,
-        }
-        results.append(result)
-
-        # 保存结果后立即释放向量（已经转换为列表，原始numpy数组不再需要）
-        del male_vec
-        del female_vec
-
-        # 保存模型
-        model_path = os.path.join(OUTPUT_DIR, f"model_{year}_{province}.model")
-        model.save(model_path)
-        print(f"  💾 模型已保存: {model_path}")
-
-        # 保存模型后释放模型（释放内存）
-        del model
-        gc.collect()  # 再次垃圾回收
+    for province, model in models.items():
+        result = analyze_model(province, model)
+        if result:
+            results.append(result)
+            province_stats.append(result["stats"])
 
     return results, province_stats
 
@@ -653,13 +389,16 @@ def save_results(results, province_stats, year):
         print("❌ 没有生成任何结果")
         return
 
+    year_output_dir = os.path.join(OUTPUT_DIR, str(year))
+    os.makedirs(year_output_dir, exist_ok=True)
+
     print(f"\n{'='*60}")
     print(f"💾 保存结果...")
     print(f"{'='*60}")
 
     # 1. 保存省份统计信息
     stats_df = pd.DataFrame(province_stats)
-    stats_file = os.path.join(OUTPUT_DIR, f"province_stats_{year}.csv")
+    stats_file = os.path.join(year_output_dir, f"province_stats.csv")
     stats_df.to_csv(stats_file, index=False, encoding="utf-8-sig")
     print(f"✓ 省份统计信息: {stats_file}")
 
@@ -679,7 +418,7 @@ def save_results(results, province_stats, year):
             )
 
     occupation_df = pd.DataFrame(occupation_data)
-    occupation_file = os.path.join(OUTPUT_DIR, f"occupation_bias_{year}.csv")
+    occupation_file = os.path.join(year_output_dir, f"occupation_bias.csv")
     occupation_df.to_csv(occupation_file, index=False, encoding="utf-8-sig")
     print(f"✓ 职业性别偏向数据: {occupation_file}")
 
@@ -687,11 +426,11 @@ def save_results(results, province_stats, year):
     pivot_df = occupation_df.pivot_table(
         values="bias_score", index="occupation", columns="province", aggfunc="mean"
     )
-    pivot_file = os.path.join(OUTPUT_DIR, f"occupation_bias_pivot_{year}.csv")
+    pivot_file = os.path.join(year_output_dir, f"occupation_bias_pivot.csv")
     pivot_df.to_csv(pivot_file, encoding="utf-8-sig")
     print(f"✓ 职业×省份矩阵: {pivot_file}")
 
-    # 4. 保存详细向量数据（JSON格式，便于后续分析）
+    # 4. 保存详细向量数据（JSON格式）
     detailed_data = []
     for result in results:
         detailed_data.append(
@@ -706,13 +445,13 @@ def save_results(results, province_stats, year):
             }
         )
 
-    detailed_file = os.path.join(OUTPUT_DIR, f"detailed_vectors_{year}.json")
+    detailed_file = os.path.join(year_output_dir, f"detailed_vectors.json")
     with open(detailed_file, "w", encoding="utf-8") as f:
         json.dump(detailed_data, f, ensure_ascii=False, indent=2)
     print(f"✓ 详细向量数据: {detailed_file}")
 
     # 5. 生成简要分析报告
-    report_file = os.path.join(OUTPUT_DIR, f"analysis_report_{year}.txt")
+    report_file = os.path.join(year_output_dir, f"analysis_report.txt")
     with open(report_file, "w", encoding="utf-8") as f:
         f.write(f"{'='*60}\n")
         f.write(f"性别-职业Embedding分析报告 ({year}年)\n")
@@ -766,7 +505,7 @@ def save_results(results, province_stats, year):
 
     print(f"✓ 分析报告: {report_file}")
 
-    print(f"\n✅ 所有结果已保存到 {OUTPUT_DIR}/ 目录")
+    print(f"\n✅ 所有结果已保存到 {year_output_dir}/ 目录")
 
 
 def main(year: int, province: str = None):
@@ -775,29 +514,20 @@ def main(year: int, province: str = None):
 
     Args:
         year: 年份
-        province: 指定省份（可选），如果不指定则处理所有省份
+        province: 指定省份（可选），如果不指定则分析所有省份
     """
     print(f"\n{'='*60}")
     print(f"🚀 开始分析 {year} 年数据的性别-职业Embedding")
     print(f"{'='*60}\n")
 
-    # 加载数据
-    data_by_province = load_data_by_province(year)
-    if not data_by_province:
-        print("❌ 无法加载数据")
+    # 加载模型
+    models = load_models(year, province)
+    if not models:
+        print("❌ 无法加载模型")
         return
 
-    # 如果指定了省份，只处理该省份
-    if province:
-        if province not in data_by_province:
-            print(f"❌ 未找到省份: {province}")
-            print(f"可用省份: {', '.join(data_by_province.keys())}")
-            return
-        data_by_province = {province: data_by_province[province]}
-        print(f"🎯 只处理省份: {province}\n")
-
-    # 分析embedding
-    results, province_stats = analyze_province_embedding(data_by_province, year)
+    # 分析模型
+    results, province_stats = analyze_all_models(models)
 
     # 保存结果
     save_results(results, province_stats, year)
