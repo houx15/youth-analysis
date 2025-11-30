@@ -66,11 +66,11 @@ PROVINCE_CODE_TO_NAME = {
     "63": "青海",
     "64": "宁夏",
     "65": "新疆",
-    "71": "台湾",
-    "81": "香港",
-    "82": "澳门",
-    "100": "未知",
-    "400": "未知",
+    "71": "中国台湾",
+    "81": "中国香港",
+    "82": "中国澳门",
+    # "100": "未知",
+    # "400": "未知",
 }
 
 # 反向映射：省份名称到编码
@@ -191,6 +191,8 @@ def prepare_2024_data_by_month_group(year, start_month, end_month):
         start_date + timedelta(days=n) for n in range((end_date - start_date).days + 1)
     ]
 
+    allowed_provinces = list(PROVINCE_CODE_TO_NAME.values())
+
     for current_date in date_range:
         date_str = current_date.strftime("%Y-%m-%d")
         print(f"\n处理日期: {date_str}")
@@ -224,6 +226,8 @@ def prepare_2024_data_by_month_group(year, start_month, end_month):
                 df["province"] = df["region_name"].apply(clean_region_name_2024)
 
                 df = df.dropna(subset=["province"])
+
+                df = df[df["province"].isin(allowed_provinces)]
                 # df = df[df["weibo_content"] != ""]
 
                 df = df[["weibo_id", "weibo_content", "province"]]
@@ -291,7 +295,7 @@ def load_single_province_2024(province):
 
     combined_data = combined_data.drop_duplicates(subset=["weibo_id"])
 
-    if len(combined_data) < 100000:
+    if len(combined_data) < 10000:
         print(f"  ✗ {province}: {len(combined_data):,} 条 (数据量不足)")
         del combined_data
         return None
@@ -440,7 +444,7 @@ def train_single_province(province, data, year):
 
     gc.collect()
 
-    if len(texts) < 100000:
+    if len(texts) < 10000:
         print(f"  ❌ 文本量不足 ({len(texts)} 条)，跳过")
         del texts
         return None
