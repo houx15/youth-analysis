@@ -23,6 +23,10 @@ import glob
 import re
 from datetime import datetime, timedelta
 
+import gc
+from collections import defaultdict
+
+
 warnings.filterwarnings("ignore")
 
 DATA_DIR_2020 = "cleaned_weibo_cov"
@@ -159,20 +163,6 @@ def clean_region_name_2024(region):
     return region if region else None
 
 
-def preprocess_text(text):
-    if pd.isna(text) or text == "":
-        return []
-
-    text = str(text)
-    words = jieba.cut(text)
-    words = [
-        w.strip()
-        for w in words
-        if w.strip() and w not in STOPWORDS and len(w.strip()) > 1
-    ]
-    return words
-
-
 def prepare_2024_data_by_month_group(year, start_month, end_month):
     print(f"\n{'='*60}")
     print(f"📦 准备 {year} 年 {start_month}-{end_month} 月数据")
@@ -264,41 +254,46 @@ def prepare_2024_data_by_month_group(year, start_month, end_month):
     print(f"\n✅ {start_month}-{end_month} 月数据准备完成")
 
 
-def load_single_province_2024(province):
-    province_dir = os.path.join(PREPARED_DIR_2024, province)
+CHINESE_RE = re.compile(r"[\u4e00-\u9fff]+")
 
-    if not os.path.exists(province_dir):
-        return None
 
-    pattern = os.path.join(province_dir, "*.parquet")
-    parquet_files = sorted(glob.glob(pattern))
+def preprocess_text(text):
+    if pd.isna(text) or not isinstance(text, str) or text.strip() == "":
+        return ""
+    chinese_only = "".join(CHINESE_RE.findall(text))
+    words = jieba.cut(chinese_only)
+    cleaned = [
+        w.strip()
+        for w in words
+        if (w.strip() and w.strip() not in STOPWORDS and len(w.strip()) >= 1)
+    ]
+    if len(cleaned) < 5:
+        return ""
+    return " ".join(cleaned)
 
-    if not parquet_files:
-        return None
 
-    data_list = []
-    for file_path in parquet_files:
-        try:
-            df = pd.read_parquet(file_path)
-            data_list.append(df)
-        except Exception as e:
-            print(f"  ❌ 读取失败: {file_path} - {e}")
+def clean_2024_for_word2vec():
+    # 遍历所有省份
+    for province in PROVINCE_CODE_TO_NAME.values():
+        province_folder = os.path.join(PREPARED_DIR_2024, province)
+        if not os.path.exists(province_folder):
             continue
+        output = os.path.join(PREPARED_DIR_2024, province, "corpus.txt")
 
-    if not data_list:
-        return None
-
-    combined_data = pd.concat(data_list, ignore_index=True)
-    del data_list
-
-    combined_data = combined_data.drop_duplicates(subset=["weibo_id"])
-
-    if len(combined_data) < 10000:
-        print(f"  ✗ {province}: {len(combined_data):,} 条 (数据量不足)")
-        del combined_data
-        return None
-
-    return combined_data
+        pattern = os.path.join(province_folder, "*.parquet")
+        parquet_files = sorted(glob.glob(pattern))
+        count = 0
+        with open(output, "w") as f:
+            for pq in parquet_files:
+                df = pd.read_parquet(pq)
+                for text in df["weibo_content"]:
+                    cleaned = preprocess_text(text)
+                    if cleaned != "":
+                        f.write(cleaned + "\n")
+                        count += 1
+                # remove parquet file
+                os.remove(pq)
+        print(f"  ✓ {province}: {count} 条数据")
 
 
 def load_data_by_province_2020(year):
@@ -385,7 +380,17 @@ def load_data_by_province_2020(year):
     return result
 
 
-def train_word2vec(texts, vector_size=300, window=5, min_count=20, workers=None):
+class ProvinceCorpus:
+    def __init__(self, province):
+        self.filepath = os.path.join(PREPARED_DIR_2024, province, "corpus.txt")
+
+    def __iter__(self):
+        with open(self.filepath, "r") as f:
+            for line in f:
+                yield line.strip().split(" ")
+
+
+def train_word2vec(corpus, vector_size=300, window=5, min_count=20, workers=None):
     """
     训练Word2Vec模型（内存优化版本）
 
@@ -395,9 +400,6 @@ def train_word2vec(texts, vector_size=300, window=5, min_count=20, workers=None)
     - min_count: 20（词频阈值，根据数据量调整）
     - workers: 线程数，None则自动设置为CPU核心数-1
     """
-    if not texts or len(texts) < 100:
-        return None
-
     # 自动设置workers，避免超过CPU核心数
     if workers is None:
         import multiprocessing
@@ -408,7 +410,7 @@ def train_word2vec(texts, vector_size=300, window=5, min_count=20, workers=None)
     workers = min(workers, 8)
 
     model = Word2Vec(
-        sentences=texts,
+        sentences=corpus,
         vector_size=vector_size,
         window=window,
         min_count=min_count,
@@ -423,57 +425,28 @@ def train_word2vec(texts, vector_size=300, window=5, min_count=20, workers=None)
     return model
 
 
-def train_single_province(province, data, year):
+def train_single_province(province, year):
     print(f"\n{'='*60}")
     print(f"🔧 训练省份: {province}")
     print(f"{'='*60}")
-
-    data_count = len(data)
-    print(f"  📊 原始数据: {data_count:,} 条")
-
-    texts = []
-    for row in data.itertuples():
-        words = preprocess_text(row.weibo_content)
-        if len(words) > 3:
-            texts.append(words)
-
-    del data
-    import gc
-
-    gc.collect()
-
-    if len(texts) < 10000:
-        print(f"  ❌ 文本量不足 ({len(texts)} 条)，跳过")
-        del texts
-        return None
-
-    print(f"  📝 有效文本: {len(texts):,} 条")
-
-    print(f"  🔧 训练Word2Vec模型...")
-    model = train_word2vec(texts)
+    corpus = ProvinceCorpus(province)
+    model = train_word2vec(corpus)
     if model is None:
         print(f"  ❌ 训练模型失败")
-        del texts
         return None
-
     vocab_size = len(model.wv)
     print(f"  ✓ 模型训练完成，词汇表大小: {vocab_size:,}")
 
     stats = {
         "province": province,
-        "data_count": data_count,
-        "text_count": len(texts),
         "vocab_size": vocab_size,
     }
-
-    del texts
-    gc.collect()
 
     year_output_dir = os.path.join(OUTPUT_DIR, str(year))
     os.makedirs(year_output_dir, exist_ok=True)
 
     model_path = os.path.join(year_output_dir, f"model_{province}.model")
-    model.save(model_path)
+    model.wv.save(model_path)
     print(f"  💾 模型已保存: {model_path}")
 
     del model
@@ -500,16 +473,8 @@ def train_models_by_province_2024(provinces, year):
     training_stats = []
 
     for province in provinces:
-        print(f"\n📂 加载省份: {province}")
-        data = load_single_province_2024(province)
-
-        if data is None:
-            print(f"  ⚠️  跳过 {province}，无法加载数据")
-            continue
-
-        print(f"  ✓ 加载成功: {len(data):,} 条数据")
-
-        stats = train_single_province(province, data, year)
+        print(f"\n📂 处理省份: {province}")
+        stats = train_single_province(province, year)
         if stats:
             training_stats.append(stats)
 
@@ -546,6 +511,10 @@ def prepare(year: int, start_month: int, end_month: int):
         return
 
     prepare_2024_data_by_month_group(year, start_month, end_month)
+
+
+def clean():
+    clean_2024_for_word2vec()
 
 
 def train(year: int, province: str = None, group: int = None):
@@ -598,4 +567,4 @@ def train(year: int, province: str = None, group: int = None):
 
 
 if __name__ == "__main__":
-    fire.Fire({"prepare": prepare, "train": train})
+    fire.Fire({"prepare": prepare, "train": train, "clean": clean})
