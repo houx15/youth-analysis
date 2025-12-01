@@ -134,19 +134,6 @@ def clean_weibo_content_2024(text):
     text = re.sub(r"t\.cn/\S+", "", text)
     text = re.sub(r"@\S+", "", text)
 
-    emoji_pattern = re.compile(
-        "["
-        "\U0001f600-\U0001f64f"
-        "\U0001f300-\U0001f5ff"
-        "\U0001f680-\U0001f6ff"
-        "\U0001f1e0-\U0001f1ff"
-        "\U00002702-\U000027b0"
-        "\U000024c2-\U0001f251"
-        "]+",
-        flags=re.UNICODE,
-    )
-    text = emoji_pattern.sub("", text)
-
     return text.strip()
 
 
