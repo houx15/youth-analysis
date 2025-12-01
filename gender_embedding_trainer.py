@@ -128,6 +128,16 @@ def clean_weibo_content_2024(text):
 
     text = str(text)
 
+    text = text.split("//")[0]
+
+    text = (
+        text.replace("“", "")
+        .replace("”", "")
+        .replace("…", "")
+        .replace("点击链接查看更多->", "")
+    )
+    text = text.replace("\u200b", "")
+
     text = re.sub(r"\[.*?\]", "", text)
     text = re.sub(r"http[s]?://\S+", "", text)
     text = re.sub(r"www\.\S+", "", text)
