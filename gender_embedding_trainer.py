@@ -417,12 +417,14 @@ def load_data_by_province_2020(year):
 
 class ProvinceCorpus:
     def __init__(self, province):
-        self.filepath = os.path.join(PREPARED_DIR_2024, province, "corpus.txt")
+        self.province_dir = os.path.join(PREPARED_DIR_2024, province)
 
     def __iter__(self):
-        with open(self.filepath, "r", buffering=8 * 1024 * 1024) as f:
-            for line in f:
-                yield line.strip().split(" ")
+        files = sorted(glob.glob(os.path.join(self.province_dir, "corpus_*")))
+        for file in files:
+            with open(file, "r", buffering=8 * 1024 * 1024) as f:
+                for line in f:
+                    yield line.strip().split(" ")
 
 
 def train_word2vec(corpus, vector_size=300, window=5, min_count=20, workers=None):
