@@ -16,7 +16,7 @@ import pandas as pd
 import numpy as np
 from gensim.models import Word2Vec
 from collections import defaultdict
-from jieba_fast import jieba
+import jieba_fast as jieba
 import fastparquet as fp
 from fastparquet import ParquetFile
 import fire
