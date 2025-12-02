@@ -257,7 +257,7 @@ def prepare_2024_data_by_month_group(year, start_month, end_month):
 
 
 def batch_cut(texts):
-    return list(jieba.cut(texts))
+    return [jieba.lcut(t, HMM=True) for t in texts]
 
 
 CHINESE_RE = re.compile(r"[\u4e00-\u9fff]+")
