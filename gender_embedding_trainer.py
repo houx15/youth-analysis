@@ -418,10 +418,12 @@ def load_data_by_province_2020(year):
 class ProvinceCorpus:
     def __init__(self, province):
         self.province_dir = os.path.join(PREPARED_DIR_2024, province)
+        self.province_files = sorted(
+            glob.glob(os.path.join(self.province_dir, "corpus_*"))
+        )
 
     def __iter__(self):
-        files = sorted(glob.glob(os.path.join(self.province_dir, "corpus_*")))
-        for file in files:
+        for file in self.province_files:
             with open(file, "r", buffering=8 * 1024 * 1024) as f:
                 for line in f:
                     yield line.strip().split(" ")
@@ -458,6 +460,8 @@ def train_word2vec(corpus, vector_size=300, window=5, min_count=20, workers=None
         seed=42,  # 可重复性
         max_vocab_size=None,
     )
+
+    model.wv.fill_norms()
 
     return model
 
