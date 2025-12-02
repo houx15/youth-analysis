@@ -16,7 +16,9 @@ import pandas as pd
 import numpy as np
 from gensim.models import Word2Vec
 from collections import defaultdict
-import jieba
+from jieba_fast import jieba
+import fastparquet as fp
+from fastparquet import ParquetFile
 import fire
 import warnings
 import glob
@@ -254,46 +256,79 @@ def prepare_2024_data_by_month_group(year, start_month, end_month):
     print(f"\n✅ {start_month}-{end_month} 月数据准备完成")
 
 
+def batch_cut(texts):
+    return list(jieba.cut(texts))
+
+
 CHINESE_RE = re.compile(r"[\u4e00-\u9fff]+")
 
 
-def preprocess_text(text):
-    if pd.isna(text) or not isinstance(text, str) or text.strip() == "":
-        return ""
-    chinese_only = "".join(CHINESE_RE.findall(text))
-    words = jieba.cut(chinese_only)
-    cleaned = [
-        w.strip()
-        for w in words
-        if (w.strip() and w.strip() not in STOPWORDS and len(w.strip()) >= 1)
-    ]
-    if len(cleaned) < 5:
-        return ""
-    return " ".join(cleaned)
+def preprocess_batch(ser: pd.Series) -> list[str]:
+    ser = ser.dropna()
+    ser = ser[ser.astype(str).str.strip().ne("")]
+    chinese = ser.str.findall(CHINESE_RE).str.join("")
+    cuts = batch_cut(chinese.tolist())
+    out = []
+    for words in cuts:
+        tmp = [w.strip() for w in words if w.strip() not in STOPWORDS]
+        if len(tmp) >= 5:
+            out.append(" ".join(tmp))
+    return out
 
 
-def clean_2024_for_word2vec():
+class RollingFile:
+    def __init__(self, base_dir, prefix="corpus", max_bytes=1024 * 1024 * 1024):
+        self.base_dir = base_dir
+        self.prefix = prefix
+        self.max_bytes = max_bytes
+        self.index = 0
+        self.bytes = 0
+        self._open_next()
+
+    def _open_next(self):
+        while True:
+            name = f"{self.prefix}_{self.index:06d}"
+            path = os.path.join(self.base_dir, name)
+            if not os.path.exists(path):
+                break
+            self.index += 1
+        self.f = open(path, "w", buffering=8 * 1024 * 1024, encoding="utf-8")
+        self.bytes = 0
+
+    def write(self, text: str):
+        if self.bytes + len(text) > self.max_bytes:
+            self.f.close()
+            self.index += 1
+            self._open_next()
+        self.f.write(text + "\n")
+        self.bytes += len(text)
+
+    def close(self):
+        self.f.close()
+
+
+def clean_2024_for_word2vec(provinces):
     # 遍历所有省份
-    for province in PROVINCE_CODE_TO_NAME.values():
+    for province in provinces:
         province_folder = os.path.join(PREPARED_DIR_2024, province)
         if not os.path.exists(province_folder):
             continue
-        output = os.path.join(PREPARED_DIR_2024, province, "corpus.txt")
+        parquet_files = sorted(glob.glob(os.path.join(province_folder, "*.parquet")))
+        roller = RollingFile(province_folder)
+        total = 0
 
-        pattern = os.path.join(province_folder, "*.parquet")
-        parquet_files = sorted(glob.glob(pattern))
-        count = 0
-        with open(output, "w") as f:
-            for pq in parquet_files:
-                df = pd.read_parquet(pq)
-                for text in df["weibo_content"]:
-                    cleaned = preprocess_text(text)
-                    if cleaned != "":
-                        f.write(cleaned + "\n")
-                        count += 1
-                # remove parquet file
-                os.remove(pq)
-        print(f"  ✓ {province}: {count} 条数据")
+        for pq_path in parquet_files:
+            pf = ParquetFile(pq_path)
+            df = pf.to_pandas(columns=["weibo_content"])
+            lines = preprocess_batch(df["weibo_content"])
+            if lines:
+                out_text = "\n".join(lines)
+                roller.write(out_text)
+                total += len(lines)
+
+            os.remove(pq_path)
+        roller.close()
+        print(f"  ✓ {province}: {total} 条数据")
 
 
 def load_data_by_province_2020(year):
@@ -385,7 +420,7 @@ class ProvinceCorpus:
         self.filepath = os.path.join(PREPARED_DIR_2024, province, "corpus.txt")
 
     def __iter__(self):
-        with open(self.filepath, "r") as f:
+        with open(self.filepath, "r", buffering=8 * 1024 * 1024) as f:
             for line in f:
                 yield line.strip().split(" ")
 
@@ -502,6 +537,7 @@ PROVINCE_GROUPS = [
     ["广东", "广西", "海南"],
     ["重庆", "四川", "贵州", "云南"],
     ["西藏", "陕西", "甘肃", "青海", "宁夏", "新疆"],
+    ["中国台湾", "中国香港", "中国澳门"],
 ]
 
 
@@ -513,8 +549,8 @@ def prepare(year: int, start_month: int, end_month: int):
     prepare_2024_data_by_month_group(year, start_month, end_month)
 
 
-def clean():
-    clean_2024_for_word2vec()
+def clean(group: int):
+    clean_2024_for_word2vec(PROVINCE_GROUPS[group])
 
 
 def train(year: int, province: str = None, group: int = None):
