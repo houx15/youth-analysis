@@ -14,7 +14,7 @@
 import os
 import pandas as pd
 import numpy as np
-from gensim.models import Word2Vec
+from gensim.models import KeyedVectors
 import fire
 from sklearn.preprocessing import normalize
 import warnings
@@ -178,7 +178,7 @@ for category in OCCUPATION_WORDS.values():
 def get_word_embedding(model, word):
     """获取词向量"""
     try:
-        return model.wv[word]
+        return model[word]
     except KeyError:
         return None
 
@@ -254,9 +254,9 @@ def load_models(year, province_filter=None):
             continue
 
         try:
-            model = Word2Vec.load(model_path)
+            model = KeyedVectors.load(model_path)
             models[province] = model
-            print(f"  ✓ 已加载: {province} (词汇量: {len(model.wv):,})")
+            print(f"  ✓ 已加载: {province} (词汇量: {len(model):,})")
         except Exception as e:
             print(f"  ❌ 加载失败: {province} - {e}")
 
@@ -269,7 +269,7 @@ def analyze_model(province, model):
     print(f"🔍 分析省份: {province}")
     print(f"{'='*60}")
 
-    vocab_size = len(model.wv)
+    vocab_size = len(model)
     print(f"  📊 词汇表大小: {vocab_size:,}")
 
     # 计算性别词向量
@@ -283,7 +283,9 @@ def analyze_model(province, model):
     print(f"  ✓ 找到男性词: {len(male_found)}/{len(GENDER_WORDS['male'])} 个")
     print(f"    {', '.join(male_found[:10])}{'...' if len(male_found) > 10 else ''}")
     print(f"  ✓ 找到女性词: {len(female_found)}/{len(GENDER_WORDS['female'])} 个")
-    print(f"    {', '.join(female_found[:10])}{'...' if len(female_found) > 10 else ''}")
+    print(
+        f"    {', '.join(female_found[:10])}{'...' if len(female_found) > 10 else ''}"
+    )
 
     # 计算每个职业词的性别偏向
     occupation_results = []
