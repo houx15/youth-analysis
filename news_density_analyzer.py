@@ -584,6 +584,18 @@ def analyze_news_density(year):
     print(f"{'='*60}")
 
 
+def get_gender_label(gender):
+    """将性别代码转换为中文标签"""
+    gender_map = {"m": "男", "f": "女", "男": "男", "女": "女"}
+    return gender_map.get(gender, gender)
+
+
+def get_gender_color(gender):
+    """获取性别对应的颜色"""
+    color_map = {"m": "#20AEE6", "f": "#ff7333", "男": "#20AEE6", "女": "#ff7333"}
+    return color_map.get(gender, "#808080")  # 默认灰色
+
+
 def visualize_from_saved_stats(year):
     """Generate boxplot-style visualization from saved statistics
 
@@ -596,31 +608,102 @@ def visualize_from_saved_stats(year):
     print(f"Generating News Density visualization for year {year} from saved data")
     print(f"{'='*60}")
 
-    # 1. Read statistics file
-    stats_file = os.path.join(OUTPUT_DIR, f"news_density_stats_{year}.parquet")
-    if not os.path.exists(stats_file):
-        print(f"Error: Statistics file not found: {stats_file}")
-        print("Please run analyze_news_density function first to generate statistics")
+    # 1. Load original density data to calculate zero density ratio
+    gender_densities_file = os.path.join(OUTPUT_DIR, f"gender_densities_{year}.pkl")
+    if not os.path.exists(gender_densities_file):
+        print(f"Error: Original density data file not found: {gender_densities_file}")
+        print("Please run analyze_news_density function first to generate data")
         return
 
-    stats_df = pd.read_parquet(stats_file, engine="fastparquet")
-    print(f"\nLoaded statistics:")
-    print(stats_df.to_string())
+    # Load original density data
+    print(f"\nLoading original density data from: {gender_densities_file}")
+    try:
+        with open(gender_densities_file, "rb") as f:
+            gender_densities = pickle.load(f)
+        print(f"✓ Successfully loaded density data for {len(gender_densities)} genders")
+    except Exception as e:
+        print(f"Error loading density data: {e}")
+        return
 
-    if len(stats_df) < 2:
+    # 2. Calculate zero density ratio for each gender
+    print(f"\n{'='*60}")
+    print(f"Zero Density Analysis")
+    print(f"{'='*60}")
+    zero_density_stats = []
+    filtered_gender_densities = {}
+
+    for gender, densities in gender_densities.items():
+        if len(densities) == 0:
+            continue
+
+        total_count = len(densities)
+        zero_count = sum(1 for d in densities if d == 0.0)
+        zero_ratio = zero_count / total_count if total_count > 0 else 0.0
+
+        gender_label = get_gender_label(gender)
+        zero_density_stats.append(
+            {
+                "gender": gender,
+                "gender_label": gender_label,
+                "total_count": total_count,
+                "zero_count": zero_count,
+                "zero_ratio": zero_ratio,
+            }
+        )
+
+        print(f"\n{gender_label}性 (代码: {gender}):")
+        print(f"  总内容数: {total_count:,} 条")
+        print(f"  Density为0的数量: {zero_count:,} 条")
+        print(f"  Density为0的占比: {zero_ratio:.4f} ({zero_ratio*100:.2f}%)")
+
+        # Filter out zero density values
+        filtered_densities = [d for d in densities if d > 0.0]
+        filtered_gender_densities[gender] = filtered_densities
+        print(f"  过滤后（density>0）的数量: {len(filtered_densities):,} 条")
+
+    # 3. Calculate statistics for filtered data (density > 0)
+    print(f"\n{'='*60}")
+    print(f"Statistics for Non-Zero Density")
+    print(f"{'='*60}")
+
+    stats = []
+    for gender, densities in filtered_gender_densities.items():
+        if len(densities) > 0:
+            avg_density = np.mean(densities)
+            median_density = np.median(densities)
+            std_density = np.std(densities)
+            stats.append(
+                {
+                    "gender": gender,
+                    "count": len(densities),
+                    "mean": avg_density,
+                    "median": median_density,
+                    "std": std_density,
+                }
+            )
+
+            gender_label = get_gender_label(gender)
+            print(f"\n{gender_label}性 (代码: {gender}) 统计（density>0）:")
+            print(f"  有效内容数: {len(densities):,} 条")
+            print(f"  平均News Density: {avg_density:.4f}")
+            print(f"  中位News Density: {median_density:.4f}")
+            print(f"  标准差: {std_density:.4f}")
+
+    if len(stats) < 2:
         print("Warning: Insufficient data for gender comparison")
         return
 
-    # 2. Create bar chart with error bars showing mean and standard deviation
+    # 4. Create bar chart with error bars showing mean and standard deviation
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
 
+    stats_df = pd.DataFrame(stats)
     genders = stats_df["gender"].values
     means = stats_df["mean"].values
     stds = stats_df["std"].values
 
-    # Colors for different genders
-    colors = ["#FF6B6B", "#4ECDC4", "#95E1D3", "#F38181"]
-    bar_colors = colors[: len(genders)]
+    # Generate gender labels and colors
+    gender_labels = [get_gender_label(g) for g in genders]
+    bar_colors = [get_gender_color(g) for g in genders]
 
     # Create bar chart with error bars
     positions = np.arange(1, len(genders) + 1)
@@ -677,10 +760,10 @@ def visualize_from_saved_stats(year):
 
     # Set labels and title
     ax.set_xticks(positions)
-    ax.set_xticklabels(genders, fontsize=12, fontweight="bold")
+    ax.set_xticklabels(gender_labels, fontsize=12, fontweight="bold")
     ax.set_ylabel("News Density", fontsize=13, fontweight="bold")
     ax.set_title(
-        f"News Density by Gender ({year})",
+        f"News Density by Gender ({year}, Density > 0)",
         fontsize=14,
         fontweight="bold",
         pad=15,

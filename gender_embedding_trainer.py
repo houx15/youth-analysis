@@ -466,10 +466,40 @@ def train_word2vec(corpus, vector_size=300, window=5, min_count=20, workers=None
     return model
 
 
-def train_single_province(province, year):
+def train_single_province(province, year, force_retrain=False):
+    """训练单个省份的Word2Vec模型
+
+    Args:
+        province: 省份名称
+        year: 年份
+        force_retrain: 如果为True，即使模型文件已存在也重新训练
+    """
     print(f"\n{'='*60}")
     print(f"🔧 训练省份: {province}")
     print(f"{'='*60}")
+
+    # 检查模型文件是否已存在
+    year_output_dir = os.path.join(OUTPUT_DIR, str(year))
+    os.makedirs(year_output_dir, exist_ok=True)
+    model_path = os.path.join(year_output_dir, f"model_{province}.model")
+
+    if not force_retrain and os.path.exists(model_path):
+        print(f"  ⏭️  模型文件已存在，跳过训练: {model_path}")
+        print(f"  💡 如需重新训练，请设置 force_retrain=True")
+        # 尝试加载模型以获取词汇表大小
+        try:
+            from gensim.models import KeyedVectors
+
+            wv = KeyedVectors.load(model_path)
+            vocab_size = len(wv)
+            print(f"  ✓ 已存在模型，词汇表大小: {vocab_size:,}")
+            return {
+                "province": province,
+                "vocab_size": vocab_size,
+            }
+        except Exception as e:
+            print(f"  ⚠️  无法加载现有模型: {e}，将重新训练")
+
     corpus = ProvinceCorpus(province)
     model = train_word2vec(corpus)
     if model is None:
@@ -483,10 +513,6 @@ def train_single_province(province, year):
         "vocab_size": vocab_size,
     }
 
-    year_output_dir = os.path.join(OUTPUT_DIR, str(year))
-    os.makedirs(year_output_dir, exist_ok=True)
-
-    model_path = os.path.join(year_output_dir, f"model_{province}.model")
     model.wv.save(model_path)
     print(f"  💾 模型已保存: {model_path}")
 
@@ -496,26 +522,28 @@ def train_single_province(province, year):
     return stats
 
 
-def train_models_by_province_2020(data_by_province, year, province_filter=None):
+def train_models_by_province_2020(
+    data_by_province, year, province_filter=None, force_retrain=False
+):
     training_stats = []
 
     for province, data in data_by_province.items():
         if province_filter and province != province_filter:
             continue
 
-        stats = train_single_province(province, data, year)
+        stats = train_single_province(province, year, force_retrain)
         if stats:
             training_stats.append(stats)
 
     return training_stats
 
 
-def train_models_by_province_2024(provinces, year):
+def train_models_by_province_2024(provinces, year, force_retrain=False):
     training_stats = []
 
     for province in provinces:
         print(f"\n📂 处理省份: {province}")
-        stats = train_single_province(province, year)
+        stats = train_single_province(province, year, force_retrain)
         if stats:
             training_stats.append(stats)
 
