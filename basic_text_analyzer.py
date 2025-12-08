@@ -269,9 +269,29 @@ def analyze_device_changes(year):
     print(f"\n设备分析完成\n")
 
 
-def analyze_retweet_media(year):
-    """分析转发官方媒体情况，特别关注性别差异"""
+def analyze_retweet_media(year, force_reanalyze=False):
+    """分析转发官方媒体情况，特别关注性别差异
+
+    Args:
+        year: 年份
+        force_reanalyze: 如果为True，即使文件已存在也重新分析
+    """
     print(f"\n开始分析 {year} 年转发官方媒体情况...")
+
+    # 检查输出文件是否已存在
+    output_file = os.path.join(OUTPUT_DIR, f"retweet_media_{year}.parquet")
+    gender_summary_file = os.path.join(
+        OUTPUT_DIR, f"retweet_media_gender_{year}.parquet"
+    )
+    interval_file = os.path.join(OUTPUT_DIR, f"retweet_media_intervals_{year}.parquet")
+
+    if not force_reanalyze:
+        # 只要主分析结果文件存在就跳过分析（其他文件可能因为数据特性而不存在）
+        if os.path.exists(output_file):
+            print(
+                f"分析结果文件已存在，跳过分析。如需重新分析，请设置 force_reanalyze=True"
+            )
+            return
 
     # 如果ID列表为空，尝试从配置文件加载
     if not OFFICIAL_MEDIA_IDS:
@@ -344,6 +364,18 @@ def analyze_retweet_media(year):
     else:
         retweet_media["retweet_interval"] = None
 
+    # 保存转发间隔详细数据（用于画图）
+    if has_interval_data and has_gender:
+        interval_df = retweet_media[["gender", "retweet_interval"]].copy()
+        interval_df = interval_df[
+            (interval_df["gender"].notna())
+            & (interval_df["retweet_interval"].notna())
+            & (interval_df["retweet_interval"] > 0)
+        ]
+        if len(interval_df) > 0:
+            interval_df.to_parquet(interval_file, engine="fastparquet", index=False)
+            print(f"转发间隔详细数据已保存到: {interval_file}")
+
     # 基本统计：每个用户的转发次数（使用所有转发记录）
     user_retweet_count = (
         retweet_media.groupby("user_id").size().reset_index(name="retweet_count")
@@ -363,6 +395,16 @@ def analyze_retweet_media(year):
         user_retweet_count = user_retweet_count.merge(
             user_gender, on="user_id", how="left"
         )
+
+        # 打印不同性别，retweet count最高的用户的user id，nick_name
+        for gender in user_retweet_count["gender"].unique():
+            gender_data = user_retweet_count[user_retweet_count["gender"] == gender]
+            max_retweet_user = gender_data.sort_values(
+                by="retweet_count", ascending=False
+            ).iloc[0]
+            print(
+                f"{gender}: {max_retweet_user['user_id']}, {max_retweet_user['nick_name']}, {max_retweet_user['retweet_count']}"
+            )
 
         # 计算总体性别分布（用于计算占比）
         total_gender_dist = data.groupby("gender").size()
@@ -485,161 +527,12 @@ def analyze_retweet_media(year):
 
         # 保存性别统计摘要
         gender_stats_df = pd.DataFrame(gender_stats)
-        gender_summary_file = os.path.join(
-            OUTPUT_DIR, f"retweet_media_gender_{year}.parquet"
-        )
         gender_stats_df.to_parquet(
             gender_summary_file, engine="fastparquet", index=False
         )
         print(f"性别统计摘要已保存到: {gender_summary_file}")
 
-        # 绘制转发次数和转发间隔的分布对比图
-        if has_gender and len(user_retweet_count) > 0:
-            # 准备转发次数数据（每个用户的转发次数，按性别分组）
-            retweet_count_data = user_retweet_count[["gender", "retweet_count"]].copy()
-            retweet_count_data = retweet_count_data[
-                retweet_count_data["gender"].notna()
-            ]
-
-            # 准备转发间隔数据（每条转发记录的间隔，按性别分组）
-            interval_data = None
-            if "retweet_interval" in retweet_media.columns:
-                interval_df = retweet_media[["gender", "retweet_interval"]].copy()
-                interval_df = interval_df[
-                    (interval_df["gender"].notna())
-                    & (interval_df["retweet_interval"].notna())
-                    & (interval_df["retweet_interval"] > 0)
-                ]
-                if len(interval_df) > 0:
-                    interval_data = interval_df
-
-            # 绘制转发次数分布对比图
-            if len(retweet_count_data) > 0:
-                fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-
-                # 左图：箱线图
-                ax1 = axes[0]
-                genders = retweet_count_data["gender"].unique()
-                box_data = [
-                    retweet_count_data[retweet_count_data["gender"] == g][
-                        "retweet_count"
-                    ].values
-                    for g in genders
-                ]
-                bp = ax1.boxplot(box_data, labels=genders, patch_artist=True)
-                # 设置箱线图颜色
-                colors = ["#FF6B6B", "#4ECDC4", "#95E1D3", "#F38181"]
-                for patch, color in zip(bp["boxes"], colors[: len(bp["boxes"])]):
-                    patch.set_facecolor(color)
-                    patch.set_alpha(0.7)
-                ax1.set_xlabel("性别", fontsize=12)
-                ax1.set_ylabel("转发次数", fontsize=12)
-                ax1.set_title(
-                    f"{year}年转发官方媒体次数分布对比（箱线图）",
-                    fontsize=13,
-                    fontweight="bold",
-                )
-                ax1.grid(True, alpha=0.3)
-
-                # 右图：KDE图
-                ax2 = axes[1]
-                # 检查所有数据的最大值，决定是否使用对数变换
-                max_count = retweet_count_data["retweet_count"].max()
-                use_log = max_count > 100
-
-                for gender in genders:
-                    gender_data = retweet_count_data[
-                        retweet_count_data["gender"] == gender
-                    ]["retweet_count"]
-                    # 对数据进行对数变换以便更好地展示分布（如果数据范围很大）
-                    if use_log:
-                        log_data = np.log1p(gender_data)
-                        sns.kdeplot(log_data, ax=ax2, label=f"{gender}性", linewidth=2)
-                    else:
-                        sns.kdeplot(
-                            gender_data, ax=ax2, label=f"{gender}性", linewidth=2
-                        )
-                if use_log:
-                    ax2.set_xlabel("转发次数（对数变换）", fontsize=12)
-                else:
-                    ax2.set_xlabel("转发次数", fontsize=12)
-                ax2.set_ylabel("密度", fontsize=12)
-                ax2.set_title(
-                    f"{year}年转发官方媒体次数分布对比（KDE）",
-                    fontsize=13,
-                    fontweight="bold",
-                )
-                ax2.legend()
-                ax2.grid(True, alpha=0.3)
-
-                plt.tight_layout()
-                fig_path = os.path.join(
-                    OUTPUT_DIR, f"retweet_count_distribution_{year}.pdf"
-                )
-                plt.savefig(fig_path, format="pdf", bbox_inches="tight", dpi=300)
-                plt.close()
-                print(f"转发次数分布对比图已保存到: {fig_path}")
-
-            # 绘制转发间隔分布对比图
-            if interval_data is not None and len(interval_data) > 0:
-                fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-
-                # 左图：箱线图（使用对数变换，因为间隔可能差异很大）
-                ax1 = axes[0]
-                genders = interval_data["gender"].unique()
-                # 转换为小时以便更好地展示
-                interval_hours = interval_data.copy()
-                interval_hours["interval_hours"] = (
-                    interval_hours["retweet_interval"] / 3600
-                )
-                box_data = [
-                    interval_hours[interval_hours["gender"] == g][
-                        "interval_hours"
-                    ].values
-                    for g in genders
-                ]
-                bp = ax1.boxplot(box_data, labels=genders, patch_artist=True)
-                # 设置箱线图颜色
-                colors = ["#FF6B6B", "#4ECDC4", "#95E1D3", "#F38181"]
-                for patch, color in zip(bp["boxes"], colors[: len(bp["boxes"])]):
-                    patch.set_facecolor(color)
-                    patch.set_alpha(0.7)
-                ax1.set_xlabel("性别", fontsize=12)
-                ax1.set_ylabel("转发间隔（小时）", fontsize=12)
-                ax1.set_title(
-                    f"{year}年转发间隔分布对比（箱线图）",
-                    fontsize=13,
-                    fontweight="bold",
-                )
-                ax1.grid(True, alpha=0.3)
-
-                # 右图：KDE图（使用对数变换）
-                ax2 = axes[1]
-                for gender in genders:
-                    gender_data = interval_hours[interval_hours["gender"] == gender][
-                        "interval_hours"
-                    ]
-                    # 使用对数变换以便更好地展示分布
-                    log_data = np.log1p(gender_data)
-                    sns.kdeplot(log_data, ax=ax2, label=f"{gender}性", linewidth=2)
-                ax2.set_xlabel("转发间隔（小时，对数变换）", fontsize=12)
-                ax2.set_ylabel("密度", fontsize=12)
-                ax2.set_title(
-                    f"{year}年转发间隔分布对比（KDE）", fontsize=13, fontweight="bold"
-                )
-                ax2.legend()
-                ax2.grid(True, alpha=0.3)
-
-                plt.tight_layout()
-                fig_path = os.path.join(
-                    OUTPUT_DIR, f"retweet_interval_distribution_{year}.pdf"
-                )
-                plt.savefig(fig_path, format="pdf", bbox_inches="tight", dpi=300)
-                plt.close()
-                print(f"转发间隔分布对比图已保存到: {fig_path}")
-
     # 保存详细结果
-    output_file = os.path.join(OUTPUT_DIR, f"retweet_media_{year}.parquet")
     user_retweet_count.to_parquet(output_file, engine="fastparquet", index=False)
     print(f"转发官方媒体分析结果已保存到: {output_file}")
 
@@ -653,13 +546,212 @@ def analyze_retweet_media(year):
     print(f"\n转发分析完成\n")
 
 
-def analyze_year(year: int, analysis_type: str = "all"):
+def get_gender_label(gender):
+    """将性别代码转换为中文标签"""
+    gender_map = {"m": "男", "f": "女", "男": "男", "女": "女"}
+    return gender_map.get(gender, gender)
+
+
+def get_gender_color(gender):
+    """获取性别对应的颜色"""
+    color_map = {"m": "#20AEE6", "f": "#ff7333", "男": "#20AEE6", "女": "#ff7333"}
+    return color_map.get(gender, "#808080")  # 默认灰色
+
+
+def visualize_retweet_media(year):
+    """绘制转发官方媒体情况的图表
+
+    Args:
+        year: 年份
+    """
+    print(f"\n开始绘制 {year} 年转发官方媒体图表...")
+
+    # 检查必要的文件是否存在
+    output_file = os.path.join(OUTPUT_DIR, f"retweet_media_{year}.parquet")
+    interval_file = os.path.join(OUTPUT_DIR, f"retweet_media_intervals_{year}.parquet")
+
+    if not os.path.exists(output_file):
+        print(f"错误: 分析结果文件不存在: {output_file}")
+        print(f"请先运行分析: analyze_retweet_media({year})")
+        return
+
+    # 加载用户转发次数数据
+    user_retweet_count = pd.read_parquet(output_file, engine="fastparquet")
+    print(f"已加载 {len(user_retweet_count)} 个用户的转发数据")
+
+    # 检查是否有性别字段
+    has_gender = "gender" in user_retweet_count.columns
+    if not has_gender:
+        print("数据不包含性别字段，无法绘制性别对比图")
+        return
+
+    # 准备转发次数数据（每个用户的转发次数，按性别分组）
+    retweet_count_data = user_retweet_count[["gender", "retweet_count"]].copy()
+    retweet_count_data = retweet_count_data[retweet_count_data["gender"].notna()]
+
+    if len(retweet_count_data) == 0:
+        print("没有有效的转发次数数据，无法绘制图表")
+        return
+
+    # 加载转发间隔数据（如果存在）
+    interval_data = None
+    if os.path.exists(interval_file):
+        try:
+            interval_data = pd.read_parquet(interval_file, engine="fastparquet")
+            print(f"已加载 {len(interval_data)} 条转发间隔数据")
+        except Exception as e:
+            print(f"加载转发间隔数据时出错: {e}")
+
+    # 绘制转发次数分布对比图
+    if len(retweet_count_data) > 0:
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+        # 左图：箱线图
+        ax1 = axes[0]
+        genders = retweet_count_data["gender"].unique()
+        box_data = [
+            retweet_count_data[retweet_count_data["gender"] == g][
+                "retweet_count"
+            ].values
+            for g in genders
+        ]
+        # 生成中文标签
+        gender_labels = [get_gender_label(g) for g in genders]
+        bp = ax1.boxplot(box_data, labels=gender_labels, patch_artist=True)
+        # 设置箱线图颜色
+        for patch, gender in zip(bp["boxes"], genders):
+            color = get_gender_color(gender)
+            patch.set_facecolor(color)
+            patch.set_alpha(0.7)
+        ax1.set_xlabel("性别", fontsize=12)
+        ax1.set_ylabel("转发次数", fontsize=12)
+        ax1.set_title(
+            f"{year}年转发官方媒体次数分布对比（箱线图）",
+            fontsize=13,
+            fontweight="bold",
+        )
+        ax1.grid(True, alpha=0.3)
+
+        # 右图：KDE图
+        ax2 = axes[1]
+        # 检查所有数据的最大值，决定是否使用对数变换
+        max_count = retweet_count_data["retweet_count"].max()
+        use_log = max_count > 100
+
+        for gender in genders:
+            gender_data = retweet_count_data[retweet_count_data["gender"] == gender][
+                "retweet_count"
+            ]
+            gender_label = get_gender_label(gender)
+            gender_color = get_gender_color(gender)
+            # 对数据进行对数变换以便更好地展示分布（如果数据范围很大）
+            if use_log:
+                log_data = np.log1p(gender_data)
+                sns.kdeplot(
+                    log_data,
+                    ax=ax2,
+                    label=gender_label,
+                    linewidth=2,
+                    color=gender_color,
+                )
+            else:
+                sns.kdeplot(
+                    gender_data,
+                    ax=ax2,
+                    label=gender_label,
+                    linewidth=2,
+                    color=gender_color,
+                )
+        if use_log:
+            ax2.set_xlabel("转发次数（对数变换）", fontsize=12)
+        else:
+            ax2.set_xlabel("转发次数", fontsize=12)
+        ax2.set_ylabel("密度", fontsize=12)
+        ax2.set_title(
+            f"{year}年转发官方媒体次数分布对比（KDE）",
+            fontsize=13,
+            fontweight="bold",
+        )
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        fig_path = os.path.join(OUTPUT_DIR, f"retweet_count_distribution_{year}.pdf")
+        plt.savefig(fig_path, format="pdf", bbox_inches="tight", dpi=300)
+        plt.close()
+        print(f"转发次数分布对比图已保存到: {fig_path}")
+
+    # 绘制转发间隔分布对比图
+    if interval_data is not None and len(interval_data) > 0:
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+        # 左图：箱线图（使用对数变换，因为间隔可能差异很大）
+        ax1 = axes[0]
+        genders = interval_data["gender"].unique()
+        # 转换为小时以便更好地展示
+        interval_hours = interval_data.copy()
+        interval_hours["interval_hours"] = interval_hours["retweet_interval"] / 3600
+        box_data = [
+            interval_hours[interval_hours["gender"] == g]["interval_hours"].values
+            for g in genders
+        ]
+        # 生成中文标签
+        gender_labels = [get_gender_label(g) for g in genders]
+        bp = ax1.boxplot(box_data, labels=gender_labels, patch_artist=True)
+        # 设置箱线图颜色
+        for patch, gender in zip(bp["boxes"], genders):
+            color = get_gender_color(gender)
+            patch.set_facecolor(color)
+            patch.set_alpha(0.7)
+        ax1.set_xlabel("性别", fontsize=12)
+        ax1.set_ylabel("转发间隔（小时）", fontsize=12)
+        ax1.set_title(
+            f"{year}年转发间隔分布对比（箱线图）",
+            fontsize=13,
+            fontweight="bold",
+        )
+        ax1.grid(True, alpha=0.3)
+
+        # 右图：KDE图（使用对数变换）
+        ax2 = axes[1]
+        for gender in genders:
+            gender_data = interval_hours[interval_hours["gender"] == gender][
+                "interval_hours"
+            ]
+            gender_label = get_gender_label(gender)
+            gender_color = get_gender_color(gender)
+            # 使用对数变换以便更好地展示分布
+            log_data = np.log1p(gender_data)
+            sns.kdeplot(
+                log_data, ax=ax2, label=gender_label, linewidth=2, color=gender_color
+            )
+        ax2.set_xlabel("转发间隔（小时，对数变换）", fontsize=12)
+        ax2.set_ylabel("密度", fontsize=12)
+        ax2.set_title(
+            f"{year}年转发间隔分布对比（KDE）", fontsize=13, fontweight="bold"
+        )
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        fig_path = os.path.join(OUTPUT_DIR, f"retweet_interval_distribution_{year}.pdf")
+        plt.savefig(fig_path, format="pdf", bbox_inches="tight", dpi=300)
+        plt.close()
+        print(f"转发间隔分布对比图已保存到: {fig_path}")
+    else:
+        print("没有转发间隔数据，跳过转发间隔分布图绘制")
+
+    print(f"\n图表绘制完成\n")
+
+
+def analyze_year(year: int, analysis_type: str = "all", visualize: bool = True):
     """
     分析指定年份的数据
 
     Args:
         year: 年份
         analysis_type: 分析类型，'device', 'retweet', 'all'（默认：all）
+        visualize: 是否在分析后自动绘制图表（默认：True）
     """
     # 先加载官方媒体ID
     if analysis_type in ["retweet", "all"]:
@@ -672,20 +764,26 @@ def analyze_year(year: int, analysis_type: str = "all"):
 
     if analysis_type in ["retweet", "all"]:
         analyze_retweet_media(year)
+        # 分析完成后自动画图
+        if visualize:
+            visualize_retweet_media(year)
 
     print(f"{year} 年分析完成")
 
 
-def analyze_multiple_years(years: list, analysis_type: str = "all"):
+def analyze_multiple_years(
+    years: list, analysis_type: str = "all", visualize: bool = True
+):
     """
     分析多个年份的数据
 
     Args:
         years: 年份列表，例如 [2020, 2021, 2022]
         analysis_type: 分析类型，'device', 'retweet', 'all'（默认：all）
+        visualize: 是否在分析后自动绘制图表（默认：True）
     """
     for year in years:
-        analyze_year(year, analysis_type)
+        analyze_year(year, analysis_type, visualize)
 
     print(f"\n所有年份分析完成")
 
@@ -695,5 +793,6 @@ if __name__ == "__main__":
         {
             "year": analyze_year,
             "years": analyze_multiple_years,
+            "visualize": visualize_retweet_media,
         }
     )
