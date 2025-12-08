@@ -360,6 +360,208 @@ def analyze_news_density_by_gender(year, news_vocab):
     return result
 
 
+def analyze_news_density_by_user_from_saved(year, gender_densities):
+    """利用已保存的gender_densities进行用户级别分析（避免重新计算density）
+
+    这个方法通过按照与analyze_news_density_by_gender完全相同的顺序重新读取文件，
+    将已保存的density值分配给对应的user_id，从而避免重新计算。
+    """
+    print(f"\n利用已保存的density数据进行用户级别分析...")
+
+    year_dir = os.path.join(DATA_DIR, str(year))
+    if not os.path.exists(year_dir):
+        print(f"未找到 {year} 年的数据目录: {year_dir}")
+        return None
+
+    pattern = os.path.join(year_dir, "*.parquet")
+    parquet_files = sorted(glob.glob(pattern))
+
+    if not parquet_files:
+        print(f"未找到 {year} 年的parquet文件")
+        return None
+
+    print(f"找到 {len(parquet_files)} 个文件")
+
+    # 为每个性别创建density值的迭代器
+    density_iterators = {}
+    for gender, densities in gender_densities.items():
+        density_iterators[gender] = iter(densities)
+
+    # 存储所有DataFrame（分批处理，减少内存占用）
+    df_list = []
+
+    for file_path in tqdm(parquet_files, desc="匹配user_id和density"):
+        try:
+            df = pd.read_parquet(file_path, columns=["user_id", "gender"])
+
+            # 排除官方媒体用户
+            df = df[~df["user_id"].astype(str).isin(OFFICIAL_MEDIA_IDS)]
+
+            # 只保留有性别信息的记录
+            df = df[df["gender"].notna()]
+
+            if len(df) == 0:
+                continue
+
+            # 初始化density列
+            df["density"] = np.nan
+
+            # 按性别分组（与analyze_news_density_by_gender保持相同的处理顺序）
+            for gender in df["gender"].unique():
+                gender_mask = df["gender"] == gender
+                gender_df = df[gender_mask]
+
+                if len(gender_df) == 0:
+                    continue
+
+                # 从对应性别的density迭代器中获取density值
+                if gender not in density_iterators:
+                    print(f"警告: 性别 {gender} 在已保存的density数据中不存在")
+                    continue
+
+                density_iter = density_iterators[gender]
+
+                # 为每行分配对应的density值（直接在DataFrame上操作）
+                density_values = []
+                try:
+                    for _ in range(len(gender_df)):
+                        density_values.append(next(density_iter))
+                except StopIteration:
+                    print(f"警告: 性别 {gender} 的density值已用完，但还有数据行")
+                    # 如果density值不够，用NaN填充剩余行
+                    density_values.extend(
+                        [np.nan] * (len(gender_df) - len(density_values))
+                    )
+
+                # 直接赋值给对应行
+                df.loc[gender_mask, "density"] = density_values
+
+            # 只保留需要的列，并过滤掉density为NaN的行（如果有的话）
+            df = df[["user_id", "gender", "density"]].copy()
+            df = df[df["density"].notna()]  # 移除density为NaN的行
+
+            if len(df) > 0:
+                df_list.append(df)
+
+        except Exception as e:
+            print(f"处理文件 {file_path} 时出错: {e}")
+            continue
+
+    if not df_list:
+        print("没有有效数据")
+        return None
+
+    # 合并所有DataFrame
+    df_all = pd.concat(df_list, ignore_index=True)
+    print(f"共处理 {len(df_all):,} 条post数据")
+
+    # 按user_id和gender聚合，计算每个用户的平均density
+    user_density = df_all.groupby(["user_id", "gender"])["density"].mean().reset_index()
+    user_density.columns = ["user_id", "gender", "avg_density"]
+    print(f"共 {len(user_density):,} 个用户")
+
+    # 按性别分组存储
+    user_densities_by_gender = {}
+    for gender in user_density["gender"].unique():
+        gender_data = user_density[user_density["gender"] == gender]
+        user_densities_by_gender[gender] = gender_data["avg_density"].tolist()
+
+    return user_densities_by_gender, user_density
+
+
+def analyze_news_density_by_user(year, news_vocab):
+    """分析用户级别的news density（计算每个用户的平均density）
+
+    如果已保存了gender_densities，会优先使用analyze_news_density_by_user_from_saved来加速
+    """
+    print(f"\n开始分析 {year} 年用户级别的news density...")
+
+    # 尝试使用已保存的gender_densities来加速
+    gender_densities_file = os.path.join(OUTPUT_DIR, f"gender_densities_{year}.pkl")
+    if os.path.exists(gender_densities_file):
+        print(f"发现已保存的density数据，尝试利用其加速分析...")
+        try:
+            with open(gender_densities_file, "rb") as f:
+                gender_densities = pickle.load(f)
+            print(f"✓ 成功加载已保存的density数据")
+            result = analyze_news_density_by_user_from_saved(year, gender_densities)
+            if result is not None:
+                return result
+            else:
+                print("利用已保存数据失败，回退到重新计算...")
+        except Exception as e:
+            print(f"加载已保存数据失败: {e}，回退到重新计算...")
+
+    # 回退到原始方法：重新计算density
+    year_dir = os.path.join(DATA_DIR, str(year))
+    if not os.path.exists(year_dir):
+        print(f"未找到 {year} 年的数据目录: {year_dir}")
+        return None
+
+    pattern = os.path.join(year_dir, "*.parquet")
+    parquet_files = sorted(glob.glob(pattern))
+
+    if not parquet_files:
+        print(f"未找到 {year} 年的parquet文件")
+        return None
+
+    print(f"找到 {len(parquet_files)} 个文件")
+
+    # 存储所有DataFrame（分批处理，减少内存占用）
+    df_list = []
+
+    for file_path in tqdm(parquet_files, desc="计算用户news density"):
+        try:
+            df = pd.read_parquet(
+                file_path, columns=["user_id", "weibo_content", "gender"]
+            )
+
+            # 排除官方媒体用户
+            df = df[~df["user_id"].astype(str).isin(OFFICIAL_MEDIA_IDS)]
+
+            # 只保留有性别信息的记录
+            df = df[df["gender"].notna()]
+
+            if len(df) == 0:
+                continue
+
+            # 直接在DataFrame上计算density（使用apply，比iterrows快）
+            df["density"] = df["weibo_content"].apply(
+                lambda x: calculate_news_density_fast(x, news_vocab)
+            )
+
+            # 只保留需要的列
+            df = df[["user_id", "gender", "density"]].copy()
+
+            if len(df) > 0:
+                df_list.append(df)
+
+        except Exception as e:
+            print(f"处理文件 {file_path} 时出错: {e}")
+            continue
+
+    if not df_list:
+        print("没有有效数据")
+        return None
+
+    # 合并所有DataFrame
+    df_all = pd.concat(df_list, ignore_index=True)
+    print(f"共处理 {len(df_all):,} 条post数据")
+
+    # 按user_id和gender聚合，计算每个用户的平均density
+    user_density = df_all.groupby(["user_id", "gender"])["density"].mean().reset_index()
+    user_density.columns = ["user_id", "gender", "avg_density"]
+    print(f"共 {len(user_density):,} 个用户")
+
+    # 按性别分组存储
+    user_densities_by_gender = {}
+    for gender in user_density["gender"].unique():
+        gender_data = user_density[user_density["gender"] == gender]
+        user_densities_by_gender[gender] = gender_data["avg_density"].tolist()
+
+    return user_densities_by_gender, user_density
+
+
 def visualize_news_density_distribution(
     gender_densities, year, max_samples_per_gender=100000
 ):
@@ -584,6 +786,221 @@ def analyze_news_density(year):
     print(f"{'='*60}")
 
 
+def analyze_user_level_news_density(year):
+    """独立的用户级别News Density分析函数"""
+    print(f"\n{'='*60}")
+    print(f"开始用户级别的News Density分析")
+    print(f"{'='*60}")
+
+    # 检查是否需要news_vocab（如果已保存数据不存在，需要重新计算）
+    user_densities_file = os.path.join(OUTPUT_DIR, f"user_densities_{year}.pkl")
+    user_density_df_file = os.path.join(OUTPUT_DIR, f"user_density_df_{year}.parquet")
+
+    news_vocab = None
+    if not (
+        os.path.exists(user_densities_file) and os.path.exists(user_density_df_file)
+    ):
+        # 需要重新计算，先加载news_vocab
+        news_vocab_file = os.path.join("configs", f"news_vocabulary_{year}.txt")
+        if os.path.exists(news_vocab_file):
+            with open(news_vocab_file, "r", encoding="utf-8") as f:
+                news_vocab = set(line.strip() for line in f)
+        else:
+            print(f"错误: 未找到新闻词表文件: {news_vocab_file}")
+            print("请先运行 analyze 命令生成新闻词表")
+            return
+
+    # 检查是否已有保存的用户级别数据
+    if os.path.exists(user_densities_file) and os.path.exists(user_density_df_file):
+        print(f"\n找到已保存的用户级别数据")
+        try:
+            with open(user_densities_file, "rb") as f:
+                user_densities_by_gender = pickle.load(f)
+            user_density_df = pd.read_parquet(
+                user_density_df_file, engine="fastparquet"
+            )
+            print(f"✓ 成功加载用户级别数据")
+        except Exception as e:
+            print(f"加载失败: {e}，将重新计算...")
+            result = analyze_news_density_by_user(year, news_vocab)
+            if result is None:
+                print("错误: 无法计算用户级别news density")
+                return
+            else:
+                user_densities_by_gender, user_density_df = result
+                # 保存结果
+                with open(user_densities_file, "wb") as f:
+                    pickle.dump(user_densities_by_gender, f)
+                user_density_df.to_parquet(
+                    user_density_df_file, engine="fastparquet", index=False
+                )
+                print(f"✓ 用户级别数据已保存")
+    else:
+        # 需要重新计算
+        result = analyze_news_density_by_user(year, news_vocab)
+        if result is None:
+            print("错误: 无法计算用户级别news density")
+            return
+        else:
+            user_densities_by_gender, user_density_df = result
+            # 保存结果
+            with open(user_densities_file, "wb") as f:
+                pickle.dump(user_densities_by_gender, f)
+            user_density_df.to_parquet(
+                user_density_df_file, engine="fastparquet", index=False
+            )
+            print(f"✓ 用户级别数据已保存")
+
+    # 分析用户级别的统计
+    analyze_user_level_stats(user_density_df, year)
+    visualize_user_level_density(user_density_df, year)
+
+    print(f"\n{'='*60}")
+    print(f"{year} 年用户级别News Density分析完成")
+    print(f"{'='*60}")
+
+
+def analyze_user_level_stats(user_density_df, year):
+    """分析用户级别的统计信息"""
+    print(f"\n{'='*60}")
+    print(f"用户级别News Density统计结果")
+    print(f"{'='*60}")
+
+    stats = []
+
+    for gender in user_density_df["gender"].unique():
+        gender_data = user_density_df[user_density_df["gender"] == gender]
+        total_users = len(gender_data)
+
+        # 统计0 density用户
+        zero_density_users = len(gender_data[gender_data["avg_density"] == 0.0])
+        zero_density_ratio = (
+            zero_density_users / total_users if total_users > 0 else 0.0
+        )
+
+        # 非0 density用户
+        non_zero_data = gender_data[gender_data["avg_density"] > 0.0]
+        non_zero_users = len(non_zero_data)
+
+        if non_zero_users > 0:
+            avg_density = non_zero_data["avg_density"].mean()
+            median_density = non_zero_data["avg_density"].median()
+            std_density = non_zero_data["avg_density"].std()
+        else:
+            avg_density = 0.0
+            median_density = 0.0
+            std_density = 0.0
+
+        gender_label = get_gender_label(gender)
+
+        stats.append(
+            {
+                "gender": gender,
+                "total_users": total_users,
+                "zero_density_users": zero_density_users,
+                "zero_density_ratio": zero_density_ratio,
+                "non_zero_users": non_zero_users,
+                "avg_density": avg_density,
+                "median_density": median_density,
+                "std_density": std_density,
+            }
+        )
+
+        print(f"\n{gender_label}性 (代码: {gender}):")
+        print(f"  总用户数: {total_users:,} 人")
+        print(f"  Density为0的用户数: {zero_density_users:,} 人")
+        print(
+            f"  Density为0的用户占比: {zero_density_ratio:.4f} ({zero_density_ratio*100:.2f}%)"
+        )
+        print(f"  非0 Density用户数: {non_zero_users:,} 人")
+        if non_zero_users > 0:
+            print(f"  非0用户平均Density: {avg_density:.4f}")
+            print(f"  非0用户中位Density: {median_density:.4f}")
+            print(f"  非0用户标准差: {std_density:.4f}")
+
+    # 保存统计结果
+    if stats:
+        stats_df = pd.DataFrame(stats)
+        stats_file = os.path.join(OUTPUT_DIR, f"user_density_stats_{year}.parquet")
+        stats_df.to_parquet(stats_file, engine="fastparquet", index=False)
+        print(f"\n用户级别统计结果已保存到: {stats_file}")
+
+
+def visualize_user_level_density(user_density_df, year):
+    """可视化用户级别的density分布（只包含非0 density用户）"""
+    print(f"\n{'='*60}")
+    print(f"生成用户级别News Density可视化图表")
+    print(f"{'='*60}")
+
+    # 过滤掉0 density用户
+    non_zero_df = user_density_df[user_density_df["avg_density"] > 0.0].copy()
+
+    if len(non_zero_df) == 0:
+        print("没有非0 density用户，无法绘制图表")
+        return
+
+    # 按性别分组
+    genders = non_zero_df["gender"].unique()
+    if len(genders) < 2:
+        print("警告: 数据不足，无法进行性别对比")
+        return
+
+    # 创建图表
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # 左图：箱线图
+    ax1 = axes[0]
+    box_data = [
+        non_zero_df[non_zero_df["gender"] == g]["avg_density"].values for g in genders
+    ]
+    gender_labels = [get_gender_label(g) for g in genders]
+    bp = ax1.boxplot(box_data, labels=gender_labels, patch_artist=True)
+
+    # 设置箱线图颜色
+    for patch, gender in zip(bp["boxes"], genders):
+        color = get_gender_color(gender)
+        patch.set_facecolor(color)
+        patch.set_alpha(0.7)
+
+    ax1.set_xlabel("性别", fontsize=12)
+    ax1.set_ylabel("用户平均News Density", fontsize=12)
+    ax1.set_title(
+        f"{year}年用户平均News Density分布对比（箱线图，Density > 0）",
+        fontsize=13,
+        fontweight="bold",
+    )
+    ax1.grid(True, alpha=0.3)
+
+    # 右图：KDE图
+    ax2 = axes[1]
+    for gender in genders:
+        gender_data = non_zero_df[non_zero_df["gender"] == gender]["avg_density"]
+        gender_label = get_gender_label(gender)
+        gender_color = get_gender_color(gender)
+        sns.kdeplot(
+            gender_data, ax=ax2, label=gender_label, linewidth=2, color=gender_color
+        )
+
+    ax2.set_xlabel("用户平均News Density", fontsize=12)
+    ax2.set_ylabel("密度", fontsize=12)
+    ax2.set_title(
+        f"{year}年用户平均News Density分布对比（KDE，Density > 0）",
+        fontsize=13,
+        fontweight="bold",
+    )
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    fig_path = os.path.join(OUTPUT_DIR, f"user_density_distribution_{year}.pdf")
+    plt.savefig(fig_path, format="pdf", bbox_inches="tight", dpi=300)
+    plt.close()
+
+    file_size_mb = os.path.getsize(fig_path) / (1024 * 1024)
+    print(f"\n✓ 用户级别分布图已保存到: {fig_path}")
+    print(f"  文件大小: {file_size_mb:.2f} MB")
+
+
 def get_gender_label(gender):
     """将性别代码转换为中文标签"""
     gender_map = {"m": "男", "f": "女", "男": "男", "女": "女"}
@@ -794,6 +1211,7 @@ if __name__ == "__main__":
     fire.Fire(
         {
             "analyze": analyze_news_density,
+            "analyze_user": analyze_user_level_news_density,
             "visualize": visualize_from_saved_stats,
         }
     )
