@@ -44,6 +44,7 @@ import matplotlib
 matplotlib.rcParams["font.sans-serif"] = ["Arial Unicode MS", "SimHei", "DejaVu Sans"]
 matplotlib.rcParams["axes.unicode_minus"] = False
 import seaborn as sns
+from scipy.stats import mannwhitneyu, gaussian_kde
 
 DATA_DIR = "cleaned_weibo_cov"
 OUTPUT_DIR = "analysis_results"
@@ -558,6 +559,189 @@ def get_gender_color(gender):
     return color_map.get(gender, "#808080")  # 默认灰色
 
 
+def visualize_distribution_4_subplots(
+    data_df, value_col, gender_col, title, output_path, xlabel, ylabel, log_scale=True
+):
+    """绘制4个子图的分布分析 (KDE, Boxplot, Mean+CI, ECDF)"""
+    print(f"正在绘制: {title}")
+
+    # 准备数据
+    genders = data_df[gender_col].unique()
+    # 过滤无效数据
+    valid_df = data_df.dropna(subset=[value_col, gender_col])
+    if log_scale:
+        valid_df = valid_df[valid_df[value_col] > 0]
+
+    if len(valid_df) == 0:
+        print(f"没有有效数据用于绘制 {title}")
+        return
+
+    # 准备绘图数据字典
+    all_data_dict = {}
+    for gender in genders:
+        vals = valid_df[valid_df[gender_col] == gender][value_col].values
+        if len(vals) > 0:
+            all_data_dict[gender] = vals
+
+    if not all_data_dict:
+        return
+
+    # 创建画布
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12), constrained_layout=True)
+    fig.suptitle(title, fontsize=18, fontweight="bold")
+
+    # 1. KDE (Log X)
+    ax1 = axes[0, 0]
+    all_values = valid_df[value_col].values
+
+    if log_scale:
+        x_min = np.log10(all_values.min())
+        x_max = np.log10(all_values.max())
+        x_plot_log = np.linspace(x_min, x_max, 1000)
+        x_plot = 10**x_plot_log
+    else:
+        x_min = all_values.min()
+        x_max = all_values.max()
+        x_plot = np.linspace(x_min, x_max, 1000)
+
+    for gender in genders:
+        if gender not in all_data_dict:
+            continue
+        data = all_data_dict[gender]
+        color = get_gender_color(gender)
+        label = get_gender_label(gender)
+
+        try:
+            if log_scale:
+                # 拟合 log10 数据
+                kde = gaussian_kde(np.log10(data))
+                kde_values = kde(x_plot_log)
+            else:
+                kde = gaussian_kde(data)
+                kde_values = kde(x_plot)
+
+            ax1.fill_between(x_plot, kde_values, alpha=0.3, color=color, label=label)
+            ax1.plot(x_plot, kde_values, linewidth=2, color=color)
+        except Exception as e:
+            print(f"KDE绘制失败 ({gender}): {e}")
+
+    if log_scale:
+        ax1.set_xscale("log")
+    ax1.set_title("1. 整体分布形态 (KDE)", fontsize=14)
+    ax1.set_xlabel(xlabel, fontsize=12)
+    ax1.set_ylabel("密度", fontsize=12)
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+
+    # 2. Boxplot
+    ax2 = axes[0, 1]
+    plot_df = valid_df.copy()
+    plot_df["GenderLabel"] = plot_df[gender_col].apply(get_gender_label)
+
+    palette = {get_gender_label(g): get_gender_color(g) for g in genders}
+
+    sns.boxplot(
+        data=plot_df,
+        x="GenderLabel",
+        y=value_col,
+        palette=palette,
+        notch=True,
+        width=0.4,
+        showfliers=False,
+        ax=ax2,
+    )
+    if log_scale:
+        ax2.set_yscale("log")
+    ax2.set_title("2. 中位数差异检测 (Boxplot)", fontsize=14)
+    ax2.set_xlabel("性别", fontsize=12)
+    ax2.set_ylabel(ylabel, fontsize=12)
+    ax2.grid(True, alpha=0.3, axis="y")
+
+    # 3. Mean + CI
+    ax3 = axes[1, 0]
+    stats = (
+        plot_df.groupby("GenderLabel")[value_col]
+        .agg(["mean", "std", "count"])
+        .reset_index()
+    )
+    stats["se"] = stats["std"] / np.sqrt(stats["count"])
+    stats["ci95"] = 1.96 * stats["se"]
+
+    x_coords = range(len(stats))
+    ax3.errorbar(
+        x=x_coords,
+        y=stats["mean"],
+        yerr=stats["ci95"],
+        fmt="none",
+        ecolor="black",
+        capsize=8,
+        elinewidth=2,
+    )
+
+    for i, row in stats.iterrows():
+        ax3.scatter(
+            x=i, y=row["mean"], s=150, color=palette[row["GenderLabel"]], zorder=5
+        )
+
+    ax3.set_xticks(x_coords)
+    ax3.set_xticklabels(stats["GenderLabel"], fontsize=12)
+    ax3.set_title("3. 均值差异对比 (Mean + 95% CI)", fontsize=14)
+    ax3.set_xlabel("性别", fontsize=12)
+    ax3.set_ylabel(f"平均 {ylabel}", fontsize=12)
+    ax3.grid(True, alpha=0.3, axis="y")
+
+    # 4. ECDF + Stats
+    ax4 = axes[1, 1]
+    for gender in genders:
+        if gender not in all_data_dict:
+            continue
+        data = all_data_dict[gender]
+        color = get_gender_color(gender)
+        label = get_gender_label(gender)
+
+        sorted_data = np.sort(data)
+        ecdf_values = np.arange(1, len(sorted_data) + 1) / len(sorted_data)
+
+        ax4.plot(sorted_data, ecdf_values, linewidth=2, color=color, label=label)
+
+    if log_scale:
+        ax4.set_xscale("log")
+    ax4.set_title("4. 累积分布 (ECDF) 与 统计检验", fontsize=14)
+    ax4.set_xlabel(xlabel, fontsize=12)
+    ax4.set_ylabel("累积比例", fontsize=12)
+    ax4.legend()
+    ax4.grid(True, alpha=0.3)
+
+    # Mann-Whitney U Test
+    if len(genders) == 2:
+        g1, g2 = genders[0], genders[1]
+        if g1 in all_data_dict and g2 in all_data_dict:
+            try:
+                stat, p_val = mannwhitneyu(
+                    all_data_dict[g1], all_data_dict[g2], alternative="two-sided"
+                )
+                p_text = "P < 0.001" if p_val < 0.001 else f"P = {p_val:.4f}"
+
+                props = dict(
+                    boxstyle="round", facecolor="white", alpha=0.9, edgecolor="gray"
+                )
+                ax4.text(
+                    0.05,
+                    0.15,
+                    f"Mann-Whitney U Test:\n结果: {p_text}",
+                    transform=ax4.transAxes,
+                    fontsize=11,
+                    bbox=props,
+                    verticalalignment="bottom",
+                )
+            except Exception as e:
+                print(f"统计检验失败: {e}")
+
+    plt.savefig(output_path, format="pdf", bbox_inches="tight", dpi=300)
+    plt.close()
+    print(f"图表已保存到: {output_path}")
+
+
 def visualize_retweet_media(year):
     """绘制转发官方媒体情况的图表
 
@@ -585,159 +769,41 @@ def visualize_retweet_media(year):
         print("数据不包含性别字段，无法绘制性别对比图")
         return
 
-    # 准备转发次数数据（每个用户的转发次数，按性别分组）
-    retweet_count_data = user_retweet_count[["gender", "retweet_count"]].copy()
-    retweet_count_data = retweet_count_data[retweet_count_data["gender"].notna()]
-
-    if len(retweet_count_data) == 0:
-        print("没有有效的转发次数数据，无法绘制图表")
-        return
+    # 1. 绘制转发次数分布对比图 (4 subplots)
+    fig_path_count = os.path.join(OUTPUT_DIR, f"retweet_count_distribution_{year}.pdf")
+    visualize_distribution_4_subplots(
+        user_retweet_count,
+        "retweet_count",
+        "gender",
+        f"{year}年转发官方媒体次数分布对比",
+        fig_path_count,
+        "转发次数",
+        "转发次数",
+        log_scale=True,
+    )
 
     # 加载转发间隔数据（如果存在）
-    interval_data = None
     if os.path.exists(interval_file):
         try:
             interval_data = pd.read_parquet(interval_file, engine="fastparquet")
             print(f"已加载 {len(interval_data)} 条转发间隔数据")
+
+            # 2. 绘制转发间隔分布对比图 (4 subplots)
+            fig_path_interval = os.path.join(
+                OUTPUT_DIR, f"retweet_interval_distribution_{year}.pdf"
+            )
+            visualize_distribution_4_subplots(
+                interval_data,
+                "retweet_interval",
+                "gender",
+                f"{year}年转发间隔分布对比",
+                fig_path_interval,
+                "转发间隔 (秒)",
+                "转发间隔 (秒)",
+                log_scale=True,
+            )
         except Exception as e:
             print(f"加载转发间隔数据时出错: {e}")
-
-    # 绘制转发次数分布对比图
-    if len(retweet_count_data) > 0:
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-
-        # 左图：箱线图
-        ax1 = axes[0]
-        genders = retweet_count_data["gender"].unique()
-        box_data = [
-            retweet_count_data[retweet_count_data["gender"] == g][
-                "retweet_count"
-            ].values
-            for g in genders
-        ]
-        # 生成中文标签
-        gender_labels = [get_gender_label(g) for g in genders]
-        bp = ax1.boxplot(box_data, labels=gender_labels, patch_artist=True)
-        # 设置箱线图颜色
-        for patch, gender in zip(bp["boxes"], genders):
-            color = get_gender_color(gender)
-            patch.set_facecolor(color)
-            patch.set_alpha(0.7)
-        ax1.set_xlabel("性别", fontsize=12)
-        ax1.set_ylabel("转发次数", fontsize=12)
-        ax1.set_title(
-            f"{year}年转发官方媒体次数分布对比（箱线图）",
-            fontsize=13,
-            fontweight="bold",
-        )
-        ax1.grid(True, alpha=0.3)
-
-        # 右图：KDE图
-        ax2 = axes[1]
-        # 检查所有数据的最大值，决定是否使用对数变换
-        max_count = retweet_count_data["retweet_count"].max()
-        use_log = max_count > 100
-
-        for gender in genders:
-            gender_data = retweet_count_data[retweet_count_data["gender"] == gender][
-                "retweet_count"
-            ]
-            gender_label = get_gender_label(gender)
-            gender_color = get_gender_color(gender)
-            # 对数据进行对数变换以便更好地展示分布（如果数据范围很大）
-            if use_log:
-                log_data = np.log1p(gender_data)
-                sns.kdeplot(
-                    log_data,
-                    ax=ax2,
-                    label=gender_label,
-                    linewidth=2,
-                    color=gender_color,
-                )
-            else:
-                sns.kdeplot(
-                    gender_data,
-                    ax=ax2,
-                    label=gender_label,
-                    linewidth=2,
-                    color=gender_color,
-                )
-        if use_log:
-            ax2.set_xlabel("转发次数（对数变换）", fontsize=12)
-        else:
-            ax2.set_xlabel("转发次数", fontsize=12)
-        ax2.set_ylabel("密度", fontsize=12)
-        ax2.set_title(
-            f"{year}年转发官方媒体次数分布对比（KDE）",
-            fontsize=13,
-            fontweight="bold",
-        )
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-
-        plt.tight_layout()
-        fig_path = os.path.join(OUTPUT_DIR, f"retweet_count_distribution_{year}.pdf")
-        plt.savefig(fig_path, format="pdf", bbox_inches="tight", dpi=300)
-        plt.close()
-        print(f"转发次数分布对比图已保存到: {fig_path}")
-
-    # 绘制转发间隔分布对比图
-    if interval_data is not None and len(interval_data) > 0:
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-
-        # 左图：箱线图（使用对数变换，因为间隔可能差异很大）
-        ax1 = axes[0]
-        genders = interval_data["gender"].unique()
-        # 转换为小时以便更好地展示
-        interval_hours = interval_data.copy()
-        interval_hours["interval_hours"] = interval_hours["retweet_interval"] / 3600
-        box_data = [
-            interval_hours[interval_hours["gender"] == g]["interval_hours"].values
-            for g in genders
-        ]
-        # 生成中文标签
-        gender_labels = [get_gender_label(g) for g in genders]
-        bp = ax1.boxplot(box_data, labels=gender_labels, patch_artist=True)
-        # 设置箱线图颜色
-        for patch, gender in zip(bp["boxes"], genders):
-            color = get_gender_color(gender)
-            patch.set_facecolor(color)
-            patch.set_alpha(0.7)
-        ax1.set_xlabel("性别", fontsize=12)
-        ax1.set_ylabel("转发间隔（小时）", fontsize=12)
-        ax1.set_title(
-            f"{year}年转发间隔分布对比（箱线图）",
-            fontsize=13,
-            fontweight="bold",
-        )
-        ax1.grid(True, alpha=0.3)
-
-        # 右图：KDE图（使用对数变换）
-        ax2 = axes[1]
-        for gender in genders:
-            gender_data = interval_hours[interval_hours["gender"] == gender][
-                "interval_hours"
-            ]
-            gender_label = get_gender_label(gender)
-            gender_color = get_gender_color(gender)
-            # 使用对数变换以便更好地展示分布
-            log_data = np.log1p(gender_data)
-            sns.kdeplot(
-                log_data, ax=ax2, label=gender_label, linewidth=2, color=gender_color
-            )
-        ax2.set_xlabel("转发间隔（小时，对数变换）", fontsize=12)
-        ax2.set_ylabel("密度", fontsize=12)
-        ax2.set_title(
-            f"{year}年转发间隔分布对比（KDE）", fontsize=13, fontweight="bold"
-        )
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-
-        plt.tight_layout()
-        fig_path = os.path.join(OUTPUT_DIR, f"retweet_interval_distribution_{year}.pdf")
-        plt.savefig(fig_path, format="pdf", bbox_inches="tight", dpi=300)
-        plt.close()
-        print(f"转发间隔分布对比图已保存到: {fig_path}")
     else:
         print("没有转发间隔数据，跳过转发间隔分布图绘制")
 

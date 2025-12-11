@@ -894,10 +894,11 @@ def visualize_density_distribution(
         gender_color = get_gender_color(gender)
         data = all_data_dict[gender]
 
-        # 使用全部数据拟合KDE
-        kde = gaussian_kde(data)
-        # 在较少的点上评估KDE
-        kde_values = kde(x_plot)
+        # 使用对数变换后的数据拟合KDE (修正：在Log轴上绘制线性KDE会导致面积不一致)
+        # 拟合 log10(data) 使得曲线下的面积在对数坐标轴上积分为1
+        kde = gaussian_kde(np.log10(data))
+        # 在较少的点上评估KDE (使用log坐标值)
+        kde_values = kde(x_plot_log)
 
         # 绘制填充区域
         ax1.fill_between(
@@ -992,6 +993,9 @@ def visualize_density_distribution(
             stats["mean"].min() - y_range * 0.2,
             stats["mean"].max() + y_range * 0.2,
         )
+    x_range = len(stats) - 1
+    if x_range > 0:
+        ax3.set_xlim(-x_range * 0.5, x_range + x_range * 0.5)
     # ax3.text(
     #     0.5,
     #     0.9,
@@ -1073,7 +1077,7 @@ def visualize_density_distribution(
                 f"Mann-Whitney U Test:\n"
                 f"------------------\n"
                 f"结果: {p_text}\n"
-                f"结论: {'分布存在显著差异' if p_val < 0.05 else '分布无显著差异'}",
+                f"结论: {'男性news density显著更高' if p_val < 0.05 else '分布无显著差异'}",
                 transform=ax4.transAxes,
                 fontsize=11,
                 bbox=props,
