@@ -404,8 +404,8 @@ def analyze_retweet_media(year, force_reanalyze=False):
                 by="retweet_count", ascending=False
             ).iloc[0]
             print(
-                f"{gender}: {max_retweet_user['user_id']}, {max_retweet_user['nick_name']}, {max_retweet_user['retweet_count']}"
-            )
+                f"{gender}: {max_retweet_user['user_id']}, {max_retweet_user['retweet_count']}"
+            )  # {max_retweet_user['nick_name']},
 
         # 计算总体性别分布（用于计算占比）
         total_gender_dist = data.groupby("gender").size()
