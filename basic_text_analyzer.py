@@ -1070,7 +1070,7 @@ def visualize_province_gender_gap(year):
     )
 
     # 创建三个子图（根据省份数量调整大小）
-    num_provinces = len(plot_df) if len(plot_df) > 0 else 10
+    num_provinces = province_stats_df["province"].nunique()
     fig_width = max(24, num_provinces * 0.8)
     fig, axes = plt.subplots(1, 3, figsize=(fig_width, 8), constrained_layout=True)
     fig.suptitle(
