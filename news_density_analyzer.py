@@ -73,6 +73,38 @@ PROVINCE_CODE_TO_NAME = {
     "82": "中国澳门",
 }
 
+# 地区映射
+DISTRICT_MAP = {
+    "东部": [
+        "北京",
+        "天津",
+        "河北",
+        "上海",
+        "江苏",
+        "浙江",
+        "福建",
+        "山东",
+        "广东",
+        "海南",
+    ],
+    "中部": ["山西", "安徽", "江西", "河南", "湖北", "湖南"],
+    "西部": [
+        "内蒙古",
+        "广西",
+        "重庆",
+        "四川",
+        "贵州",
+        "云南",
+        "西藏",
+        "陕西",
+        "甘肃",
+        "青海",
+        "宁夏",
+        "新疆",
+    ],
+    "东北": ["辽宁", "吉林", "黑龙江"],
+}
+
 
 # ============================================================================
 # 工具函数
@@ -94,6 +126,21 @@ def convert_province_code(code):
         return PROVINCE_CODE_TO_NAME[code_str]
     # 如果已经是名称，直接返回
     return code_str
+
+
+def get_district_from_province(province_name):
+    """根据省份名称获取所属地区"""
+    if pd.isna(province_name) or province_name is None:
+        return None
+
+    province_str = str(province_name).strip()
+
+    # 遍历地区映射，查找省份所属地区
+    for district, province_list in DISTRICT_MAP.items():
+        if province_str in province_list:
+            return district
+
+    return None
 
 
 def get_gender_label(gender):
@@ -782,6 +829,183 @@ def calculate_province_stats(
     return province_post_df, province_user_df
 
 
+def calculate_district_stats(
+    post_density_df, user_density_df, year, force_reanalyze=False
+):
+    """计算地区级别的统计信息（Post和User级别）
+
+    Args:
+        post_density_df: post级别的DataFrame
+        user_density_df: user级别的DataFrame
+        year: 年份
+        force_reanalyze: 是否强制重新分析
+
+    Returns:
+        tuple: (district_post_stats_df, district_user_stats_df)
+    """
+    print(f"\n开始计算 {year} 年地区级别统计...")
+
+    district_post_file = os.path.join(
+        OUTPUT_DIR, f"district_post_density_{year}.parquet"
+    )
+    district_user_file = os.path.join(
+        OUTPUT_DIR, f"district_user_density_{year}.parquet"
+    )
+
+    # 检查是否已有保存的数据
+    if (
+        not force_reanalyze
+        and os.path.exists(district_post_file)
+        and os.path.exists(district_user_file)
+    ):
+        print("找到已保存的地区级别数据，正在加载...")
+        try:
+            district_post_df = pd.read_parquet(district_post_file, engine="fastparquet")
+            district_user_df = pd.read_parquet(district_user_file, engine="fastparquet")
+            print("✓ 成功加载地区级别数据")
+            return district_post_df, district_user_df
+        except Exception as e:
+            print(f"加载失败: {e}，将重新计算...")
+
+    # 过滤有效省份并添加地区信息
+    valid_provinces = set(PROVINCE_CODE_TO_NAME.values())
+
+    # Post级别统计
+    post_with_province = post_density_df[
+        (post_density_df["province"].notna())
+        & (post_density_df["province"].isin(valid_provinces))
+    ].copy()
+
+    # 添加地区列
+    post_with_province["district"] = post_with_province["province"].apply(
+        get_district_from_province
+    )
+    post_with_province = post_with_province[post_with_province["district"].notna()]
+
+    district_post_stats = []
+    for district in sorted(post_with_province["district"].unique()):
+        district_data = post_with_province[post_with_province["district"] == district]
+
+        for gender in ["m", "f", "男", "女"]:
+            gender_data = district_data[district_data["gender"] == gender]
+
+            if len(gender_data) == 0:
+                continue
+
+            total_count = len(gender_data)
+            zero_count = len(gender_data[gender_data["density"] == 0.0])
+            zero_ratio = zero_count / total_count if total_count > 0 else 0.0
+
+            # 计算非0 density的统计
+            non_zero_data = gender_data[gender_data["density"] > 0.0]
+            non_zero_count = len(non_zero_data)
+
+            if non_zero_count > 0:
+                avg_density = non_zero_data["density"].mean()
+                std_density = non_zero_data["density"].std()
+                # 计算99%置信区间
+                z_99 = 2.576
+                se = std_density / np.sqrt(non_zero_count)
+                ci_lower = max(0, avg_density - z_99 * se)
+                ci_upper = avg_density + z_99 * se
+            else:
+                avg_density = 0.0
+                ci_lower = 0.0
+                ci_upper = 0.0
+
+            district_post_stats.append(
+                {
+                    "district": district,
+                    "gender": gender,
+                    "total_count": total_count,
+                    "zero_count": zero_count,
+                    "zero_ratio": zero_ratio,
+                    "non_zero_count": non_zero_count,
+                    "avg_density": avg_density,
+                    "avg_density_ci_lower": ci_lower,
+                    "avg_density_ci_upper": ci_upper,
+                }
+            )
+
+    district_post_df = pd.DataFrame(district_post_stats)
+
+    # User级别统计
+    if user_density_df is not None and "province" in user_density_df.columns:
+        user_with_province = user_density_df[
+            (user_density_df["province"].notna())
+            & (user_density_df["province"].isin(valid_provinces))
+        ].copy()
+
+        # 添加地区列
+        user_with_province["district"] = user_with_province["province"].apply(
+            get_district_from_province
+        )
+        user_with_province = user_with_province[user_with_province["district"].notna()]
+
+        district_user_stats = []
+        for district in sorted(user_with_province["district"].unique()):
+            district_data = user_with_province[
+                user_with_province["district"] == district
+            ]
+
+            for gender in ["m", "f", "男", "女"]:
+                gender_data = district_data[district_data["gender"] == gender]
+
+                if len(gender_data) == 0:
+                    continue
+
+                total_users = len(gender_data)
+                zero_users = len(gender_data[gender_data["avg_density"] == 0.0])
+                zero_ratio = zero_users / total_users if total_users > 0 else 0.0
+
+                # 计算非0 density的统计
+                non_zero_data = gender_data[gender_data["avg_density"] > 0.0]
+                non_zero_users = len(non_zero_data)
+
+                if non_zero_users > 0:
+                    avg_density = non_zero_data["avg_density"].mean()
+                    std_density = non_zero_data["avg_density"].std()
+                    # 计算99%置信区间
+                    z_99 = 2.576
+                    se = std_density / np.sqrt(non_zero_users)
+                    ci_lower = max(0, avg_density - z_99 * se)
+                    ci_upper = avg_density + z_99 * se
+                else:
+                    avg_density = 0.0
+                    ci_lower = 0.0
+                    ci_upper = 0.0
+
+                district_user_stats.append(
+                    {
+                        "district": district,
+                        "gender": gender,
+                        "total_users": total_users,
+                        "zero_users": zero_users,
+                        "zero_ratio": zero_ratio,
+                        "non_zero_users": non_zero_users,
+                        "avg_density": avg_density,
+                        "avg_density_ci_lower": ci_lower,
+                        "avg_density_ci_upper": ci_upper,
+                    }
+                )
+
+        district_user_df = pd.DataFrame(district_user_stats)
+    else:
+        district_user_df = pd.DataFrame()
+
+    # 保存结果
+    district_post_df.to_parquet(district_post_file, engine="fastparquet", index=False)
+    print(f"地区Post级别统计已保存到: {district_post_file}")
+
+    if len(district_user_df) > 0:
+        district_user_df.to_parquet(
+            district_user_file, engine="fastparquet", index=False
+        )
+        print(f"地区User级别统计已保存到: {district_user_file}")
+
+    return district_post_df, district_user_df
+
+
 def print_stats(stats, year, level="post"):
     """打印统计信息（post和user级别共用）
 
@@ -1210,7 +1434,6 @@ def visualize_province_density_comparison(year):
     )
 
     x_pos = np.arange(len(provinces))
-    width = 0.35
 
     # 1. Post级别0 density比例
     ax1 = axes[0, 0]
@@ -1226,13 +1449,15 @@ def visualize_province_density_comparison(year):
             else:
                 ratios.append(0)
 
-        offset = -width / 2 if gender == "男" else width / 2
-        ax1.bar(
-            x_pos + offset,
+        marker = "o" if gender == "男" else "s"
+        ax1.plot(
+            x_pos,
             ratios,
-            width,
+            marker=marker,
             label=gender,
             color=get_gender_color(gender),
+            linewidth=3,
+            markersize=6,
             alpha=0.8,
         )
 
@@ -1265,29 +1490,41 @@ def visualize_province_density_comparison(year):
                 ci_lowers.append(0)
                 ci_uppers.append(0)
 
-        offset = -width / 2 if gender == "男" else width / 2
-        ax2.bar(
-            x_pos + offset,
+        gender_color = get_gender_color(gender)
+        marker = "o" if gender == "男" else "s"
+
+        # 绘制折线
+        ax2.plot(
+            x_pos,
             densities,
-            width,
+            marker=marker,
             label=gender,
-            color=get_gender_color(gender),
+            color=gender_color,
+            linewidth=3,
+            markersize=6,
             alpha=0.8,
         )
 
-        # 添加置信区间
-        for i, (density, ci_l, ci_u) in enumerate(zip(densities, ci_lowers, ci_uppers)):
-            if density > 0:
-                ax2.errorbar(
-                    i + offset,
-                    density,
-                    yerr=[[density - ci_l], [ci_u - density]],
-                    fmt="none",
-                    color="black",
-                    capsize=3,
-                    capthick=1,
-                    alpha=0.6,
-                )
+        # 添加置信区间误差条
+        err_lowers = [d - ci_l if d > 0 else 0 for d, ci_l in zip(densities, ci_lowers)]
+        err_uppers = [ci_u - d if d > 0 else 0 for d, ci_u in zip(densities, ci_uppers)]
+
+        valid_indices = [i for i, d in enumerate(densities) if d > 0]
+        if valid_indices:
+            ax2.errorbar(
+                [x_pos[i] for i in valid_indices],
+                [densities[i] for i in valid_indices],
+                yerr=[
+                    [err_lowers[i] for i in valid_indices],
+                    [err_uppers[i] for i in valid_indices],
+                ],
+                fmt="none",
+                color=gender_color,
+                capsize=4,
+                capthick=1.5,
+                elinewidth=1.5,
+                alpha=0.7,
+            )
 
     ax2.set_xlabel("省份", fontsize=12)
     ax2.set_ylabel("平均Density", fontsize=12)
@@ -1311,13 +1548,15 @@ def visualize_province_density_comparison(year):
             else:
                 ratios.append(0)
 
-        offset = -width / 2 if gender == "男" else width / 2
-        ax3.bar(
-            x_pos + offset,
+        marker = "o" if gender == "男" else "s"
+        ax3.plot(
+            x_pos,
             ratios,
-            width,
+            marker=marker,
             label=gender,
             color=get_gender_color(gender),
+            linewidth=3,
+            markersize=6,
             alpha=0.8,
         )
 
@@ -1350,29 +1589,41 @@ def visualize_province_density_comparison(year):
                 ci_lowers.append(0)
                 ci_uppers.append(0)
 
-        offset = -width / 2 if gender == "男" else width / 2
-        ax4.bar(
-            x_pos + offset,
+        gender_color = get_gender_color(gender)
+        marker = "o" if gender == "男" else "s"
+
+        # 绘制折线
+        ax4.plot(
+            x_pos,
             densities,
-            width,
+            marker=marker,
             label=gender,
-            color=get_gender_color(gender),
+            color=gender_color,
+            linewidth=3,
+            markersize=6,
             alpha=0.8,
         )
 
-        # 添加置信区间
-        for i, (density, ci_l, ci_u) in enumerate(zip(densities, ci_lowers, ci_uppers)):
-            if density > 0:
-                ax4.errorbar(
-                    i + offset,
-                    density,
-                    yerr=[[density - ci_l], [ci_u - density]],
-                    fmt="none",
-                    color="black",
-                    capsize=3,
-                    capthick=1,
-                    alpha=0.6,
-                )
+        # 添加置信区间误差条
+        err_lowers = [d - ci_l if d > 0 else 0 for d, ci_l in zip(densities, ci_lowers)]
+        err_uppers = [ci_u - d if d > 0 else 0 for d, ci_u in zip(densities, ci_uppers)]
+
+        valid_indices = [i for i, d in enumerate(densities) if d > 0]
+        if valid_indices:
+            ax4.errorbar(
+                [x_pos[i] for i in valid_indices],
+                [densities[i] for i in valid_indices],
+                yerr=[
+                    [err_lowers[i] for i in valid_indices],
+                    [err_uppers[i] for i in valid_indices],
+                ],
+                fmt="none",
+                color=gender_color,
+                capsize=4,
+                capthick=1.5,
+                elinewidth=1.5,
+                alpha=0.7,
+            )
 
     ax4.set_xlabel("省份", fontsize=12)
     ax4.set_ylabel("平均Density", fontsize=12)
@@ -1388,6 +1639,325 @@ def visualize_province_density_comparison(year):
     plt.close()
     print(f"图表已保存到: {fig_path}")
     print(f"\n省份级别News Density对比图绘制完成\n")
+
+
+def visualize_district_density_comparison(year):
+    """绘制地区级别的News Density对比图（4个子图）
+
+    1. Post级别0 density比例
+    2. Post级别平均density（>0，带99% CI）
+    3. User级别0 density比例
+    4. User级别平均density（>0，带99% CI）
+    """
+    print(f"\n开始绘制 {year} 年地区级别News Density对比图...")
+
+    district_post_file = os.path.join(
+        OUTPUT_DIR, f"district_post_density_{year}.parquet"
+    )
+    district_user_file = os.path.join(
+        OUTPUT_DIR, f"district_user_density_{year}.parquet"
+    )
+
+    if not os.path.exists(district_post_file):
+        print(f"错误: 地区Post级别数据不存在: {district_post_file}")
+        return
+
+    district_post_df = pd.read_parquet(district_post_file, engine="fastparquet")
+
+    if os.path.exists(district_user_file):
+        district_user_df = pd.read_parquet(district_user_file, engine="fastparquet")
+    else:
+        district_user_df = pd.DataFrame()
+        print("警告: 地区User级别数据不存在，将只绘制Post级别图表")
+
+    # 统一性别标签
+    district_post_df["gender_label"] = district_post_df["gender"].apply(
+        get_gender_label
+    )
+    if len(district_user_df) > 0:
+        district_user_df["gender_label"] = district_user_df["gender"].apply(
+            get_gender_label
+        )
+
+    # 准备绘图数据
+    districts = sorted(district_post_df["district"].unique())
+    plot_data = []
+
+    for district in districts:
+        post_data = district_post_df[district_post_df["district"] == district]
+        for gender in ["男", "女"]:
+            gender_post = post_data[post_data["gender_label"] == gender]
+            if len(gender_post) == 0:
+                continue
+
+            row = gender_post.iloc[0]
+            plot_row = {
+                "district": district,
+                "gender": gender,
+                "post_zero_ratio": row["zero_ratio"],
+                "post_avg_density": (
+                    row["avg_density"] if row["non_zero_count"] > 0 else 0
+                ),
+                "post_ci_lower": (
+                    row["avg_density_ci_lower"] if row["non_zero_count"] > 0 else 0
+                ),
+                "post_ci_upper": (
+                    row["avg_density_ci_upper"] if row["non_zero_count"] > 0 else 0
+                ),
+            }
+
+            if len(district_user_df) > 0:
+                user_data = district_user_df[district_user_df["district"] == district]
+                gender_user = user_data[user_data["gender_label"] == gender]
+                if len(gender_user) > 0:
+                    user_row = gender_user.iloc[0]
+                    plot_row["user_zero_ratio"] = user_row["zero_ratio"]
+                    plot_row["user_avg_density"] = (
+                        user_row["avg_density"] if user_row["non_zero_users"] > 0 else 0
+                    )
+                    plot_row["user_ci_lower"] = (
+                        user_row["avg_density_ci_lower"]
+                        if user_row["non_zero_users"] > 0
+                        else 0
+                    )
+                    plot_row["user_ci_upper"] = (
+                        user_row["avg_density_ci_upper"]
+                        if user_row["non_zero_users"] > 0
+                        else 0
+                    )
+                else:
+                    plot_row["user_zero_ratio"] = 0
+                    plot_row["user_avg_density"] = 0
+                    plot_row["user_ci_lower"] = 0
+                    plot_row["user_ci_upper"] = 0
+            else:
+                plot_row["user_zero_ratio"] = 0
+                plot_row["user_avg_density"] = 0
+                plot_row["user_ci_lower"] = 0
+                plot_row["user_ci_upper"] = 0
+
+            plot_data.append(plot_row)
+
+    plot_df = pd.DataFrame(plot_data)
+
+    if len(plot_df) == 0:
+        print("没有足够的数据用于绘图")
+        return
+
+    # 创建4个子图
+    num_districts = len(districts)
+    fig_width = max(16, num_districts * 2)
+    fig, axes = plt.subplots(2, 2, figsize=(fig_width, 12), constrained_layout=True)
+    fig.suptitle(
+        f"{year}年各地区News Density性别差异分析", fontsize=18, fontweight="bold"
+    )
+
+    x_pos = np.arange(len(districts))
+
+    # 1. Post级别0 density比例
+    ax1 = axes[0, 0]
+    for gender in ["男", "女"]:
+        gender_data = plot_df[plot_df["gender"] == gender]
+        if len(gender_data) == 0:
+            continue
+        ratios = []
+        for district in districts:
+            dist_data = gender_data[gender_data["district"] == district]
+            if len(dist_data) > 0:
+                ratios.append(dist_data.iloc[0]["post_zero_ratio"])
+            else:
+                ratios.append(0)
+
+        marker = "o" if gender == "男" else "s"
+        ax1.plot(
+            x_pos,
+            ratios,
+            marker=marker,
+            label=gender,
+            color=get_gender_color(gender),
+            linewidth=3,
+            markersize=8,
+            alpha=0.8,
+        )
+
+    ax1.set_xlabel("地区", fontsize=12)
+    ax1.set_ylabel("0 Density比例", fontsize=12)
+    ax1.set_title("1. Post级别0 Density比例", fontsize=14)
+    ax1.set_xticks(x_pos)
+    ax1.set_xticklabels(districts, rotation=0, ha="center", fontsize=10)
+    ax1.legend()
+    ax1.grid(True, alpha=0.3, axis="y")
+    ax1.set_ylim([0, 1.1])
+
+    # 2. Post级别平均density（>0，带99% CI）
+    ax2 = axes[0, 1]
+    for gender in ["男", "女"]:
+        gender_data = plot_df[plot_df["gender"] == gender]
+        if len(gender_data) == 0:
+            continue
+        densities = []
+        ci_lowers = []
+        ci_uppers = []
+        for district in districts:
+            dist_data = gender_data[gender_data["district"] == district]
+            if len(dist_data) > 0 and dist_data.iloc[0]["post_avg_density"] > 0:
+                densities.append(dist_data.iloc[0]["post_avg_density"])
+                ci_lowers.append(dist_data.iloc[0]["post_ci_lower"])
+                ci_uppers.append(dist_data.iloc[0]["post_ci_upper"])
+            else:
+                densities.append(0)
+                ci_lowers.append(0)
+                ci_uppers.append(0)
+
+        gender_color = get_gender_color(gender)
+        marker = "o" if gender == "男" else "s"
+
+        # 绘制折线
+        ax2.plot(
+            x_pos,
+            densities,
+            marker=marker,
+            label=gender,
+            color=gender_color,
+            linewidth=3,
+            markersize=8,
+            alpha=0.8,
+        )
+
+        # 添加置信区间误差条
+        err_lowers = [d - ci_l if d > 0 else 0 for d, ci_l in zip(densities, ci_lowers)]
+        err_uppers = [ci_u - d if d > 0 else 0 for d, ci_u in zip(densities, ci_uppers)]
+
+        valid_indices = [i for i, d in enumerate(densities) if d > 0]
+        if valid_indices:
+            ax2.errorbar(
+                [x_pos[i] for i in valid_indices],
+                [densities[i] for i in valid_indices],
+                yerr=[
+                    [err_lowers[i] for i in valid_indices],
+                    [err_uppers[i] for i in valid_indices],
+                ],
+                fmt="none",
+                color=gender_color,
+                capsize=4,
+                capthick=1.5,
+                elinewidth=1.5,
+                alpha=0.7,
+            )
+
+    ax2.set_xlabel("地区", fontsize=12)
+    ax2.set_ylabel("平均Density", fontsize=12)
+    ax2.set_title("2. Post级别平均Density（>0，99% CI）", fontsize=14)
+    ax2.set_xticks(x_pos)
+    ax2.set_xticklabels(districts, rotation=0, ha="center", fontsize=10)
+    ax2.legend()
+    ax2.grid(True, alpha=0.3, axis="y")
+
+    # 3. User级别0 density比例
+    ax3 = axes[1, 0]
+    for gender in ["男", "女"]:
+        gender_data = plot_df[plot_df["gender"] == gender]
+        if len(gender_data) == 0:
+            continue
+        ratios = []
+        for district in districts:
+            dist_data = gender_data[gender_data["district"] == district]
+            if len(dist_data) > 0:
+                ratios.append(dist_data.iloc[0]["user_zero_ratio"])
+            else:
+                ratios.append(0)
+
+        marker = "o" if gender == "男" else "s"
+        ax3.plot(
+            x_pos,
+            ratios,
+            marker=marker,
+            label=gender,
+            color=get_gender_color(gender),
+            linewidth=3,
+            markersize=8,
+            alpha=0.8,
+        )
+
+    ax3.set_xlabel("地区", fontsize=12)
+    ax3.set_ylabel("0 Density比例", fontsize=12)
+    ax3.set_title("3. User级别0 Density比例", fontsize=14)
+    ax3.set_xticks(x_pos)
+    ax3.set_xticklabels(districts, rotation=0, ha="center", fontsize=10)
+    ax3.legend()
+    ax3.grid(True, alpha=0.3, axis="y")
+    ax3.set_ylim([0, 1.1])
+
+    # 4. User级别平均density（>0，带99% CI）
+    ax4 = axes[1, 1]
+    for gender in ["男", "女"]:
+        gender_data = plot_df[plot_df["gender"] == gender]
+        if len(gender_data) == 0:
+            continue
+        densities = []
+        ci_lowers = []
+        ci_uppers = []
+        for district in districts:
+            dist_data = gender_data[gender_data["district"] == district]
+            if len(dist_data) > 0 and dist_data.iloc[0]["user_avg_density"] > 0:
+                densities.append(dist_data.iloc[0]["user_avg_density"])
+                ci_lowers.append(dist_data.iloc[0]["user_ci_lower"])
+                ci_uppers.append(dist_data.iloc[0]["user_ci_upper"])
+            else:
+                densities.append(0)
+                ci_lowers.append(0)
+                ci_uppers.append(0)
+
+        gender_color = get_gender_color(gender)
+        marker = "o" if gender == "男" else "s"
+
+        # 绘制折线
+        ax4.plot(
+            x_pos,
+            densities,
+            marker=marker,
+            label=gender,
+            color=gender_color,
+            linewidth=3,
+            markersize=8,
+            alpha=0.8,
+        )
+
+        # 添加置信区间误差条
+        err_lowers = [d - ci_l if d > 0 else 0 for d, ci_l in zip(densities, ci_lowers)]
+        err_uppers = [ci_u - d if d > 0 else 0 for d, ci_u in zip(densities, ci_uppers)]
+
+        valid_indices = [i for i, d in enumerate(densities) if d > 0]
+        if valid_indices:
+            ax4.errorbar(
+                [x_pos[i] for i in valid_indices],
+                [densities[i] for i in valid_indices],
+                yerr=[
+                    [err_lowers[i] for i in valid_indices],
+                    [err_uppers[i] for i in valid_indices],
+                ],
+                fmt="none",
+                color=gender_color,
+                capsize=4,
+                capthick=1.5,
+                elinewidth=1.5,
+                alpha=0.7,
+            )
+
+    ax4.set_xlabel("地区", fontsize=12)
+    ax4.set_ylabel("平均Density", fontsize=12)
+    ax4.set_title("4. User级别平均Density（>0，99% CI）", fontsize=14)
+    ax4.set_xticks(x_pos)
+    ax4.set_xticklabels(districts, rotation=0, ha="center", fontsize=10)
+    ax4.legend()
+    ax4.grid(True, alpha=0.3, axis="y")
+
+    # 保存图表
+    fig_path = os.path.join(OUTPUT_DIR, f"district_density_comparison_{year}.pdf")
+    plt.savefig(fig_path, format="pdf", bbox_inches="tight", dpi=300)
+    plt.close()
+    print(f"图表已保存到: {fig_path}")
+    print(f"\n地区级别News Density对比图绘制完成\n")
 
 
 # ============================================================================
@@ -1496,6 +2066,20 @@ def analyze_news_density(year, force_recalculate=False, force_reanalyze=False):
         visualize_province_density_comparison(year)
     else:
         print("警告: 无法计算省份级别统计")
+
+    # ========================================================================
+    # 步骤5: 地区级别分析（从Post和User级别聚合）
+    # ========================================================================
+    print(f"\n{'='*60}")
+    print(f"步骤5: 地区级别分析")
+    print(f"{'='*60}")
+    district_post_df, district_user_df = calculate_district_stats(
+        post_density_df, user_density_df, year, force_reanalyze
+    )
+    if district_post_df is not None and len(district_post_df) > 0:
+        visualize_district_density_comparison(year)
+    else:
+        print("警告: 无法计算地区级别统计")
 
     print(f"\n{'='*60}")
     print(f"{year} 年News Density分析完成（所有级别）")

@@ -94,6 +94,37 @@ PROVINCE_CODE_TO_NAME = {
     "82": "中国澳门",
 }
 
+DISTRICT_MAP = {
+    "东部": [
+        "北京",
+        "天津",
+        "河北",
+        "上海",
+        "江苏",
+        "浙江",
+        "福建",
+        "山东",
+        "广东",
+        "海南",
+    ],
+    "中部": ["山西", "安徽", "江西", "河南", "湖北", "湖南"],
+    "西部": [
+        "内蒙古",
+        "广西",
+        "重庆",
+        "四川",
+        "贵州",
+        "云南",
+        "西藏",
+        "陕西",
+        "甘肃",
+        "青海",
+        "宁夏",
+        "新疆",
+    ],
+    "东北": ["辽宁", "吉林", "黑龙江"],
+}
+
 
 def load_official_media_ids():
     """从配置文件加载官方媒体ID"""
@@ -604,6 +635,21 @@ def convert_province_code(code):
     return code_str
 
 
+def get_district_from_province(province_name):
+    """根据省份名称获取所属地区"""
+    if pd.isna(province_name) or province_name is None:
+        return None
+
+    province_str = str(province_name).strip()
+
+    # 遍历地区映射，查找省份所属地区
+    for district, province_list in DISTRICT_MAP.items():
+        if province_str in province_list:
+            return district
+
+    return None
+
+
 def analyze_retweet_media_by_province(year, force_reanalyze=False):
     """按省份分析转发官方媒体情况的性别差异
 
@@ -778,6 +824,183 @@ def analyze_retweet_media_by_province(year, force_reanalyze=False):
     print(f"共分析了 {len(province_stats_df)} 个省份-性别组合")
 
     print(f"\n省份分析完成\n")
+
+
+def analyze_retweet_media_by_district(year, force_reanalyze=False):
+    """按地区分析转发官方媒体情况的性别差异
+
+    Args:
+        year: 年份
+        force_reanalyze: 如果为True，即使文件已存在也重新分析
+    """
+    print(f"\n开始分析 {year} 年按地区的转发官方媒体性别差异...")
+
+    # 检查输出文件是否已存在
+    output_file = os.path.join(OUTPUT_DIR, f"retweet_media_district_{year}.parquet")
+
+    if not force_reanalyze:
+        if os.path.exists(output_file):
+            print(
+                f"分析结果文件已存在，跳过分析。如需重新分析，请设置 force_reanalyze=True"
+            )
+            return
+
+    # 如果ID列表为空，尝试从配置文件加载
+    if not OFFICIAL_MEDIA_IDS:
+        load_official_media_ids()
+
+    if not OFFICIAL_MEDIA_IDS:
+        print("警告: 官方媒体ID列表为空，请先运行 get_news_ids.py 生成新闻账号ID文件")
+        return
+
+    # 加载数据
+    data = load_data_for_year(year, "retweet")
+    if data is None:
+        return
+
+    # 检查是否有性别和省份字段
+    if "gender" not in data.columns:
+        print("数据不包含性别字段，无法进行性别分析")
+        return
+
+    if "province" not in data.columns:
+        print("数据不包含省份字段，无法进行地区分析")
+        return
+
+    # 转换省份代码为省份名称，然后映射到地区
+    data = data.copy()
+    data["province_name"] = data["province"].apply(convert_province_code)
+    data["district"] = data["province_name"].apply(get_district_from_province)
+    data = data.dropna(subset=["district", "gender"])
+
+    # 排除官方媒体用户ID
+    data = data[~data["user_id"].astype(str).isin(OFFICIAL_MEDIA_IDS)]
+    print(f"排除官方媒体用户后，剩余 {len(data)} 条记录")
+
+    # 过滤有效地区
+    valid_districts = set(DISTRICT_MAP.keys())
+    data = data[data["district"].isin(valid_districts)]
+    print(f"过滤有效地区后，剩余 {len(data)} 条记录")
+
+    # 计算转发间隔（如果可用）
+    has_interval_data = False
+    if "time_stamp" in data.columns and "r_time_stamp" in data.columns:
+        try:
+            data = data.copy()
+            data["time_stamp_num"] = pd.to_numeric(data["time_stamp"], errors="coerce")
+            data["r_time_stamp_num"] = pd.to_numeric(
+                data["r_time_stamp"], errors="coerce"
+            )
+            data["retweet_interval"] = data["time_stamp_num"] - data["r_time_stamp_num"]
+            has_interval_data = True
+        except Exception as e:
+            print(f"计算转发间隔时出错: {e}")
+            has_interval_data = False
+
+    # 按地区和性别分析
+    district_stats = []
+
+    for district in sorted(data["district"].unique()):
+        district_data = data[data["district"] == district]
+
+        for gender in ["m", "f", "男", "女"]:
+            gender_data = district_data[district_data["gender"] == gender]
+
+            if len(gender_data) == 0:
+                continue
+
+            # 统计总用户数（去重）
+            total_users = gender_data["user_id"].nunique()
+
+            # 统计转发官方媒体的用户
+            retweet_media_users = gender_data[
+                (gender_data["is_retweet"] == "1")
+                & (gender_data["r_user_id"].astype(str).isin(OFFICIAL_MEDIA_IDS))
+            ]["user_id"].nunique()
+
+            # 计算不转发媒体帖子的比例
+            non_retweet_ratio = (
+                1 - (retweet_media_users / total_users) if total_users > 0 else 0
+            )
+
+            # 99%置信区间的z值（用于其他指标）
+            z_99 = 2.576
+
+            # 计算平均转发次数（只统计转发官方媒体的用户）
+            retweet_media_records = gender_data[
+                (gender_data["is_retweet"] == "1")
+                & (gender_data["r_user_id"].astype(str).isin(OFFICIAL_MEDIA_IDS))
+            ]
+
+            if retweet_media_users > 0:
+                user_retweet_counts = retweet_media_records.groupby("user_id").size()
+                avg_retweet_count = user_retweet_counts.mean()
+
+                # 计算平均转发次数的99%置信区间
+                n_retweet = len(user_retweet_counts)
+                if n_retweet > 1:
+                    std_retweet = user_retweet_counts.std()
+                    se_retweet = std_retweet / np.sqrt(n_retweet)
+                    ci_lower_count = avg_retweet_count - z_99 * se_retweet
+                    ci_upper_count = avg_retweet_count + z_99 * se_retweet
+                else:
+                    ci_lower_count = avg_retweet_count
+                    ci_upper_count = avg_retweet_count
+            else:
+                avg_retweet_count = 0
+                ci_lower_count = 0
+                ci_upper_count = 0
+
+            # 计算平均转发间隔（如果可用）
+            avg_retweet_interval = None
+            ci_lower_interval = None
+            ci_upper_interval = None
+
+            if has_interval_data and retweet_media_users > 0:
+                valid_intervals = retweet_media_records[
+                    (retweet_media_records["retweet_interval"].notna())
+                    & (retweet_media_records["retweet_interval"] > 0)
+                ]["retweet_interval"]
+
+                if len(valid_intervals) > 0:
+                    avg_retweet_interval = valid_intervals.mean()
+
+                    # 计算平均转发间隔的99%置信区间
+                    n_interval = len(valid_intervals)
+                    if n_interval > 1:
+                        std_interval = valid_intervals.std()
+                        se_interval = std_interval / np.sqrt(n_interval)
+                        ci_lower_interval = max(
+                            0, avg_retweet_interval - z_99 * se_interval
+                        )
+                        ci_upper_interval = avg_retweet_interval + z_99 * se_interval
+                    else:
+                        ci_lower_interval = avg_retweet_interval
+                        ci_upper_interval = avg_retweet_interval
+
+            district_stats.append(
+                {
+                    "district": district,
+                    "gender": gender,
+                    "total_users": total_users,
+                    "retweet_media_users": retweet_media_users,
+                    "non_retweet_ratio": non_retweet_ratio,
+                    "avg_retweet_count": avg_retweet_count,
+                    "avg_retweet_count_ci_lower": ci_lower_count,
+                    "avg_retweet_count_ci_upper": ci_upper_count,
+                    "avg_retweet_interval": avg_retweet_interval,
+                    "avg_retweet_interval_ci_lower": ci_lower_interval,
+                    "avg_retweet_interval_ci_upper": ci_upper_interval,
+                }
+            )
+
+    # 保存结果
+    district_stats_df = pd.DataFrame(district_stats)
+    district_stats_df.to_parquet(output_file, engine="fastparquet", index=False)
+    print(f"地区分析结果已保存到: {output_file}")
+    print(f"共分析了 {len(district_stats_df)} 个地区-性别组合")
+
+    print(f"\n地区分析完成\n")
 
 
 def get_gender_label(gender):
@@ -1146,25 +1369,28 @@ def visualize_province_gender_gap(year):
     # 1. 不转发媒体帖子比例
     ax1 = axes[0]
     x_pos = np.arange(len(plot_df))
-    width = 0.35
 
     male_ratios = plot_df["male_non_retweet_ratio"].values
     female_ratios = plot_df["female_non_retweet_ratio"].values
 
-    bars1 = ax1.bar(
-        x_pos - width / 2,
+    ax1.plot(
+        x_pos,
         male_ratios,
-        width,
+        marker="o",
         label="男性",
         color=get_gender_color("m"),
+        linewidth=3,
+        markersize=6,
         alpha=0.8,
     )
-    bars2 = ax1.bar(
-        x_pos + width / 2,
+    ax1.plot(
+        x_pos,
         female_ratios,
-        width,
+        marker="s",
         label="女性",
         color=get_gender_color("f"),
+        linewidth=3,
+        markersize=6,
         alpha=0.8,
     )
 
@@ -1183,59 +1409,77 @@ def visualize_province_gender_gap(year):
     male_counts = plot_df["male_avg_retweet_count"].values
     female_counts = plot_df["female_avg_retweet_count"].values
 
-    bars3 = ax2.bar(
-        x_pos - width / 2,
+    # 计算置信区间
+    male_ci_lower = plot_df["male_count_ci_lower"].values
+    male_ci_upper = plot_df["male_count_ci_upper"].values
+    female_ci_lower = plot_df["female_count_ci_lower"].values
+    female_ci_upper = plot_df["female_count_ci_upper"].values
+
+    male_color = get_gender_color("m")
+    female_color = get_gender_color("f")
+
+    # 计算误差范围（用于errorbar）
+    male_err_lower = male_counts - male_ci_lower
+    male_err_upper = male_ci_upper - male_counts
+    female_err_lower = female_counts - female_ci_lower
+    female_err_upper = female_ci_upper - female_counts
+
+    # 绘制折线
+    ax2.plot(
+        x_pos,
         male_counts,
-        width,
+        marker="o",
         label="男性",
-        color=get_gender_color("m"),
+        color=male_color,
+        linewidth=3,
+        markersize=6,
         alpha=0.8,
     )
-    bars4 = ax2.bar(
-        x_pos + width / 2,
+    ax2.plot(
+        x_pos,
         female_counts,
-        width,
+        marker="s",
         label="女性",
-        color=get_gender_color("f"),
+        color=female_color,
+        linewidth=3,
+        markersize=6,
         alpha=0.8,
     )
 
-    # 添加99%置信区间
-    for i, (idx, row) in enumerate(plot_df.iterrows()):
-        # 男性CI
-        if pd.notna(row["male_count_ci_lower"]) and pd.notna(
-            row["male_count_ci_upper"]
-        ):
-            ax2.errorbar(
-                i - width / 2,
-                row["male_avg_retweet_count"],
-                yerr=[
-                    [row["male_avg_retweet_count"] - row["male_count_ci_lower"]],
-                    [row["male_count_ci_upper"] - row["male_avg_retweet_count"]],
-                ],
-                fmt="none",
-                color="black",
-                capsize=3,
-                capthick=1,
-                alpha=0.6,
-            )
-        # 女性CI
-        if pd.notna(row["female_count_ci_lower"]) and pd.notna(
-            row["female_count_ci_upper"]
-        ):
-            ax2.errorbar(
-                i + width / 2,
-                row["female_avg_retweet_count"],
-                yerr=[
-                    [row["female_avg_retweet_count"] - row["female_count_ci_lower"]],
-                    [row["female_count_ci_upper"] - row["female_avg_retweet_count"]],
-                ],
-                fmt="none",
-                color="black",
-                capsize=3,
-                capthick=1,
-                alpha=0.6,
-            )
+    # 添加误差条
+    valid_male_ci = pd.notna(male_ci_lower) & pd.notna(male_ci_upper)
+    if valid_male_ci.any():
+        ax2.errorbar(
+            x_pos[valid_male_ci],
+            male_counts[valid_male_ci],
+            yerr=[
+                male_err_lower[valid_male_ci],
+                male_err_upper[valid_male_ci],
+            ],
+            fmt="none",
+            color=male_color,
+            capsize=4,
+            capthick=1.5,
+            elinewidth=1.5,
+            alpha=0.7,
+        )
+
+    valid_female_ci = pd.notna(female_ci_lower) & pd.notna(female_ci_upper)
+    if valid_female_ci.any():
+        ax2.errorbar(
+            x_pos[valid_female_ci],
+            female_counts[valid_female_ci],
+            yerr=[
+                female_err_lower[valid_female_ci],
+                female_err_upper[valid_female_ci],
+            ],
+            fmt="none",
+            color=female_color,
+            capsize=4,
+            capthick=1.5,
+            elinewidth=1.5,
+            alpha=0.7,
+        )
 
     ax2.set_xlabel("省份", fontsize=12)
     ax2.set_ylabel("平均转发次数", fontsize=12)
@@ -1263,63 +1507,85 @@ def visualize_province_gender_gap(year):
         male_intervals_hours = male_intervals / 3600
         female_intervals_hours = female_intervals / 3600
 
-        bars5 = ax3.bar(
-            x_pos_interval - width / 2,
+        # 计算置信区间（转换为小时）
+        male_interval_ci_lower = interval_data["male_interval_ci_lower"].values / 3600
+        male_interval_ci_upper = interval_data["male_interval_ci_upper"].values / 3600
+        female_interval_ci_lower = (
+            interval_data["female_interval_ci_lower"].values / 3600
+        )
+        female_interval_ci_upper = (
+            interval_data["female_interval_ci_upper"].values / 3600
+        )
+
+        male_color = get_gender_color("m")
+        female_color = get_gender_color("f")
+
+        # 计算误差范围（用于errorbar）
+        male_err_lower = male_intervals_hours - male_interval_ci_lower
+        male_err_upper = male_interval_ci_upper - male_intervals_hours
+        female_err_lower = female_intervals_hours - female_interval_ci_lower
+        female_err_upper = female_interval_ci_upper - female_intervals_hours
+
+        # 绘制折线
+        ax3.plot(
+            x_pos_interval,
             male_intervals_hours,
-            width,
+            marker="o",
             label="男性",
-            color=get_gender_color("m"),
+            color=male_color,
+            linewidth=3,
+            markersize=6,
             alpha=0.8,
         )
-        bars6 = ax3.bar(
-            x_pos_interval + width / 2,
+        ax3.plot(
+            x_pos_interval,
             female_intervals_hours,
-            width,
+            marker="s",
             label="女性",
-            color=get_gender_color("f"),
+            color=female_color,
+            linewidth=3,
+            markersize=6,
             alpha=0.8,
         )
 
-        # 添加99%置信区间
-        for i, (idx, row) in enumerate(interval_data.iterrows()):
-            # 男性CI
-            if pd.notna(row["male_interval_ci_lower"]) and pd.notna(
-                row["male_interval_ci_upper"]
-            ):
-                male_ci_lower_h = row["male_interval_ci_lower"] / 3600
-                male_ci_upper_h = row["male_interval_ci_upper"] / 3600
-                ax3.errorbar(
-                    i - width / 2,
-                    row["male_avg_interval"] / 3600,
-                    yerr=[
-                        [row["male_avg_interval"] / 3600 - male_ci_lower_h],
-                        [male_ci_upper_h - row["male_avg_interval"] / 3600],
-                    ],
-                    fmt="none",
-                    color="black",
-                    capsize=3,
-                    capthick=1,
-                    alpha=0.6,
-                )
-            # 女性CI
-            if pd.notna(row["female_interval_ci_lower"]) and pd.notna(
-                row["female_interval_ci_upper"]
-            ):
-                female_ci_lower_h = row["female_interval_ci_lower"] / 3600
-                female_ci_upper_h = row["female_interval_ci_upper"] / 3600
-                ax3.errorbar(
-                    i + width / 2,
-                    row["female_avg_interval"] / 3600,
-                    yerr=[
-                        [row["female_avg_interval"] / 3600 - female_ci_lower_h],
-                        [female_ci_upper_h - row["female_avg_interval"] / 3600],
-                    ],
-                    fmt="none",
-                    color="black",
-                    capsize=3,
-                    capthick=1,
-                    alpha=0.6,
-                )
+        # 添加误差条
+        valid_male_ci = pd.notna(interval_data["male_interval_ci_lower"]) & pd.notna(
+            interval_data["male_interval_ci_upper"]
+        )
+        if valid_male_ci.any():
+            ax3.errorbar(
+                x_pos_interval[valid_male_ci],
+                male_intervals_hours[valid_male_ci],
+                yerr=[
+                    male_err_lower[valid_male_ci],
+                    male_err_upper[valid_male_ci],
+                ],
+                fmt="none",
+                color=male_color,
+                capsize=4,
+                capthick=1.5,
+                elinewidth=1.5,
+                alpha=0.7,
+            )
+
+        valid_female_ci = pd.notna(
+            interval_data["female_interval_ci_lower"]
+        ) & pd.notna(interval_data["female_interval_ci_upper"])
+        if valid_female_ci.any():
+            ax3.errorbar(
+                x_pos_interval[valid_female_ci],
+                female_intervals_hours[valid_female_ci],
+                yerr=[
+                    female_err_lower[valid_female_ci],
+                    female_err_upper[valid_female_ci],
+                ],
+                fmt="none",
+                color=female_color,
+                capsize=4,
+                capthick=1.5,
+                elinewidth=1.5,
+                alpha=0.7,
+            )
 
         ax3.set_xlabel("省份", fontsize=12)
         ax3.set_ylabel("平均转发间隔 (小时)", fontsize=12)
@@ -1350,6 +1616,357 @@ def visualize_province_gender_gap(year):
     print(f"\n省份性别差异图表绘制完成\n")
 
 
+def visualize_district_gender_gap(year):
+    """绘制按地区的性别差异图表（三个子图）
+
+    Args:
+        year: 年份
+    """
+    print(f"\n开始绘制 {year} 年按地区的性别差异图表...")
+
+    # 检查必要的文件是否存在
+    output_file = os.path.join(OUTPUT_DIR, f"retweet_media_district_{year}.parquet")
+
+    if not os.path.exists(output_file):
+        print(f"错误: 分析结果文件不存在: {output_file}")
+        print(f"请先运行分析: analyze_retweet_media_by_district({year})")
+        return
+
+    # 加载数据
+    district_stats_df = pd.read_parquet(output_file, engine="fastparquet")
+    print(f"已加载 {len(district_stats_df)} 条地区-性别数据")
+
+    # 统一性别标签（将m/f转换为男/女）
+    district_stats_df = district_stats_df.copy()
+    district_stats_df["gender_label"] = district_stats_df["gender"].apply(
+        lambda x: "男" if x in ["m", "男"] else "女" if x in ["f", "女"] else x
+    )
+
+    # 创建三个子图
+    districts = sorted(district_stats_df["district"].unique())
+    fig_width = max(16, len(districts) * 2)
+    fig, axes = plt.subplots(1, 3, figsize=(fig_width, 6), constrained_layout=True)
+    fig.suptitle(
+        f"{year}年各地区转发官方媒体性别差异分析", fontsize=18, fontweight="bold"
+    )
+
+    # 准备数据
+    plot_data = []
+    for district in districts:
+        district_data = district_stats_df[district_stats_df["district"] == district]
+        male_data = district_data[district_data["gender_label"] == "男"]
+        female_data = district_data[district_data["gender_label"] == "女"]
+
+        if len(male_data) == 0 or len(female_data) == 0:
+            continue
+
+        male_row = male_data.iloc[0]
+        female_row = female_data.iloc[0]
+
+        plot_data.append(
+            {
+                "district": district,
+                "male_non_retweet_ratio": male_row["non_retweet_ratio"],
+                "female_non_retweet_ratio": female_row["non_retweet_ratio"],
+                "male_avg_retweet_count": male_row["avg_retweet_count"],
+                "female_avg_retweet_count": female_row["avg_retweet_count"],
+                "male_count_ci_lower": male_row["avg_retweet_count_ci_lower"],
+                "male_count_ci_upper": male_row["avg_retweet_count_ci_upper"],
+                "female_count_ci_lower": female_row["avg_retweet_count_ci_lower"],
+                "female_count_ci_upper": female_row["avg_retweet_count_ci_upper"],
+                "male_avg_interval": (
+                    male_row["avg_retweet_interval"]
+                    if pd.notna(male_row["avg_retweet_interval"])
+                    else None
+                ),
+                "female_avg_interval": (
+                    female_row["avg_retweet_interval"]
+                    if pd.notna(female_row["avg_retweet_interval"])
+                    else None
+                ),
+                "male_interval_ci_lower": (
+                    male_row["avg_retweet_interval_ci_lower"]
+                    if pd.notna(male_row["avg_retweet_interval_ci_lower"])
+                    else None
+                ),
+                "male_interval_ci_upper": (
+                    male_row["avg_retweet_interval_ci_upper"]
+                    if pd.notna(male_row["avg_retweet_interval_ci_upper"])
+                    else None
+                ),
+                "female_interval_ci_lower": (
+                    female_row["avg_retweet_interval_ci_lower"]
+                    if pd.notna(female_row["avg_retweet_interval_ci_lower"])
+                    else None
+                ),
+                "female_interval_ci_upper": (
+                    female_row["avg_retweet_interval_ci_upper"]
+                    if pd.notna(female_row["avg_retweet_interval_ci_upper"])
+                    else None
+                ),
+            }
+        )
+
+    plot_df = pd.DataFrame(plot_data)
+
+    if len(plot_df) == 0:
+        print("没有足够的数据用于绘图")
+        return
+
+    # 1. 不转发媒体帖子比例
+    ax1 = axes[0]
+    x_pos = np.arange(len(plot_df))
+
+    male_ratios = plot_df["male_non_retweet_ratio"].values
+    female_ratios = plot_df["female_non_retweet_ratio"].values
+
+    ax1.plot(
+        x_pos,
+        male_ratios,
+        marker="o",
+        label="男性",
+        color=get_gender_color("m"),
+        linewidth=3,
+        markersize=8,
+        alpha=0.8,
+    )
+    ax1.plot(
+        x_pos,
+        female_ratios,
+        marker="s",
+        label="女性",
+        color=get_gender_color("f"),
+        linewidth=3,
+        markersize=8,
+        alpha=0.8,
+    )
+
+    ax1.set_xlabel("地区", fontsize=12)
+    ax1.set_ylabel("不转发媒体帖子比例", fontsize=12)
+    ax1.set_title("1. 不转发媒体帖子比例", fontsize=14)
+    ax1.set_xticks(x_pos)
+    ax1.set_xticklabels(
+        plot_df["district"].values, rotation=0, ha="center", fontsize=10
+    )
+    ax1.legend()
+    ax1.grid(True, alpha=0.3, axis="y")
+    ax1.set_ylim([0, 1.1])
+
+    # 2. 平均转发次数
+    ax2 = axes[1]
+
+    male_counts = plot_df["male_avg_retweet_count"].values
+    female_counts = plot_df["female_avg_retweet_count"].values
+
+    # 计算置信区间
+    male_ci_lower = plot_df["male_count_ci_lower"].values
+    male_ci_upper = plot_df["male_count_ci_upper"].values
+    female_ci_lower = plot_df["female_count_ci_lower"].values
+    female_ci_upper = plot_df["female_count_ci_upper"].values
+
+    male_color = get_gender_color("m")
+    female_color = get_gender_color("f")
+
+    # 计算误差范围（用于errorbar）
+    male_err_lower = male_counts - male_ci_lower
+    male_err_upper = male_ci_upper - male_counts
+    female_err_lower = female_counts - female_ci_lower
+    female_err_upper = female_ci_upper - female_counts
+
+    # 绘制折线
+    ax2.plot(
+        x_pos,
+        male_counts,
+        marker="o",
+        label="男性",
+        color=male_color,
+        linewidth=3,
+        markersize=8,
+        alpha=0.8,
+    )
+    ax2.plot(
+        x_pos,
+        female_counts,
+        marker="s",
+        label="女性",
+        color=female_color,
+        linewidth=3,
+        markersize=8,
+        alpha=0.8,
+    )
+
+    # 添加误差条
+    valid_male_ci = pd.notna(male_ci_lower) & pd.notna(male_ci_upper)
+    if valid_male_ci.any():
+        ax2.errorbar(
+            x_pos[valid_male_ci],
+            male_counts[valid_male_ci],
+            yerr=[
+                male_err_lower[valid_male_ci],
+                male_err_upper[valid_male_ci],
+            ],
+            fmt="none",
+            color=male_color,
+            capsize=4,
+            capthick=1.5,
+            elinewidth=1.5,
+            alpha=0.7,
+        )
+
+    valid_female_ci = pd.notna(female_ci_lower) & pd.notna(female_ci_upper)
+    if valid_female_ci.any():
+        ax2.errorbar(
+            x_pos[valid_female_ci],
+            female_counts[valid_female_ci],
+            yerr=[
+                female_err_lower[valid_female_ci],
+                female_err_upper[valid_female_ci],
+            ],
+            fmt="none",
+            color=female_color,
+            capsize=4,
+            capthick=1.5,
+            elinewidth=1.5,
+            alpha=0.7,
+        )
+
+    ax2.set_xlabel("地区", fontsize=12)
+    ax2.set_ylabel("平均转发次数", fontsize=12)
+    ax2.set_title("2. 平均转发次数（99% CI）", fontsize=14)
+    ax2.set_xticks(x_pos)
+    ax2.set_xticklabels(
+        plot_df["district"].values, rotation=0, ha="center", fontsize=10
+    )
+    ax2.legend()
+    ax2.grid(True, alpha=0.3, axis="y")
+
+    # 3. 平均转发间隔（只显示有数据的地区）
+    ax3 = axes[2]
+
+    # 过滤出有间隔数据的地区
+    interval_data = plot_df[
+        plot_df["male_avg_interval"].notna() & plot_df["female_avg_interval"].notna()
+    ].copy()
+
+    if len(interval_data) > 0:
+        x_pos_interval = np.arange(len(interval_data))
+
+        male_intervals = interval_data["male_avg_interval"].values
+        female_intervals = interval_data["female_avg_interval"].values
+
+        # 转换为小时
+        male_intervals_hours = male_intervals / 3600
+        female_intervals_hours = female_intervals / 3600
+
+        # 计算置信区间（转换为小时）
+        male_interval_ci_lower = interval_data["male_interval_ci_lower"].values / 3600
+        male_interval_ci_upper = interval_data["male_interval_ci_upper"].values / 3600
+        female_interval_ci_lower = (
+            interval_data["female_interval_ci_lower"].values / 3600
+        )
+        female_interval_ci_upper = (
+            interval_data["female_interval_ci_upper"].values / 3600
+        )
+
+        male_color = get_gender_color("m")
+        female_color = get_gender_color("f")
+
+        # 计算误差范围（用于errorbar）
+        male_err_lower = male_intervals_hours - male_interval_ci_lower
+        male_err_upper = male_interval_ci_upper - male_intervals_hours
+        female_err_lower = female_intervals_hours - female_interval_ci_lower
+        female_err_upper = female_interval_ci_upper - female_intervals_hours
+
+        # 绘制折线
+        ax3.plot(
+            x_pos_interval,
+            male_intervals_hours,
+            marker="o",
+            label="男性",
+            color=male_color,
+            linewidth=3,
+            markersize=8,
+            alpha=0.8,
+        )
+        ax3.plot(
+            x_pos_interval,
+            female_intervals_hours,
+            marker="s",
+            label="女性",
+            color=female_color,
+            linewidth=3,
+            markersize=8,
+            alpha=0.8,
+        )
+
+        # 添加误差条
+        valid_male_ci = pd.notna(interval_data["male_interval_ci_lower"]) & pd.notna(
+            interval_data["male_interval_ci_upper"]
+        )
+        if valid_male_ci.any():
+            ax3.errorbar(
+                x_pos_interval[valid_male_ci],
+                male_intervals_hours[valid_male_ci],
+                yerr=[
+                    male_err_lower[valid_male_ci],
+                    male_err_upper[valid_male_ci],
+                ],
+                fmt="none",
+                color=male_color,
+                capsize=4,
+                capthick=1.5,
+                elinewidth=1.5,
+                alpha=0.7,
+            )
+
+        valid_female_ci = pd.notna(
+            interval_data["female_interval_ci_lower"]
+        ) & pd.notna(interval_data["female_interval_ci_upper"])
+        if valid_female_ci.any():
+            ax3.errorbar(
+                x_pos_interval[valid_female_ci],
+                female_intervals_hours[valid_female_ci],
+                yerr=[
+                    female_err_lower[valid_female_ci],
+                    female_err_upper[valid_female_ci],
+                ],
+                fmt="none",
+                color=female_color,
+                capsize=4,
+                capthick=1.5,
+                elinewidth=1.5,
+                alpha=0.7,
+            )
+
+        ax3.set_xlabel("地区", fontsize=12)
+        ax3.set_ylabel("平均转发间隔 (小时)", fontsize=12)
+        ax3.set_title("3. 平均转发间隔（99% CI）", fontsize=14)
+        ax3.set_xticks(x_pos_interval)
+        ax3.set_xticklabels(
+            interval_data["district"].values, rotation=0, ha="center", fontsize=10
+        )
+        ax3.legend()
+        ax3.grid(True, alpha=0.3, axis="y")
+    else:
+        ax3.text(
+            0.5,
+            0.5,
+            "无转发间隔数据",
+            ha="center",
+            va="center",
+            transform=ax3.transAxes,
+            fontsize=14,
+        )
+        ax3.set_title("3. 平均转发间隔", fontsize=14)
+
+    # 保存图表
+    fig_path = os.path.join(OUTPUT_DIR, f"district_gender_gap_{year}.pdf")
+    plt.savefig(fig_path, format="pdf", bbox_inches="tight", dpi=300)
+    plt.close()
+    print(f"图表已保存到: {fig_path}")
+    print(f"\n地区性别差异图表绘制完成\n")
+
+
 def analyze_year(year: int, analysis_type: str = "all", visualize: bool = True):
     """
     分析指定年份的数据
@@ -1372,10 +1989,13 @@ def analyze_year(year: int, analysis_type: str = "all", visualize: bool = True):
         analyze_retweet_media(year)
         # 分析省份级别的性别差异
         analyze_retweet_media_by_province(year)
+        # 分析地区级别的性别差异
+        analyze_retweet_media_by_district(year)
         # 分析完成后自动画图
         if visualize:
             visualize_retweet_media(year)
             visualize_province_gender_gap(year)
+            visualize_district_gender_gap(year)
 
     print(f"{year} 年分析完成")
 
@@ -1405,5 +2025,7 @@ if __name__ == "__main__":
             "visualize": visualize_retweet_media,
             "province": analyze_retweet_media_by_province,
             "province_viz": visualize_province_gender_gap,
+            "district": analyze_retweet_media_by_district,
+            "district_viz": visualize_district_gender_gap,
         }
     )
