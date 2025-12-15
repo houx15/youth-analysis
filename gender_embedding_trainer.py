@@ -429,6 +429,42 @@ class ProvinceCorpus:
                     yield line.strip().split(" ")
 
 
+class GuangdongCorpus:
+    """广东省语料库类，每个文件随机保留50%的数据"""
+
+    def __init__(self, province="广东", sample_ratio=0.5, seed=42):
+        """
+        初始化广东省语料库
+
+        Args:
+            province: 省份名称，默认为"广东"
+            sample_ratio: 采样比例，默认为0.5（保留50%）
+            seed: 随机种子，确保可重复性
+        """
+        self.province_dir = os.path.join(PREPARED_DIR_2024, province)
+        self.province_files = sorted(
+            glob.glob(os.path.join(self.province_dir, "corpus_*"))
+        )
+        self.sample_ratio = sample_ratio
+        self.seed = seed
+
+    def __iter__(self):
+        """迭代器：逐文件、逐行处理，随机跳过指定比例的行"""
+        import random
+
+        for file in self.province_files:
+            # 为每个文件设置基于文件名的确定性种子，确保可重复性
+            # 使用文件路径的hash值作为种子的一部分
+            file_seed = self.seed + hash(os.path.basename(file)) % (2**31)
+            rng = random.Random(file_seed)
+
+            with open(file, "r", buffering=8 * 1024 * 1024) as f:
+                for line in f:
+                    # 对每一行生成随机数，决定是否保留
+                    if rng.random() < self.sample_ratio:
+                        yield line.strip().split(" ")
+
+
 def train_word2vec(corpus, vector_size=300, window=5, min_count=20, workers=None):
     """
     训练Word2Vec模型（内存优化版本）
@@ -500,7 +536,12 @@ def train_single_province(province, year, force_retrain=False):
         except Exception as e:
             print(f"  ⚠️  无法加载现有模型: {e}，将重新训练")
 
-    corpus = ProvinceCorpus(province)
+    # 对于广东省，使用特殊的采样类（每个文件随机保留50%）
+    if province == "广东":
+        corpus = GuangdongCorpus(province)
+        print(f"  📊 使用广东省采样语料库（每个文件保留50%）")
+    else:
+        corpus = ProvinceCorpus(province)
     model = train_word2vec(corpus)
     if model is None:
         print(f"  ❌ 训练模型失败")
@@ -568,11 +609,12 @@ PROVINCE_GROUPS = [
     ["上海", "江苏"],
     ["福建", "江西", "山东"],
     ["河南", "湖北", "湖南"],
-    ["广东", "广西", "海南"],
+    ["广西", "海南"],
     ["重庆", "四川", "贵州", "云南"],
     ["西藏", "陕西", "甘肃", "青海", "宁夏", "新疆"],
     ["中国台湾", "中国香港", "中国澳门"],
     ["浙江", "安徽"],
+    ["广东"],
 ]
 
 
