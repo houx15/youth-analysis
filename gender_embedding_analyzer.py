@@ -182,8 +182,44 @@ def compute_domain_bias(word_vec, family_vec, work_vec):
     return bias_score, family_sim, work_sim
 
 
+def get_available_provinces(year):
+    """获取指定年份所有可用的省份列表（不加载模型）"""
+    year_model_dir = os.path.join(MODEL_DIR, str(year))
+    if not os.path.exists(year_model_dir):
+        return []
+
+    pattern = os.path.join(year_model_dir, "model_*.model")
+    model_files = sorted(glob.glob(pattern))
+
+    provinces = []
+    for model_path in model_files:
+        filename = os.path.basename(model_path)
+        province = filename.replace("model_", "").replace(".model", "")
+        provinces.append(province)
+
+    return sorted(provinces)
+
+
+def load_single_model(year, province):
+    """加载指定年份和省份的单个模型"""
+    year_model_dir = os.path.join(MODEL_DIR, str(year))
+    model_path = os.path.join(year_model_dir, f"model_{province}.model")
+
+    if not os.path.exists(model_path):
+        print(f"❌ 未找到模型文件: {model_path}")
+        return None
+
+    try:
+        model = KeyedVectors.load(model_path)
+        print(f"  ✓ 已加载: {province} (词汇量: {len(model):,})")
+        return model
+    except Exception as e:
+        print(f"  ❌ 加载失败: {province} - {e}")
+        return None
+
+
 def load_models(year, province_filter=None):
-    """加载指定年份的所有模型"""
+    """加载指定年份的所有模型（保留此函数以保持向后兼容）"""
     year_model_dir = os.path.join(MODEL_DIR, str(year))
     if not os.path.exists(year_model_dir):
         print(f"❌ 未找到 {year} 年的模型目录: {year_model_dir}")
@@ -726,20 +762,53 @@ def main(year: int, province: str = None):
     print(f"🚀 开始分析 {year} 年数据的性别-职业Embedding")
     print(f"{'='*60}\n")
 
-    # 加载模型
-    models = load_models(year, province)
-    if not models:
-        print("❌ 无法加载模型")
-        return
+    # 获取要分析的省份列表
+    if province:
+        provinces_to_analyze = [province]
+        print(f"🎯 分析指定省份: {province}\n")
+    else:
+        provinces_to_analyze = get_available_provinces(year)
+        if not provinces_to_analyze:
+            print(f"❌ 未找到 {year} 年的模型文件")
+            return
+        print(f"📂 找到 {len(provinces_to_analyze)} 个省份，将逐个分析\n")
 
-    # 分析模型
-    results, province_stats = analyze_all_models(models)
+    # 逐个加载和分析省份模型（节省内存）
+    results = []
+    province_stats = []
+
+    for idx, province_name in enumerate(provinces_to_analyze, 1):
+        print(f"\n{'='*60}")
+        print(f"处理进度: [{idx}/{len(provinces_to_analyze)}] {province_name}")
+        print(f"{'='*60}")
+
+        # 加载单个模型
+        model = load_single_model(year, province_name)
+        if model is None:
+            print(f"  ⚠️  跳过省份: {province_name}")
+            continue
+
+        # 分析单个模型
+        result = analyze_model(province_name, model)
+        if result:
+            results.append(result)
+            province_stats.append(result["stats"])
+
+        # 释放模型内存
+        del model
+        import gc
+
+        gc.collect()
+
+    if not results:
+        print("❌ 没有生成任何结果")
+        return
 
     # 保存结果
     save_results(results, province_stats, year)
 
     print(f"\n{'='*60}")
-    print(f"🎉 {year} 年embedding分析完成！")
+    print(f"🎉 {year} 年embedding分析完成！共分析 {len(results)} 个省份")
     print(f"{'='*60}\n")
 
 
