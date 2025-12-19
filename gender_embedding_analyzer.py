@@ -5,9 +5,10 @@
 1. 加载已训练的Word2Vec模型
 2. 计算职业词与性别词的关联度（分别计算与男性词、女性词的相似度）
 3. 比较不同省份模型的差异
-4. 生成分析报告和可视化数据
+4. 分析家务分工词汇（家庭场域 vs 工作场域）的性别差异
+5. 生成分析报告和可视化数据
 
-输入：embedding_models/{year}/ 下的模型文件
+输入：gender_embedding/embedding_models/{year}/ 下的模型文件
 输出：embedding_analysis/{year}/ 下的分析结果
 """
 
@@ -23,156 +24,63 @@ import glob
 
 warnings.filterwarnings("ignore")
 
-MODEL_DIR = "embedding_models"
+MODEL_DIR = "gender_embedding/embedding_models"
 OUTPUT_DIR = "embedding_analysis"
+WORDLISTS_DIR = "wordlists"
 
 # 确保输出目录存在
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(WORDLISTS_DIR, exist_ok=True)
 
-# 性别词表（扩展版）
-GENDER_WORDS = {
-    "male": [
-        # 代词
-        "他",
-        "他们",
-        "他的",
-        # 基础性别词
-        "男",
-        "男人",
-        "男性",
-        "男子",
-        "男生",
-        "男孩",
-        # 称谓
-        "先生",
-        "帅哥",
-        "小伙",
-        "小伙子",
-        "哥",
-        "兄弟",
-        "爷们",
-        # 家庭角色
-        "父亲",
-        "爸爸",
-        "爸",
-        "儿子",
-        "丈夫",
-        "老公",
-        "男友",
-        "男朋友",
-    ],
-    "female": [
-        # 代词
-        "她",
-        "她们",
-        "她的",
-        # 基础性别词
-        "女",
-        "女人",
-        "女性",
-        "女子",
-        "女生",
-        "女孩",
-        # 称谓
-        "女士",
-        "小姐",
-        "美女",
-        "姑娘",
-        "小姑娘",
-        "姐",
-        "妹",
-        "姐妹",
-        "闺蜜",
-        # 家庭角色
-        "母亲",
-        "妈妈",
-        "妈",
-        "女儿",
-        "闺女",
-        "妻子",
-        "老婆",
-        "女友",
-        "女朋友",
-    ],
-}
 
-# 职业词表（扩展版，按预期性别刻板程度分类）
-OCCUPATION_WORDS = {
-    # 预期偏女性的职业
-    "female_stereotyped": [
-        "护士",
-        "幼师",
-        "幼儿教师",
-        "保姆",
-        "月嫂",
-        "秘书",
-        "前台",
-        "文员",
-        "客服",
-        "收银员",
-        "导购",
-        "美容师",
-        "化妆师",
-        "空姐",
-        "模特",
-        "瑜伽教练",
-    ],
-    # 预期偏男性的职业
-    "male_stereotyped": [
-        "程序员",
-        "工程师",
-        "司机",
-        "厨师",
-        "保安",
-        "建筑工",
-        "快递员",
-        "外卖员",
-        "电工",
-        "机械师",
-        "军人",
-        "警察",
-        "消防员",
-        "飞行员",
-        "船员",
-    ],
-    # 预期相对中性的职业
-    "neutral": [
-        "教师",
-        "老师",
-        "医生",
-        "会计",
-        "律师",
-        "记者",
-        "设计师",
-        "翻译",
-        "作家",
-        "演员",
-        "歌手",
-        "经理",
-        "销售",
-        "公务员",
-        "职员",
-    ],
-    # 高地位职业
-    "high_status": [
-        "老板",
-        "总裁",
-        "董事长",
-        "CEO",
-        "院长",
-        "校长",
-        "教授",
-        "科学家",
-        "研究员",
-        "专家",
-        "博士",
-    ],
-}
+def load_json_wordlist(filename):
+    """
+    从JSON文件加载词表
 
-# 合并所有职业词
-ALL_OCCUPATIONS = []
-for category in OCCUPATION_WORDS.values():
-    ALL_OCCUPATIONS.extend(category)
+    Args:
+        filename: JSON词表文件名（在wordlists目录下）
+
+    Returns:
+        dict: 词表字典
+    """
+    filepath = os.path.join(WORDLISTS_DIR, filename)
+    if not os.path.exists(filepath):
+        print(f"⚠️  词表文件不存在: {filepath}")
+        return {}
+
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"❌ 加载词表文件失败 {filepath}: {e}")
+        return {}
+
+
+def load_gender_words():
+    """加载性别词表"""
+    data = load_json_wordlist("gender_words.json")
+    return {"male": data.get("male", []), "female": data.get("female", [])}
+
+
+def load_occupation_words():
+    """加载职业词表，返回所有职业词的列表"""
+    data = load_json_wordlist("occupation_words.json")
+    all_occupations = []
+    for category in data.values():
+        all_occupations.extend(category)
+    return all_occupations
+
+
+def load_domestic_work_words():
+    """加载家务分工词表"""
+    data = load_json_wordlist("domestic_work_words.json")
+    return {"family": data.get("family", []), "work": data.get("work", [])}
+
+
+# 加载词表
+GENDER_WORDS = load_gender_words()
+ALL_OCCUPATIONS = load_occupation_words()
+DOMESTIC_WORK_WORDS = load_domestic_work_words()
 
 
 def get_word_embedding(model, word):
@@ -211,7 +119,7 @@ def cosine_similarity(vec1, vec2):
 
 def compute_gender_bias(occupation_vec, male_vec, female_vec):
     """
-    计算职业的性别偏向分数
+    计算职业的性别偏向分数（基于余弦相似度差值）
 
     返回：
         bias_score: 正值=偏女性，负值=偏男性，接近0=中性
@@ -225,6 +133,53 @@ def compute_gender_bias(occupation_vec, male_vec, female_vec):
     bias_score = female_sim - male_sim
 
     return bias_score, male_sim, female_sim
+
+
+def compute_gender_bias_projection(occupation_vec, male_vec, female_vec):
+    """
+    计算职业的性别偏向分数（基于性别轴投影）
+
+    构建性别轴：从男性向量指向女性向量的方向向量（正向为女性，负向为男性）
+    计算职业词向量在性别轴上的投影值
+
+    返回：
+        projection_score: 投影值，正值=偏女性，负值=偏男性，接近0=中性
+        gender_axis: 性别轴方向向量（归一化）
+    """
+    # 构建性别轴：女性向量 - 男性向量（正向为女性方向）
+    gender_axis = female_vec - male_vec
+
+    # 归一化性别轴
+    axis_norm = np.linalg.norm(gender_axis)
+    if axis_norm > 0:
+        gender_axis_normalized = gender_axis / axis_norm
+    else:
+        # 如果性别轴为零向量，返回0
+        return 0.0, gender_axis
+
+    # 计算职业词向量在性别轴上的投影
+    # projection = dot(occupation_vec, gender_axis_normalized)
+    projection_score = np.dot(occupation_vec, gender_axis_normalized)
+
+    return projection_score, gender_axis_normalized
+
+
+def compute_domain_bias(word_vec, family_vec, work_vec):
+    """
+    计算词汇在家庭场域 vs 工作场域的偏向分数
+
+    返回：
+        bias_score: 正值=偏家庭场域，负值=偏工作场域，接近0=中性
+        family_sim: 与家庭场域词的相似度
+        work_sim: 与工作场域词的相似度
+    """
+    family_sim = cosine_similarity(word_vec, family_vec)
+    work_sim = cosine_similarity(word_vec, work_vec)
+
+    # 场域偏向分数 = 家庭相似度 - 工作相似度
+    bias_score = family_sim - work_sim
+
+    return bias_score, family_sim, work_sim
 
 
 def load_models(year, province_filter=None):
@@ -287,21 +242,28 @@ def analyze_model(province, model):
         f"    {', '.join(female_found[:10])}{'...' if len(female_found) > 10 else ''}"
     )
 
-    # 计算每个职业词的性别偏向
+    # 计算每个职业词的性别偏向（使用两种方法）
     occupation_results = []
     found_occupations = []
 
     for occupation in ALL_OCCUPATIONS:
         occ_vec = get_word_embedding(model, occupation)
         if occ_vec is not None:
+            # 方法1：余弦相似度差值
             bias_score, male_sim, female_sim = compute_gender_bias(
+                occ_vec, male_vec, female_vec
+            )
+
+            # 方法2：性别轴投影
+            projection_score, _ = compute_gender_bias_projection(
                 occ_vec, male_vec, female_vec
             )
 
             occupation_results.append(
                 {
                     "occupation": occupation,
-                    "bias_score": float(bias_score),
+                    "bias_score": float(bias_score),  # 余弦相似度差值方法
+                    "projection_score": float(projection_score),  # 性别轴投影方法
                     "male_similarity": float(male_sim),
                     "female_similarity": float(female_sim),
                 }
@@ -314,16 +276,17 @@ def analyze_model(province, model):
 
     print(f"  ✓ 找到职业词: {len(found_occupations)}/{len(ALL_OCCUPATIONS)} 个")
 
-    # 排序并展示结果
+    # 排序并展示结果（按余弦相似度差值）
     occupation_results_sorted = sorted(
         occupation_results, key=lambda x: x["bias_score"], reverse=True
     )
 
-    print(f"\n  📊 职业性别偏向分析:")
+    print(f"\n  📊 职业性别偏向分析（余弦相似度差值方法）:")
     print(f"\n  🔵 最偏女性的职业 (Top 5):")
     for i, occ in enumerate(occupation_results_sorted[:5], 1):
         print(
             f"    {i}. {occ['occupation']:8s} | 偏向分数: {occ['bias_score']:+.3f} "
+            f"| 投影分数: {occ['projection_score']:+.3f} "
             f"| 女性相似度: {occ['female_similarity']:.3f} "
             f"| 男性相似度: {occ['male_similarity']:.3f}"
         )
@@ -332,29 +295,136 @@ def analyze_model(province, model):
     for i, occ in enumerate(occupation_results_sorted[-5:][::-1], 1):
         print(
             f"    {i}. {occ['occupation']:8s} | 偏向分数: {occ['bias_score']:+.3f} "
+            f"| 投影分数: {occ['projection_score']:+.3f} "
             f"| 女性相似度: {occ['female_similarity']:.3f} "
             f"| 男性相似度: {occ['male_similarity']:.3f}"
         )
 
+    # 按投影分数排序并展示
+    occupation_results_sorted_proj = sorted(
+        occupation_results, key=lambda x: x["projection_score"], reverse=True
+    )
+
+    print(f"\n  📊 职业性别偏向分析（性别轴投影方法）:")
+    print(f"\n  🔵 最偏女性的职业 (Top 5):")
+    for i, occ in enumerate(occupation_results_sorted_proj[:5], 1):
+        print(
+            f"    {i}. {occ['occupation']:8s} | 投影分数: {occ['projection_score']:+.3f} "
+            f"| 偏向分数: {occ['bias_score']:+.3f}"
+        )
+
+    print(f"\n  🔴 最偏男性的职业 (Top 5):")
+    for i, occ in enumerate(occupation_results_sorted_proj[-5:][::-1], 1):
+        print(
+            f"    {i}. {occ['occupation']:8s} | 投影分数: {occ['projection_score']:+.3f} "
+            f"| 偏向分数: {occ['bias_score']:+.3f}"
+        )
+
+    # 计算家务分工词汇分析
+    family_vec, family_found = get_word_set_embedding(
+        model, DOMESTIC_WORK_WORDS["family"]
+    )
+    work_vec, work_found = get_word_set_embedding(model, DOMESTIC_WORK_WORDS["work"])
+
+    domestic_work_results = []
+    if family_vec is not None and work_vec is not None:
+        print(f"\n  📊 家务分工场域分析:")
+        print(
+            f"  ✓ 找到家庭场域词: {len(family_found)}/{len(DOMESTIC_WORK_WORDS['family'])} 个"
+        )
+        print(
+            f"  ✓ 找到工作场域词: {len(work_found)}/{len(DOMESTIC_WORK_WORDS['work'])} 个"
+        )
+
+        # 计算男性词和女性词在家庭场域 vs 工作场域的偏向
+        male_domain_bias, male_family_sim, male_work_sim = compute_domain_bias(
+            male_vec, family_vec, work_vec
+        )
+        female_domain_bias, female_family_sim, female_work_sim = compute_domain_bias(
+            female_vec, family_vec, work_vec
+        )
+
+        domestic_work_results.append(
+            {
+                "word_type": "male",
+                "domain_bias": float(male_domain_bias),
+                "family_similarity": float(male_family_sim),
+                "work_similarity": float(male_work_sim),
+            }
+        )
+        domestic_work_results.append(
+            {
+                "word_type": "female",
+                "domain_bias": float(female_domain_bias),
+                "family_similarity": float(female_family_sim),
+                "work_similarity": float(female_work_sim),
+            }
+        )
+
+        print(f"\n  🏠 性别在家庭场域 vs 工作场域的偏向:")
+        print(
+            f"    男性: 场域偏向分数 {male_domain_bias:+.3f} "
+            f"(家庭: {male_family_sim:.3f}, 工作: {male_work_sim:.3f})"
+        )
+        print(
+            f"    女性: 场域偏向分数 {female_domain_bias:+.3f} "
+            f"(家庭: {female_family_sim:.3f}, 工作: {female_work_sim:.3f})"
+        )
+        print(
+            f"    性别差异: {female_domain_bias - male_domain_bias:+.3f} "
+            f"(正值表示女性更偏向家庭场域)"
+        )
+
     # 计算统计指标
     bias_scores = [r["bias_score"] for r in occupation_results]
+    projection_scores = [r["projection_score"] for r in occupation_results]
     stats = {
         "province": province,
         "vocab_size": vocab_size,
         "occupations_found": len(found_occupations),
         "male_words_found": len(male_found),
         "female_words_found": len(female_found),
+        # 余弦相似度差值方法的统计
         "mean_bias": float(np.mean(bias_scores)),
         "std_bias": float(np.std(bias_scores)),
         "min_bias": float(np.min(bias_scores)),
         "max_bias": float(np.max(bias_scores)),
         "range_bias": float(np.max(bias_scores) - np.min(bias_scores)),
+        # 性别轴投影方法的统计
+        "mean_projection": float(np.mean(projection_scores)),
+        "std_projection": float(np.std(projection_scores)),
+        "min_projection": float(np.min(projection_scores)),
+        "max_projection": float(np.max(projection_scores)),
+        "range_projection": float(
+            np.max(projection_scores) - np.min(projection_scores)
+        ),
     }
 
+    if domestic_work_results:
+        male_domain = next(
+            (r for r in domestic_work_results if r["word_type"] == "male"), None
+        )
+        female_domain = next(
+            (r for r in domestic_work_results if r["word_type"] == "female"), None
+        )
+        if male_domain and female_domain:
+            stats["male_domain_bias"] = male_domain["domain_bias"]
+            stats["female_domain_bias"] = female_domain["domain_bias"]
+            stats["gender_domain_gap"] = (
+                female_domain["domain_bias"] - male_domain["domain_bias"]
+            )
+
     print(f"\n  📈 统计指标:")
-    print(f"    平均偏向: {stats['mean_bias']:+.3f}")
-    print(f"    标准差（隔离程度）: {stats['std_bias']:.3f}")
-    print(f"    偏向范围: [{stats['min_bias']:+.3f}, {stats['max_bias']:+.3f}]")
+    print(f"    余弦相似度差值方法:")
+    print(f"      平均偏向: {stats['mean_bias']:+.3f}")
+    print(f"      标准差（隔离程度）: {stats['std_bias']:.3f}")
+    print(f"      偏向范围: [{stats['min_bias']:+.3f}, {stats['max_bias']:+.3f}]")
+    print(f"    性别轴投影方法:")
+    print(f"      平均投影: {stats['mean_projection']:+.3f}")
+    print(f"      标准差: {stats['std_projection']:.3f}")
+    print(
+        f"      投影范围: [{stats['min_projection']:+.3f}, {stats['max_projection']:+.3f}]"
+    )
 
     # 返回分析结果
     result = {
@@ -366,6 +436,9 @@ def analyze_model(province, model):
         "female_words_found": female_found,
         "occupations_found": found_occupations,
         "occupation_results": occupation_results,
+        "domestic_work_results": domestic_work_results,
+        "family_words_found": family_found if family_vec is not None else [],
+        "work_words_found": work_found if work_vec is not None else [],
     }
 
     return result
@@ -413,7 +486,8 @@ def save_results(results, province_stats, year):
                 {
                     "province": province,
                     "occupation": occ["occupation"],
-                    "bias_score": occ["bias_score"],
+                    "bias_score": occ["bias_score"],  # 余弦相似度差值方法
+                    "projection_score": occ["projection_score"],  # 性别轴投影方法
                     "male_similarity": occ["male_similarity"],
                     "female_similarity": occ["female_similarity"],
                 }
@@ -424,13 +498,47 @@ def save_results(results, province_stats, year):
     occupation_df.to_csv(occupation_file, index=False, encoding="utf-8-sig")
     print(f"✓ 职业性别偏向数据: {occupation_file}")
 
+    # 2.5. 保存家务分工场域偏向数据
+    domestic_work_data = []
+    for result in results:
+        province = result["province"]
+        if result.get("domestic_work_results"):
+            for dw in result["domestic_work_results"]:
+                domestic_work_data.append(
+                    {
+                        "province": province,
+                        "word_type": dw["word_type"],
+                        "domain_bias": dw["domain_bias"],
+                        "family_similarity": dw["family_similarity"],
+                        "work_similarity": dw["work_similarity"],
+                    }
+                )
+
+    if domestic_work_data:
+        domestic_work_df = pd.DataFrame(domestic_work_data)
+        domestic_work_file = os.path.join(year_output_dir, f"domestic_work_bias.csv")
+        domestic_work_df.to_csv(domestic_work_file, index=False, encoding="utf-8-sig")
+        print(f"✓ 家务分工场域偏向数据: {domestic_work_file}")
+
     # 3. 保存宽格式数据（省份×职业矩阵）
+    # 3.1 余弦相似度差值方法的矩阵
     pivot_df = occupation_df.pivot_table(
         values="bias_score", index="occupation", columns="province", aggfunc="mean"
     )
     pivot_file = os.path.join(year_output_dir, f"occupation_bias_pivot.csv")
     pivot_df.to_csv(pivot_file, encoding="utf-8-sig")
-    print(f"✓ 职业×省份矩阵: {pivot_file}")
+    print(f"✓ 职业×省份矩阵（余弦相似度差值）: {pivot_file}")
+
+    # 3.2 性别轴投影方法的矩阵
+    pivot_proj_df = occupation_df.pivot_table(
+        values="projection_score",
+        index="occupation",
+        columns="province",
+        aggfunc="mean",
+    )
+    pivot_proj_file = os.path.join(year_output_dir, f"occupation_projection_pivot.csv")
+    pivot_proj_df.to_csv(pivot_proj_file, encoding="utf-8-sig")
+    print(f"✓ 职业×省份矩阵（性别轴投影）: {pivot_proj_file}")
 
     # 4. 保存详细向量数据（JSON格式）
     detailed_data = []
@@ -463,7 +571,7 @@ def save_results(results, province_stats, year):
         f.write(f"分析职业数: {len(ALL_OCCUPATIONS)}\n\n")
 
         f.write(f"{'='*60}\n")
-        f.write(f"各省份性别隔离指数排名（标准差）:\n")
+        f.write(f"各省份性别隔离指数排名（余弦相似度差值方法，按标准差）:\n")
         f.write(f"{'='*60}\n")
         stats_sorted = sorted(province_stats, key=lambda x: x["std_bias"], reverse=True)
         for i, stat in enumerate(stats_sorted, 1):
@@ -471,6 +579,19 @@ def save_results(results, province_stats, year):
                 f"{i:2d}. {stat['province']:10s} | "
                 f"隔离指数: {stat['std_bias']:.3f} | "
                 f"平均偏向: {stat['mean_bias']:+.3f}\n"
+            )
+
+        f.write(f"\n{'='*60}\n")
+        f.write(f"各省份性别隔离指数排名（性别轴投影方法，按标准差）:\n")
+        f.write(f"{'='*60}\n")
+        stats_sorted_proj = sorted(
+            province_stats, key=lambda x: x.get("std_projection", 0), reverse=True
+        )
+        for i, stat in enumerate(stats_sorted_proj, 1):
+            f.write(
+                f"{i:2d}. {stat['province']:10s} | "
+                f"隔离指数: {stat.get('std_projection', 0):.3f} | "
+                f"平均投影: {stat.get('mean_projection', 0):+.3f}\n"
             )
 
         f.write(f"\n{'='*60}\n")
@@ -504,6 +625,89 @@ def save_results(results, province_stats, year):
             f.write(
                 f"  {i:2d}. {occ:15s} | 平均: {row['mean']:+.3f} | 标准差: {row['std']:.3f}\n"
             )
+
+        # 添加性别轴投影方法分析
+        f.write(f"\n{'='*60}\n")
+        f.write(f"职业性别偏向分析（性别轴投影方法）:\n")
+        f.write(f"{'='*60}\n")
+
+        # 计算每个职业在各省份的平均投影分数
+        occupation_proj_avg = (
+            occupation_df.groupby("occupation")["projection_score"]
+            .agg(["mean", "std"])
+            .sort_values("mean", ascending=False)
+        )
+
+        f.write(f"\n最偏女性的职业（跨省份平均，按投影分数）:\n")
+        for i, (occ, row) in enumerate(occupation_proj_avg.head(10).iterrows(), 1):
+            f.write(
+                f"  {i:2d}. {occ:15s} | 平均投影: {row['mean']:+.3f} | 标准差: {row['std']:.3f}\n"
+            )
+
+        f.write(f"\n最偏男性的职业（跨省份平均，按投影分数）:\n")
+        for i, (occ, row) in enumerate(
+            occupation_proj_avg.tail(10).iloc[::-1].iterrows(), 1
+        ):
+            f.write(
+                f"  {i:2d}. {occ:15s} | 平均投影: {row['mean']:+.3f} | 标准差: {row['std']:.3f}\n"
+            )
+
+        f.write(f"\n职业投影差异最大的（跨省份标准差最大）:\n")
+        occupation_proj_var = occupation_proj_avg.sort_values("std", ascending=False)
+        for i, (occ, row) in enumerate(occupation_proj_var.head(10).iterrows(), 1):
+            f.write(
+                f"  {i:2d}. {occ:15s} | 平均投影: {row['mean']:+.3f} | 标准差: {row['std']:.3f}\n"
+            )
+
+        # 添加家务分工场域分析
+        if domestic_work_data:
+            f.write(f"\n{'='*60}\n")
+            f.write(f"家务分工场域分析（家庭场域 vs 工作场域）:\n")
+            f.write(f"{'='*60}\n")
+
+            domestic_work_df = pd.DataFrame(domestic_work_data)
+
+            # 计算每个省份的性别场域差异
+            province_domain_gaps = []
+            for province in domestic_work_df["province"].unique():
+                prov_df = domestic_work_df[domestic_work_df["province"] == province]
+                male_bias = prov_df[prov_df["word_type"] == "male"][
+                    "domain_bias"
+                ].values
+                female_bias = prov_df[prov_df["word_type"] == "female"][
+                    "domain_bias"
+                ].values
+
+                if len(male_bias) > 0 and len(female_bias) > 0:
+                    gap = female_bias[0] - male_bias[0]
+                    province_domain_gaps.append(
+                        {"province": province, "gender_domain_gap": gap}
+                    )
+
+            if province_domain_gaps:
+                province_gaps_df = pd.DataFrame(province_domain_gaps)
+                province_gaps_df = province_gaps_df.sort_values(
+                    "gender_domain_gap", ascending=False
+                )
+
+                f.write(f"\n各省份性别在家庭场域 vs 工作场域的差异排名:\n")
+                f.write(f"(正值表示女性更偏向家庭场域，负值表示男性更偏向家庭场域)\n")
+                for i, row in enumerate(province_gaps_df.itertuples(), 1):
+                    f.write(
+                        f"  {i:2d}. {row.province:10s} | 性别场域差异: {row.gender_domain_gap:+.3f}\n"
+                    )
+
+            # 计算跨省份平均
+            male_avg = domestic_work_df[domestic_work_df["word_type"] == "male"][
+                "domain_bias"
+            ].mean()
+            female_avg = domestic_work_df[domestic_work_df["word_type"] == "female"][
+                "domain_bias"
+            ].mean()
+            f.write(f"\n跨省份平均场域偏向:\n")
+            f.write(f"  男性: {male_avg:+.3f}\n")
+            f.write(f"  女性: {female_avg:+.3f}\n")
+            f.write(f"  性别差异: {female_avg - male_avg:+.3f}\n")
 
     print(f"✓ 分析报告: {report_file}")
 
