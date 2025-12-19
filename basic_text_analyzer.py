@@ -54,6 +54,7 @@ if not os.path.exists(OUTPUT_DIR):
     os.makedirs(OUTPUT_DIR)
 
 # 官方媒体user_id列表（从配置文件加载）
+# 注意：现在不再使用全局变量，改为在函数中动态加载
 OFFICIAL_MEDIA_IDS = set()
 
 # 省份代码到名称的映射
@@ -126,20 +127,51 @@ DISTRICT_MAP = {
 }
 
 
+def load_source_ids(source_type="news"):
+    """
+    从配置文件加载账号ID（新闻或娱乐）
+
+    Args:
+        source_type: "news" 或 "entertain"，指定加载新闻账号还是娱乐账号ID
+
+    Returns:
+        set类型的user_id集合
+    """
+    if source_type == "news":
+        try:
+            from get_news_ids import load_news_user_ids
+
+            ids = load_news_user_ids()
+            print(f"已加载 {len(ids)} 个新闻账号ID")
+            return ids
+        except ImportError:
+            print("警告: 无法导入 get_news_ids 模块，请确保已生成新闻账号ID")
+            return set()
+        except Exception as e:
+            print(f"加载新闻账号ID时出错: {e}")
+            return set()
+    elif source_type == "entertain":
+        try:
+            from get_entertain_ids import load_entertain_user_ids
+
+            ids = load_entertain_user_ids()
+            print(f"已加载 {len(ids)} 个娱乐账号ID")
+            return ids
+        except ImportError:
+            print("警告: 无法导入 get_entertain_ids 模块，请确保已生成娱乐账号ID")
+            return set()
+        except Exception as e:
+            print(f"加载娱乐账号ID时出错: {e}")
+            return set()
+    else:
+        print(f"错误: 未知的source_type: {source_type}，应为 'news' 或 'entertain'")
+        return set()
+
+
 def load_official_media_ids():
-    """从配置文件加载官方媒体ID"""
+    """从配置文件加载官方媒体ID（保持向后兼容）"""
     global OFFICIAL_MEDIA_IDS
-
-    try:
-        from get_news_ids import load_news_user_ids
-
-        # 直接使用字符串ID（因为r_user_id是字符串格式）
-        OFFICIAL_MEDIA_IDS = load_news_user_ids()
-        print(f"已加载 {len(OFFICIAL_MEDIA_IDS)} 个官方媒体账号ID")
-    except ImportError:
-        print("警告: 无法导入 get_news_ids 模块，请确保已生成新闻账号ID")
-    except Exception as e:
-        print(f"加载官方媒体ID时出错: {e}")
+    OFFICIAL_MEDIA_IDS = load_source_ids("news")
 
 
 def get_date_range(year):
@@ -341,21 +373,24 @@ def analyze_device_changes(year):
     print(f"\n设备分析完成\n")
 
 
-def analyze_retweet_media(year, force_reanalyze=False):
-    """分析转发官方媒体情况，特别关注性别差异
+def analyze_retweet_media(year, force_reanalyze=False, source_type="news"):
+    """分析转发官方媒体/娱乐账号情况，特别关注性别差异
 
     Args:
         year: 年份
         force_reanalyze: 如果为True，即使文件已存在也重新分析
+        source_type: "news" 或 "entertain"，指定分析新闻账号还是娱乐账号（默认"news"）
     """
-    print(f"\n开始分析 {year} 年转发官方媒体情况...")
+    source_label = "新闻" if source_type == "news" else "娱乐"
+    print(f"\n开始分析 {year} 年转发{source_label}账号情况...")
 
-    # 检查输出文件是否已存在
-    output_file = os.path.join(OUTPUT_DIR, f"retweet_media_{year}.parquet")
+    # 根据source_type生成不同的文件名
+    file_prefix = f"retweet_{source_type}"
+    output_file = os.path.join(OUTPUT_DIR, f"{file_prefix}_{year}.parquet")
     gender_summary_file = os.path.join(
-        OUTPUT_DIR, f"retweet_media_gender_{year}.parquet"
+        OUTPUT_DIR, f"{file_prefix}_gender_{year}.parquet"
     )
-    interval_file = os.path.join(OUTPUT_DIR, f"retweet_media_intervals_{year}.parquet")
+    interval_file = os.path.join(OUTPUT_DIR, f"{file_prefix}_intervals_{year}.parquet")
 
     if not force_reanalyze:
         # 只要主分析结果文件存在就跳过分析（其他文件可能因为数据特性而不存在）
@@ -365,12 +400,16 @@ def analyze_retweet_media(year, force_reanalyze=False):
             )
             return
 
-    # 如果ID列表为空，尝试从配置文件加载
-    if not OFFICIAL_MEDIA_IDS:
-        load_official_media_ids()
+    # 加载对应的ID列表
+    source_ids = load_source_ids(source_type)
 
-    if not OFFICIAL_MEDIA_IDS:
-        print("警告: 官方媒体ID列表为空，请先运行 get_news_ids.py 生成新闻账号ID文件")
+    if not source_ids:
+        source_name = "新闻账号" if source_type == "news" else "娱乐账号"
+        print(f"警告: {source_name}ID列表为空，请先运行相应的脚本生成ID文件")
+        if source_type == "news":
+            print("  运行: python get_news_ids.py")
+        else:
+            print("  运行: python get_entertain_ids.py")
         return
 
     # 加载数据，只加载转发分析需要的列
@@ -385,23 +424,23 @@ def analyze_retweet_media(year, force_reanalyze=False):
     else:
         print(f"数据不包含性别字段，将进行基本分析")
 
-    # 排除官方媒体用户ID（避免官方媒体转发自己）
+    # 排除对应类型的用户ID（避免自己转发自己）
     # 将user_id转换为字符串进行比较
-    data = data[~data["user_id"].astype(str).isin(OFFICIAL_MEDIA_IDS)]
-    print(f"排除官方媒体用户后，剩余 {len(data)} 条记录")
+    data = data[~data["user_id"].astype(str).isin(source_ids)]
+    source_name = "新闻账号" if source_type == "news" else "娱乐账号"
+    print(f"排除{source_name}用户后，剩余 {len(data)} 条记录")
 
-    # 只保留转发官方媒体的记录
+    # 只保留转发对应类型账号的记录
     # r_user_id已经是字符串格式，user_id需要转换为字符串
     retweet_media = data[
-        (data["is_retweet"] == "1")
-        & (data["r_user_id"].astype(str).isin(OFFICIAL_MEDIA_IDS))
+        (data["is_retweet"] == "1") & (data["r_user_id"].astype(str).isin(source_ids))
     ]
 
     if len(retweet_media) == 0:
-        print(f"未找到转发官方媒体的记录")
+        print(f"未找到转发{source_label}账号的记录")
         return
 
-    print(f"共找到 {len(retweet_media)} 条转发官方媒体的记录")
+    print(f"共找到 {len(retweet_media)} 条转发{source_label}账号的记录")
 
     # 计算转发间隔（转发时间 - 原微博时间）
     # 处理时间戳字段，转换为数值类型（秒）
@@ -515,7 +554,7 @@ def analyze_retweet_media(year, force_reanalyze=False):
                     else 0
                 )
 
-                # 计算有转发行为的用户数和转发官方媒体账号记录者占比
+                # 计算有转发行为的用户数和转发对应类型账号记录者占比
                 users_with_retweet_behavior = users_with_retweet.get(gender, 0)
                 retweet_media_ratio = (
                     retweet_users / users_with_retweet_behavior
@@ -560,7 +599,7 @@ def analyze_retweet_media(year, force_reanalyze=False):
                 print(f"  转发占比: {retweet_ratio:.4f} ({retweet_ratio*100:.2f}%)")
                 print(f"  有转发行为的用户数: {users_with_retweet_behavior} 人")
                 print(
-                    f"  转发官方媒体账号记录者占比: {retweet_media_ratio:.4f} ({retweet_media_ratio*100:.2f}%)"
+                    f"  转发{source_label}账号记录者占比: {retweet_media_ratio:.4f} ({retweet_media_ratio*100:.2f}%)"
                 )
                 print(f"  总转发次数: {total_retweets} 次")
                 print(f"  转发用户平均转发: {avg_retweets:.2f} 次")
@@ -606,7 +645,7 @@ def analyze_retweet_media(year, force_reanalyze=False):
 
     # 保存详细结果
     user_retweet_count.to_parquet(output_file, engine="fastparquet", index=False)
-    print(f"转发官方媒体分析结果已保存到: {output_file}")
+    print(f"转发{source_label}账号分析结果已保存到: {output_file}")
 
     # 打印总体统计信息
     print(f"\n总体转发统计:")
@@ -615,7 +654,7 @@ def analyze_retweet_media(year, force_reanalyze=False):
     print(f"  最多转发: {user_retweet_count['retweet_count'].max()} 次")
     print(f"  中位数: {user_retweet_count['retweet_count'].median():.2f} 次")
 
-    print(f"\n转发分析完成\n")
+    print(f"\n转发{source_label}账号分析完成\n")
 
 
 def convert_province_code(code):
@@ -650,17 +689,20 @@ def get_district_from_province(province_name):
     return None
 
 
-def analyze_retweet_media_by_province(year, force_reanalyze=False):
-    """按省份分析转发官方媒体情况的性别差异
+def analyze_retweet_media_by_province(year, force_reanalyze=False, source_type="news"):
+    """按省份分析转发官方媒体/娱乐账号情况的性别差异
 
     Args:
         year: 年份
         force_reanalyze: 如果为True，即使文件已存在也重新分析
+        source_type: "news" 或 "entertain"，指定分析新闻账号还是娱乐账号（默认"news"）
     """
-    print(f"\n开始分析 {year} 年按省份的转发官方媒体性别差异...")
+    source_label = "新闻" if source_type == "news" else "娱乐"
+    print(f"\n开始分析 {year} 年按省份的转发{source_label}账号性别差异...")
 
-    # 检查输出文件是否已存在
-    output_file = os.path.join(OUTPUT_DIR, f"retweet_media_province_{year}.parquet")
+    # 根据source_type生成不同的文件名
+    file_prefix = f"retweet_{source_type}"
+    output_file = os.path.join(OUTPUT_DIR, f"{file_prefix}_province_{year}.parquet")
 
     if not force_reanalyze:
         if os.path.exists(output_file):
@@ -669,12 +711,16 @@ def analyze_retweet_media_by_province(year, force_reanalyze=False):
             )
             return
 
-    # 如果ID列表为空，尝试从配置文件加载
-    if not OFFICIAL_MEDIA_IDS:
-        load_official_media_ids()
+    # 加载对应的ID列表
+    source_ids = load_source_ids(source_type)
 
-    if not OFFICIAL_MEDIA_IDS:
-        print("警告: 官方媒体ID列表为空，请先运行 get_news_ids.py 生成新闻账号ID文件")
+    if not source_ids:
+        source_name = "新闻账号" if source_type == "news" else "娱乐账号"
+        print(f"警告: {source_name}ID列表为空，请先运行相应的脚本生成ID文件")
+        if source_type == "news":
+            print("  运行: python get_news_ids.py")
+        else:
+            print("  运行: python get_entertain_ids.py")
         return
 
     # 加载数据
@@ -696,9 +742,10 @@ def analyze_retweet_media_by_province(year, force_reanalyze=False):
     data["province_name"] = data["province"].apply(convert_province_code)
     data = data.dropna(subset=["province_name", "gender"])
 
-    # 排除官方媒体用户ID
-    data = data[~data["user_id"].astype(str).isin(OFFICIAL_MEDIA_IDS)]
-    print(f"排除官方媒体用户后，剩余 {len(data)} 条记录")
+    # 排除对应类型的用户ID
+    source_name = "新闻账号" if source_type == "news" else "娱乐账号"
+    data = data[~data["user_id"].astype(str).isin(source_ids)]
+    print(f"排除{source_name}用户后，剩余 {len(data)} 条记录")
 
     # 过滤有效省份（排除未知省份）
     valid_provinces = set(PROVINCE_CODE_TO_NAME.values())
@@ -735,13 +782,13 @@ def analyze_retweet_media_by_province(year, force_reanalyze=False):
             # 统计总用户数（去重）
             total_users = gender_data["user_id"].nunique()
 
-            # 统计转发官方媒体的用户
+            # 统计转发对应类型账号的用户
             retweet_media_users = gender_data[
                 (gender_data["is_retweet"] == "1")
-                & (gender_data["r_user_id"].astype(str).isin(OFFICIAL_MEDIA_IDS))
+                & (gender_data["r_user_id"].astype(str).isin(source_ids))
             ]["user_id"].nunique()
 
-            # 计算不转发媒体帖子的比例
+            # 计算不转发对应类型账号帖子的比例
             non_retweet_ratio = (
                 1 - (retweet_media_users / total_users) if total_users > 0 else 0
             )
@@ -749,10 +796,10 @@ def analyze_retweet_media_by_province(year, force_reanalyze=False):
             # 99%置信区间的z值（用于其他指标）
             z_99 = 2.576
 
-            # 计算平均转发次数（只统计转发官方媒体的用户）
+            # 计算平均转发次数（只统计转发对应类型账号的用户）
             retweet_media_records = gender_data[
                 (gender_data["is_retweet"] == "1")
-                & (gender_data["r_user_id"].astype(str).isin(OFFICIAL_MEDIA_IDS))
+                & (gender_data["r_user_id"].astype(str).isin(source_ids))
             ]
 
             if retweet_media_users > 0:
@@ -823,20 +870,23 @@ def analyze_retweet_media_by_province(year, force_reanalyze=False):
     print(f"省份分析结果已保存到: {output_file}")
     print(f"共分析了 {len(province_stats_df)} 个省份-性别组合")
 
-    print(f"\n省份分析完成\n")
+    print(f"\n按省份的转发{source_label}账号分析完成\n")
 
 
-def analyze_retweet_media_by_district(year, force_reanalyze=False):
-    """按地区分析转发官方媒体情况的性别差异
+def analyze_retweet_media_by_district(year, force_reanalyze=False, source_type="news"):
+    """按地区分析转发官方媒体/娱乐账号情况的性别差异
 
     Args:
         year: 年份
         force_reanalyze: 如果为True，即使文件已存在也重新分析
+        source_type: "news" 或 "entertain"，指定分析新闻账号还是娱乐账号（默认"news"）
     """
-    print(f"\n开始分析 {year} 年按地区的转发官方媒体性别差异...")
+    source_label = "新闻" if source_type == "news" else "娱乐"
+    print(f"\n开始分析 {year} 年按地区的转发{source_label}账号性别差异...")
 
-    # 检查输出文件是否已存在
-    output_file = os.path.join(OUTPUT_DIR, f"retweet_media_district_{year}.parquet")
+    # 根据source_type生成不同的文件名
+    file_prefix = f"retweet_{source_type}"
+    output_file = os.path.join(OUTPUT_DIR, f"{file_prefix}_district_{year}.parquet")
 
     if not force_reanalyze:
         if os.path.exists(output_file):
@@ -845,12 +895,16 @@ def analyze_retweet_media_by_district(year, force_reanalyze=False):
             )
             return
 
-    # 如果ID列表为空，尝试从配置文件加载
-    if not OFFICIAL_MEDIA_IDS:
-        load_official_media_ids()
+    # 加载对应的ID列表
+    source_ids = load_source_ids(source_type)
 
-    if not OFFICIAL_MEDIA_IDS:
-        print("警告: 官方媒体ID列表为空，请先运行 get_news_ids.py 生成新闻账号ID文件")
+    if not source_ids:
+        source_name = "新闻账号" if source_type == "news" else "娱乐账号"
+        print(f"警告: {source_name}ID列表为空，请先运行相应的脚本生成ID文件")
+        if source_type == "news":
+            print("  运行: python get_news_ids.py")
+        else:
+            print("  运行: python get_entertain_ids.py")
         return
 
     # 加载数据
@@ -873,9 +927,10 @@ def analyze_retweet_media_by_district(year, force_reanalyze=False):
     data["district"] = data["province_name"].apply(get_district_from_province)
     data = data.dropna(subset=["district", "gender"])
 
-    # 排除官方媒体用户ID
-    data = data[~data["user_id"].astype(str).isin(OFFICIAL_MEDIA_IDS)]
-    print(f"排除官方媒体用户后，剩余 {len(data)} 条记录")
+    # 排除对应类型的用户ID
+    source_name = "新闻账号" if source_type == "news" else "娱乐账号"
+    data = data[~data["user_id"].astype(str).isin(source_ids)]
+    print(f"排除{source_name}用户后，剩余 {len(data)} 条记录")
 
     # 过滤有效地区
     valid_districts = set(DISTRICT_MAP.keys())
@@ -912,13 +967,13 @@ def analyze_retweet_media_by_district(year, force_reanalyze=False):
             # 统计总用户数（去重）
             total_users = gender_data["user_id"].nunique()
 
-            # 统计转发官方媒体的用户
+            # 统计转发对应类型账号的用户
             retweet_media_users = gender_data[
                 (gender_data["is_retweet"] == "1")
-                & (gender_data["r_user_id"].astype(str).isin(OFFICIAL_MEDIA_IDS))
+                & (gender_data["r_user_id"].astype(str).isin(source_ids))
             ]["user_id"].nunique()
 
-            # 计算不转发媒体帖子的比例
+            # 计算不转发对应类型账号帖子的比例
             non_retweet_ratio = (
                 1 - (retweet_media_users / total_users) if total_users > 0 else 0
             )
@@ -926,10 +981,10 @@ def analyze_retweet_media_by_district(year, force_reanalyze=False):
             # 99%置信区间的z值（用于其他指标）
             z_99 = 2.576
 
-            # 计算平均转发次数（只统计转发官方媒体的用户）
+            # 计算平均转发次数（只统计转发对应类型账号的用户）
             retweet_media_records = gender_data[
                 (gender_data["is_retweet"] == "1")
-                & (gender_data["r_user_id"].astype(str).isin(OFFICIAL_MEDIA_IDS))
+                & (gender_data["r_user_id"].astype(str).isin(source_ids))
             ]
 
             if retweet_media_users > 0:
@@ -1000,7 +1055,7 @@ def analyze_retweet_media_by_district(year, force_reanalyze=False):
     print(f"地区分析结果已保存到: {output_file}")
     print(f"共分析了 {len(district_stats_df)} 个地区-性别组合")
 
-    print(f"\n地区分析完成\n")
+    print(f"\n按地区的转发{source_label}账号分析完成\n")
 
 
 def get_gender_label(gender):
@@ -1198,17 +1253,20 @@ def visualize_distribution_4_subplots(
     print(f"图表已保存到: {output_path}")
 
 
-def visualize_retweet_media(year):
-    """绘制转发官方媒体情况的图表
+def visualize_retweet_media(year, source_type="news"):
+    """绘制转发官方媒体/娱乐账号情况的图表
 
     Args:
         year: 年份
+        source_type: "news" 或 "entertain"，指定分析新闻账号还是娱乐账号（默认"news"）
     """
-    print(f"\n开始绘制 {year} 年转发官方媒体图表...")
+    source_label = "新闻" if source_type == "news" else "娱乐"
+    print(f"\n开始绘制 {year} 年转发{source_label}账号图表...")
 
-    # 检查必要的文件是否存在
-    output_file = os.path.join(OUTPUT_DIR, f"retweet_media_{year}.parquet")
-    interval_file = os.path.join(OUTPUT_DIR, f"retweet_media_intervals_{year}.parquet")
+    # 根据source_type生成不同的文件名
+    file_prefix = f"retweet_{source_type}"
+    output_file = os.path.join(OUTPUT_DIR, f"{file_prefix}_{year}.parquet")
+    interval_file = os.path.join(OUTPUT_DIR, f"{file_prefix}_intervals_{year}.parquet")
 
     if not os.path.exists(output_file):
         print(f"错误: 分析结果文件不存在: {output_file}")
@@ -1226,12 +1284,14 @@ def visualize_retweet_media(year):
         return
 
     # 1. 绘制转发次数分布对比图 (4 subplots)
-    fig_path_count = os.path.join(OUTPUT_DIR, f"retweet_count_distribution_{year}.pdf")
+    fig_path_count = os.path.join(
+        OUTPUT_DIR, f"retweet_count_distribution_{source_type}_{year}.pdf"
+    )
     visualize_distribution_4_subplots(
         user_retweet_count,
         "retweet_count",
         "gender",
-        f"{year}年转发官方媒体次数分布对比",
+        f"{year}年转发{source_label}账号次数分布对比",
         fig_path_count,
         "转发次数",
         "转发次数",
@@ -1246,13 +1306,13 @@ def visualize_retweet_media(year):
 
             # 2. 绘制转发间隔分布对比图 (4 subplots)
             fig_path_interval = os.path.join(
-                OUTPUT_DIR, f"retweet_interval_distribution_{year}.pdf"
+                OUTPUT_DIR, f"retweet_interval_distribution_{source_type}_{year}.pdf"
             )
             visualize_distribution_4_subplots(
                 interval_data,
                 "retweet_interval",
                 "gender",
-                f"{year}年转发间隔分布对比",
+                f"{year}年转发{source_label}账号间隔分布对比",
                 fig_path_interval,
                 "转发间隔 (秒)",
                 "转发间隔 (秒)",
@@ -1266,16 +1326,19 @@ def visualize_retweet_media(year):
     print(f"\n图表绘制完成\n")
 
 
-def visualize_province_gender_gap(year):
+def visualize_province_gender_gap(year, source_type="news"):
     """绘制按省份的性别差异图表（三个子图）
 
     Args:
         year: 年份
+        source_type: "news" 或 "entertain"，指定分析新闻账号还是娱乐账号（默认"news"）
     """
-    print(f"\n开始绘制 {year} 年按省份的性别差异图表...")
+    source_label = "新闻" if source_type == "news" else "娱乐"
+    print(f"\n开始绘制 {year} 年按省份的转发{source_label}账号性别差异图表...")
 
-    # 检查必要的文件是否存在
-    output_file = os.path.join(OUTPUT_DIR, f"retweet_media_province_{year}.parquet")
+    # 根据source_type生成不同的文件名
+    file_prefix = f"retweet_{source_type}"
+    output_file = os.path.join(OUTPUT_DIR, f"{file_prefix}_province_{year}.parquet")
 
     if not os.path.exists(output_file):
         print(f"错误: 分析结果文件不存在: {output_file}")
@@ -1297,7 +1360,9 @@ def visualize_province_gender_gap(year):
     fig_width = max(24, num_provinces * 0.8)
     fig, axes = plt.subplots(1, 3, figsize=(fig_width, 8), constrained_layout=True)
     fig.suptitle(
-        f"{year}年各省份转发官方媒体性别差异分析", fontsize=18, fontweight="bold"
+        f"{year}年各省份转发{source_label}账号性别差异分析",
+        fontsize=18,
+        fontweight="bold",
     )
 
     # 按省份分组，计算性别差异
@@ -1609,23 +1674,26 @@ def visualize_province_gender_gap(year):
         ax3.set_title("3. 平均转发间隔", fontsize=14)
 
     # 保存图表
-    fig_path = os.path.join(OUTPUT_DIR, f"province_gender_gap_{year}.pdf")
+    fig_path = os.path.join(OUTPUT_DIR, f"province_gender_gap_{source_type}_{year}.pdf")
     plt.savefig(fig_path, format="pdf", bbox_inches="tight", dpi=300)
     plt.close()
     print(f"图表已保存到: {fig_path}")
     print(f"\n省份性别差异图表绘制完成\n")
 
 
-def visualize_district_gender_gap(year):
+def visualize_district_gender_gap(year, source_type="news"):
     """绘制按地区的性别差异图表（三个子图）
 
     Args:
         year: 年份
+        source_type: "news" 或 "entertain"，指定分析新闻账号还是娱乐账号（默认"news"）
     """
-    print(f"\n开始绘制 {year} 年按地区的性别差异图表...")
+    source_label = "新闻" if source_type == "news" else "娱乐"
+    print(f"\n开始绘制 {year} 年按地区的转发{source_label}账号性别差异图表...")
 
-    # 检查必要的文件是否存在
-    output_file = os.path.join(OUTPUT_DIR, f"retweet_media_district_{year}.parquet")
+    # 根据source_type生成不同的文件名
+    file_prefix = f"retweet_{source_type}"
+    output_file = os.path.join(OUTPUT_DIR, f"{file_prefix}_district_{year}.parquet")
 
     if not os.path.exists(output_file):
         print(f"错误: 分析结果文件不存在: {output_file}")
@@ -1647,7 +1715,9 @@ def visualize_district_gender_gap(year):
     fig_width = max(16, len(districts) * 2)
     fig, axes = plt.subplots(1, 3, figsize=(fig_width, 6), constrained_layout=True)
     fig.suptitle(
-        f"{year}年各地区转发官方媒体性别差异分析", fontsize=18, fontweight="bold"
+        f"{year}年各地区转发{source_label}账号性别差异分析",
+        fontsize=18,
+        fontweight="bold",
     )
 
     # 准备数据
@@ -1960,14 +2030,19 @@ def visualize_district_gender_gap(year):
         ax3.set_title("3. 平均转发间隔", fontsize=14)
 
     # 保存图表
-    fig_path = os.path.join(OUTPUT_DIR, f"district_gender_gap_{year}.pdf")
+    fig_path = os.path.join(OUTPUT_DIR, f"district_gender_gap_{source_type}_{year}.pdf")
     plt.savefig(fig_path, format="pdf", bbox_inches="tight", dpi=300)
     plt.close()
     print(f"图表已保存到: {fig_path}")
     print(f"\n地区性别差异图表绘制完成\n")
 
 
-def analyze_year(year: int, analysis_type: str = "all", visualize: bool = True):
+def analyze_year(
+    year: int,
+    analysis_type: str = "all",
+    visualize: bool = True,
+    source_type: str = "news",
+):
     """
     分析指定年份的数据
 
@@ -1975,33 +2050,33 @@ def analyze_year(year: int, analysis_type: str = "all", visualize: bool = True):
         year: 年份
         analysis_type: 分析类型，'device', 'retweet', 'all'（默认：all）
         visualize: 是否在分析后自动绘制图表（默认：True）
+        source_type: "news" 或 "entertain"，指定分析新闻账号还是娱乐账号（默认"news"）
     """
-    # 先加载官方媒体ID
-    if analysis_type in ["retweet", "all"]:
-        load_official_media_ids()
-
-    print(f"开始分析 {year} 年数据，分析类型: {analysis_type}")
+    print(f"开始分析 {year} 年数据，分析类型: {analysis_type}, 账号类型: {source_type}")
 
     if analysis_type in ["device", "all"]:
         analyze_device_changes(year)
 
     if analysis_type in ["retweet", "all"]:
-        analyze_retweet_media(year)
+        analyze_retweet_media(year, source_type=source_type)
         # 分析省份级别的性别差异
-        analyze_retweet_media_by_province(year)
+        analyze_retweet_media_by_province(year, source_type=source_type)
         # 分析地区级别的性别差异
-        analyze_retweet_media_by_district(year)
+        analyze_retweet_media_by_district(year, source_type=source_type)
         # 分析完成后自动画图
         if visualize:
-            visualize_retweet_media(year)
-            visualize_province_gender_gap(year)
-            visualize_district_gender_gap(year)
+            visualize_retweet_media(year, source_type=source_type)
+            visualize_province_gender_gap(year, source_type=source_type)
+            visualize_district_gender_gap(year, source_type=source_type)
 
     print(f"{year} 年分析完成")
 
 
 def analyze_multiple_years(
-    years: list, analysis_type: str = "all", visualize: bool = True
+    years: list,
+    analysis_type: str = "all",
+    visualize: bool = True,
+    source_type: str = "news",
 ):
     """
     分析多个年份的数据
@@ -2010,9 +2085,10 @@ def analyze_multiple_years(
         years: 年份列表，例如 [2020, 2021, 2022]
         analysis_type: 分析类型，'device', 'retweet', 'all'（默认：all）
         visualize: 是否在分析后自动绘制图表（默认：True）
+        source_type: "news" 或 "entertain"，指定分析新闻账号还是娱乐账号（默认"news"）
     """
     for year in years:
-        analyze_year(year, analysis_type, visualize)
+        analyze_year(year, analysis_type, visualize, source_type)
 
     print(f"\n所有年份分析完成")
 
