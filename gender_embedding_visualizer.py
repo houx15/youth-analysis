@@ -38,7 +38,7 @@ except:
     pass
 
 INPUT_DIR = "gender_embedding/embedding_analysis"
-OUTPUT_DIR = "embedding_visualization"
+OUTPUT_DIR = "gender_embedding/embedding_visualization"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # 省份编码映射（GB/T 2260 中华人民共和国行政区划代码）
@@ -1386,15 +1386,11 @@ def plot_domestic_work_gender_projection(domestic_work_projection_df, year):
 
     region_order = ["华北", "东北", "华东", "华中", "华南", "西南", "西北"]
     data_by_region = [
-        df_with_region[df_with_region["region"] == r][
-            "domain_gender_bias"
-        ].values
+        df_with_region[df_with_region["region"] == r]["domain_gender_bias"].values
         for r in region_order
         if r in df_with_region["region"].values
     ]
-    labels_with_data = [
-        r for r in region_order if r in df_with_region["region"].values
-    ]
+    labels_with_data = [r for r in region_order if r in df_with_region["region"].values]
 
     if data_by_region:
         bp = ax.boxplot(data_by_region, labels=labels_with_data, patch_artist=True)
