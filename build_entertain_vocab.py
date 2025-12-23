@@ -1,19 +1,69 @@
 """
 构建娱乐账号词汇表
-从指定年份热搜里面的娱乐榜加载文本
-提取名词
-词频最高的1000词输出为txt文件
-一行一个词
+从指定年份热搜榜单数据中提取名词（覆盖明星、影视剧名、事件等）
+
+功能说明:
+1. 从bangdan数据中提取热搜词
+2. 过滤广告（检查actionlog.ext中的ads_word字段）
+3. 对热搜词去重
+4. 使用jieba分词+词性标注，提取2-4个字符的名词
+5. 按频率排序，输出前N个高频名词到txt文件（一行一个词）
+6. 用户可进一步手工筛选得到娱乐相关词汇
+
+使用方法:
+---------
+1. 探索数据结构（解压并查看第一个文件）:
+   python build_entertain_vocab.py explore --year=2020
+
+2. 构建娱乐词汇表（主要功能）:
+   python build_entertain_vocab.py build --year=2020
+   python build_entertain_vocab.py build --year=2020 --top_n=3000
+   python build_entertain_vocab.py build --year=2020 --output_file=wordlists/my_nouns.txt
+
+参数说明:
+---------
+- year: 年份（必需）
+- top_n: 输出前N个高频词，默认5000
+- output_file: 输出文件路径，默认为 wordlists/entertainment_nouns_{year}.txt
+
+依赖安装:
+---------
+需要安装 jieba（中文分词工具）:
+  pip install jieba
+
+输出格式:
+---------
+输出文件每行一个名词，按频率从高到低排序
+包括但不限于：人名、影视剧名、事件名、地点等
+例如:
+  王一博
+  三十而已
+  赵丽颖
+  演唱会
+  金鹰奖
+  ...
+
+用户可根据输出结果进一步筛选娱乐相关词汇
 """
 
 import os
 import re
 import json
 from datetime import datetime, timedelta
+from collections import Counter
 import fire
 
 from configs.configs import ORIGIN_DATA_DIR
 from utils.utils import extract_single_7z_file
+
+# 导入jieba进行分词和词性标注
+try:
+    import jieba.posseg as pseg
+    print("✓ 使用 jieba 进行中文分词和词性标注")
+    JIEBA_AVAILABLE = True
+except ImportError:
+    print("❌ 未安装 jieba，请运行: pip install jieba")
+    JIEBA_AVAILABLE = False
 
 
 def get_bangdan_files_dir(year):
@@ -22,6 +72,156 @@ def get_bangdan_files_dir(year):
 
 def get_bangdan_unzipped_files_dir(year):
     return f"bangdan_data/{year}/"
+
+
+def extract_nouns(text):
+    """
+    从文本中提取2-4个字符的名词
+
+    使用jieba分词+词性标注，提取所有名词类词汇
+    包括：人名、地名、机构名、作品名等
+
+    Args:
+        text: 输入文本
+
+    Returns:
+        list: 提取到的名词列表
+    """
+    if not JIEBA_AVAILABLE:
+        print("❌ jieba未安装，无法提取名词")
+        return []
+
+    nouns = []
+
+    try:
+        # 使用jieba进行分词和词性标注
+        words = pseg.cut(text)
+
+        for word, flag in words:
+            # 提取名词类词汇
+            # jieba词性标注中，以'n'开头的都是名词：
+            # - n: 普通名词
+            # - nr: 人名
+            # - nz: 其他专有名词
+            # - ns: 地名
+            # - nt: 机构团体名
+            # - nw: 作品名
+            # - nrfg: 人名 (复合)
+            if flag.startswith('n') and 2 <= len(word) <= 4:
+                # 确保是中文字符
+                if all('\u4e00' <= char <= '\u9fff' for char in word):
+                    nouns.append(word)
+    except Exception as e:
+        print(f"jieba处理出错: {e}")
+
+    return nouns
+
+
+def is_advertisement(actionlog_ext):
+    """
+    判断是否为广告
+
+    Args:
+        actionlog_ext: actionlog中的ext字段
+
+    Returns:
+        bool: True表示是广告
+    """
+    if actionlog_ext and 'ads_word' in actionlog_ext:
+        return True
+    return False
+
+
+def extract_hotwords_from_bangdan_file(file_path, verbose=False):
+    """
+    从单个bangdan文件中提取热搜词（过滤广告，提取名词）
+
+    Args:
+        file_path: bangdan文件路径
+        verbose: 是否打印详细信息
+
+    Returns:
+        list: 提取到的名词列表
+    """
+    nouns_list = []
+    hotwords_set = set()  # 用于去重热搜词
+    ad_count = 0
+    valid_count = 0
+
+    if not os.path.exists(file_path):
+        if verbose:
+            print(f"⚠️  文件不存在: {file_path}")
+        return []
+
+    with open(file_path, "r", errors="replace") as rfile:
+        for line in rfile.readlines():
+            line = line.strip()
+            if not line:
+                continue
+
+            line_data = line.split("\t")
+            if len(line_data) < 2:
+                continue
+
+            try:
+                data = json.loads(line_data[1])
+            except json.JSONDecodeError:
+                continue
+
+            # 解析bangdan数据
+            if "bangdan" not in data:
+                continue
+
+            try:
+                bangdan_data = json.loads(data["bangdan"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            if type(bangdan_data) is not dict:
+                continue
+
+            if "cards" not in bangdan_data or bangdan_data["cards"] is None:
+                continue
+
+            # 遍历所有card
+            for card in bangdan_data["cards"]:
+                if str(card.get("card_type")) != "11":
+                    continue
+
+                card_group = card.get("card_group", [])
+                for s_card in card_group:
+                    if str(s_card.get("card_type")) != "4":
+                        continue
+
+                    # 检查是否为广告
+                    actionlog = s_card.get("actionlog", {})
+                    actionlog_ext = actionlog.get("ext", "")
+
+                    if is_advertisement(actionlog_ext):
+                        ad_count += 1
+                        continue
+
+                    # 提取desc字段
+                    desc = s_card.get("desc", "")
+                    if not desc or len(desc) <= 1:
+                        continue
+
+                    # 去重
+                    if desc in hotwords_set:
+                        continue
+                    hotwords_set.add(desc)
+
+                    valid_count += 1
+
+                    # 提取名词
+                    nouns = extract_nouns(desc)
+                    nouns_list.extend(nouns)
+
+    if verbose:
+        print(f"  文件: {os.path.basename(file_path)}")
+        print(f"    有效热搜: {valid_count}, 过滤广告: {ad_count}, 提取名词: {len(nouns_list)}")
+
+    return nouns_list
 
 
 def unzip_all_bangdan_files():
@@ -150,6 +350,98 @@ def explore_bangdan_data(year: int):
     print("没有找到有效的bangdan数据")
 
 
+def build_entertainment_vocab(year: int, top_n: int = 5000, output_file: str = None):
+    """
+    构建娱乐词汇表：从bangdan数据中提取名词并按频率排序
+
+    Args:
+        year: 年份
+        top_n: 输出前N个高频词，默认5000
+        output_file: 输出文件路径，如果不指定则自动生成
+    """
+    if not JIEBA_AVAILABLE:
+        print("❌ jieba未安装，无法执行。请运行: pip install jieba")
+        return
+
+    print(f"\n{'='*70}")
+    print(f"开始构建 {year} 年娱乐词汇表（名词提取）")
+    print(f"{'='*70}\n")
+
+    # 设置输出文件
+    if output_file is None:
+        output_file = f"wordlists/entertainment_nouns_{year}.txt"
+
+    # 确保输出目录存在
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+
+    # 获取bangdan数据目录
+    data_dir = get_bangdan_unzipped_files_dir(year)
+    if not os.path.exists(data_dir):
+        print(f"❌ 数据目录不存在: {data_dir}")
+        print(f"   请先运行 explore 命令解压数据")
+        return
+
+    # 获取所有bangdan文件
+    bangdan_files = [
+        os.path.join(data_dir, f)
+        for f in os.listdir(data_dir)
+        if f.startswith("weibo_bangdan.")
+    ]
+
+    if not bangdan_files:
+        print(f"❌ 未找到bangdan文件在: {data_dir}")
+        return
+
+    bangdan_files.sort()
+    print(f"✓ 找到 {len(bangdan_files)} 个bangdan文件\n")
+
+    # 提取所有名词
+    all_nouns = []
+    print("开始处理文件...")
+
+    for i, file_path in enumerate(bangdan_files, 1):
+        if i % 30 == 0 or i == 1:  # 每30个文件打印一次进度
+            print(f"  进度: {i}/{len(bangdan_files)} ({i/len(bangdan_files)*100:.1f}%)")
+
+        nouns = extract_hotwords_from_bangdan_file(file_path, verbose=False)
+        all_nouns.extend(nouns)
+
+    print(f"\n✓ 处理完成！共提取 {len(all_nouns)} 个名词（含重复）\n")
+
+    # 统计词频
+    noun_counter = Counter(all_nouns)
+    print(f"✓ 去重后共 {len(noun_counter)} 个唯一名词\n")
+
+    # 按频率排序
+    sorted_nouns = noun_counter.most_common(top_n)
+
+    # 输出到文件
+    with open(output_file, "w", encoding="utf-8") as f:
+        for noun, count in sorted_nouns:
+            f.write(f"{noun}\n")
+
+    print(f"{'='*70}")
+    print(f"✅ 词汇表已保存到: {output_file}")
+    print(f"{'='*70}\n")
+
+    # 打印统计信息
+    print("📊 高频名词 Top 30:\n")
+    print(f"{'排名':<6} {'名词':<10} {'频次':<10}")
+    print("-" * 35)
+    for i, (noun, count) in enumerate(sorted_nouns[:30], 1):
+        print(f"{i:<6} {noun:<10} {count:<10}")
+
+    print(f"\n{'='*70}")
+    print(f"统计信息:")
+    print(f"  总名词数（含重复）: {len(all_nouns):,}")
+    print(f"  唯一名词数: {len(noun_counter):,}")
+    print(f"  输出词汇数: {min(top_n, len(sorted_nouns)):,}")
+    print(f"  最高频次: {sorted_nouns[0][1] if sorted_nouns else 0}")
+    print(f"  最低频次（Top {top_n}）: {sorted_nouns[min(top_n-1, len(sorted_nouns)-1)][1] if sorted_nouns else 0}")
+    print(f"{'='*70}")
+    print(f"\n💡 提示: 请手工审查输出文件，筛选出娱乐相关的名词\n")
+
+
 class BangdanAnalyzer(object):
 
     def __init__(
@@ -268,6 +560,7 @@ if __name__ == "__main__":
     fire.Fire(
         {
             "explore": explore_bangdan_data,
-            "analyze": BangdanAnalyzer,
+            "build": build_entertainment_vocab,
+            "analyze": BangdanAnalyzer,  # 保留旧的analyze功能
         }
     )

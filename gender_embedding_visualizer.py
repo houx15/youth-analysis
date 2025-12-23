@@ -748,6 +748,11 @@ def plot_province_clustering(
         ).fillna(0)
         print(f"  从长格式数据创建 pivot（余弦相似度差值）")
 
+    # 检查数据是否足够进行聚类分析
+    if len(pivot_bias) < 2:
+        print(f"⚠️  省份数量不足（需要至少2个），跳过聚类分析")
+        return
+
     # 同样处理 projection_score
     if pivot_projection_df is not None:
         pivot_projection = pivot_projection_df.T.fillna(0)
@@ -1371,25 +1376,24 @@ def plot_domestic_work_gender_projection(domestic_work_projection_df, year):
 
     # 4. 按区域分组的箱线图
     ax = axes[1, 1]
-    # 添加区域信息
+    # 添加区域信息（创建副本避免修改原数据）
     if "region" not in domestic_work_projection_df.columns:
-        domestic_work_projection_df["region"] = domestic_work_projection_df[
-            "province"
-        ].map(PROVINCE_TO_REGION)
-        domestic_work_projection_df["region"] = domestic_work_projection_df[
-            "region"
-        ].fillna("未知区域")
+        df_with_region = domestic_work_projection_df.copy()
+        df_with_region["region"] = df_with_region["province"].map(PROVINCE_TO_REGION)
+        df_with_region["region"] = df_with_region["region"].fillna("未知区域")
+    else:
+        df_with_region = domestic_work_projection_df
 
     region_order = ["华北", "东北", "华东", "华中", "华南", "西南", "西北"]
     data_by_region = [
-        domestic_work_projection_df[domestic_work_projection_df["region"] == r][
+        df_with_region[df_with_region["region"] == r][
             "domain_gender_bias"
         ].values
         for r in region_order
-        if r in domestic_work_projection_df["region"].values
+        if r in df_with_region["region"].values
     ]
     labels_with_data = [
-        r for r in region_order if r in domestic_work_projection_df["region"].values
+        r for r in region_order if r in df_with_region["region"].values
     ]
 
     if data_by_region:
