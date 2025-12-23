@@ -37,7 +37,7 @@ try:
 except:
     pass
 
-INPUT_DIR = "embedding_analysis"
+INPUT_DIR = "gender_embedding/embedding_analysis"
 OUTPUT_DIR = "embedding_visualization"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -140,15 +140,60 @@ for region, provinces in PROVINCE_REGIONS.items():
 
 def load_results(year):
     """加载分析结果"""
-    stats_file = os.path.join(INPUT_DIR, f"province_stats_{year}.csv")
-    occupation_file = os.path.join(INPUT_DIR, f"occupation_bias_{year}.csv")
+    # analyzer 保存的文件路径：gender_embedding/embedding_analysis/{year}/province_stats.csv
+    year_input_dir = os.path.join(INPUT_DIR, str(year))
+    stats_file = os.path.join(year_input_dir, "province_stats.csv")
+    occupation_file = os.path.join(year_input_dir, "occupation_bias.csv")
+
+    # 尝试加载 pivot 文件（如果存在）
+    pivot_bias_file = os.path.join(year_input_dir, "occupation_bias_pivot.csv")
+    pivot_projection_file = os.path.join(
+        year_input_dir, "occupation_projection_pivot.csv"
+    )
+
+    # 尝试加载家务分工词汇性别轴投影数据（如果存在）
+    domestic_work_projection_file = os.path.join(
+        year_input_dir, "domestic_work_gender_projection.csv"
+    )
 
     if not os.path.exists(stats_file) or not os.path.exists(occupation_file):
         print(f"❌ 未找到 {year} 年的分析结果")
-        return None, None
+        print(f"   查找路径: {stats_file}")
+        print(f"   查找路径: {occupation_file}")
+        return None, None, None, None, None
 
     stats_df = pd.read_csv(stats_file)
     occupation_df = pd.read_csv(occupation_file)
+
+    # 加载 pivot 文件（如果存在）
+    pivot_bias_df = None
+    pivot_projection_df = None
+
+    # 加载家务分工词汇性别轴投影数据（如果存在）
+    domestic_work_projection_df = None
+
+    if os.path.exists(pivot_bias_file):
+        try:
+            pivot_bias_df = pd.read_csv(pivot_bias_file, index_col=0)
+            print(f"✓ 加载了 pivot 文件（余弦相似度差值）: {pivot_bias_file}")
+        except Exception as e:
+            print(f"⚠️  加载 pivot 文件失败: {e}")
+
+    if os.path.exists(pivot_projection_file):
+        try:
+            pivot_projection_df = pd.read_csv(pivot_projection_file, index_col=0)
+            print(f"✓ 加载了 pivot 文件（性别轴投影）: {pivot_projection_file}")
+        except Exception as e:
+            print(f"⚠️  加载 pivot 文件失败: {e}")
+
+    if os.path.exists(domestic_work_projection_file):
+        try:
+            domestic_work_projection_df = pd.read_csv(domestic_work_projection_file)
+            print(
+                f"✓ 加载了家务分工词汇性别轴投影数据: {domestic_work_projection_file}"
+            )
+        except Exception as e:
+            print(f"⚠️  加载家务分工投影数据失败: {e}")
 
     # 将省份编码转换为省份名称（如果analyzer输出的是编码格式）
     def convert_province_code(province):
@@ -185,6 +230,33 @@ def load_results(year):
 
     stats_df["province"] = stats_df["province"].apply(convert_province_code)
     occupation_df["province"] = occupation_df["province"].apply(convert_province_code)
+
+    # 对家务分工投影数据的省份进行转换
+    if domestic_work_projection_df is not None:
+        domestic_work_projection_df["province"] = domestic_work_projection_df[
+            "province"
+        ].apply(convert_province_code)
+        domestic_work_projection_df = domestic_work_projection_df[
+            domestic_work_projection_df["province"] != "未知"
+        ].copy()
+        print(f"  已转换家务分工投影数据的省份名称")
+
+    # 对 pivot 文件的列名（省份）进行转换
+    if pivot_bias_df is not None:
+        pivot_bias_df.columns = pivot_bias_df.columns.map(convert_province_code)
+        # 过滤掉"未知"省份的列
+        pivot_bias_df = pivot_bias_df.loc[:, pivot_bias_df.columns != "未知"]
+        print(f"  已转换 pivot 文件（余弦相似度差值）的省份名称")
+
+    if pivot_projection_df is not None:
+        pivot_projection_df.columns = pivot_projection_df.columns.map(
+            convert_province_code
+        )
+        # 过滤掉"未知"省份的列
+        pivot_projection_df = pivot_projection_df.loc[
+            :, pivot_projection_df.columns != "未知"
+        ]
+        print(f"  已转换 pivot 文件（性别轴投影）的省份名称")
 
     # 过滤掉省份名为"未知"的数据
     before_filter_stats = len(stats_df)
@@ -223,8 +295,16 @@ def load_results(year):
 
     print(f"✓ 加载了 {len(stats_df)} 个省份的数据")
     print(f"✓ 加载了 {len(occupation_df)} 条职业-省份记录")
+    if domestic_work_projection_df is not None:
+        print(f"✓ 加载了 {len(domestic_work_projection_df)} 条家务分工投影数据")
 
-    return stats_df, occupation_df
+    return (
+        stats_df,
+        occupation_df,
+        pivot_bias_df,
+        pivot_projection_df,
+        domestic_work_projection_df,
+    )
 
 
 def load_china_map(shapefile_path=None):
@@ -641,15 +721,48 @@ def plot_province_ranking(stats_df, year):
     plt.close()
 
 
-def plot_province_clustering(occupation_df, stats_df, year):
-    """省份聚类分析：基于职业性别偏向模式"""
+def plot_province_clustering(
+    occupation_df, stats_df, year, pivot_bias_df=None, pivot_projection_df=None
+):
+    """省份聚类分析：基于职业性别偏向模式
+
+    Args:
+        occupation_df: 长格式职业数据
+        stats_df: 省份统计数据
+        year: 年份
+        pivot_bias_df: 预计算的 pivot 表（余弦相似度差值方法），格式为 occupation × province
+        pivot_projection_df: 预计算的 pivot 表（性别轴投影方法），格式为 occupation × province
+    """
     from scipy.cluster.hierarchy import dendrogram, linkage
     from scipy.spatial.distance import pdist, squareform
 
-    # 创建省份×职业矩阵
-    pivot = occupation_df.pivot_table(
-        values="bias_score", index="province", columns="occupation", aggfunc="mean"
-    ).fillna(0)
+    # 优先使用预加载的 pivot 文件，否则从长格式数据创建
+    if pivot_bias_df is not None:
+        # analyzer 输出的格式是 occupation × province，需要转置为 province × occupation
+        pivot_bias = pivot_bias_df.T.fillna(0)
+        print(f"  使用预加载的 pivot 文件（余弦相似度差值）")
+    else:
+        # 从长格式数据创建 pivot
+        pivot_bias = occupation_df.pivot_table(
+            values="bias_score", index="province", columns="occupation", aggfunc="mean"
+        ).fillna(0)
+        print(f"  从长格式数据创建 pivot（余弦相似度差值）")
+
+    # 同样处理 projection_score
+    if pivot_projection_df is not None:
+        pivot_projection = pivot_projection_df.T.fillna(0)
+        print(f"  使用预加载的 pivot 文件（性别轴投影）")
+    else:
+        pivot_projection = occupation_df.pivot_table(
+            values="projection_score",
+            index="province",
+            columns="occupation",
+            aggfunc="mean",
+        ).fillna(0)
+        print(f"  从长格式数据创建 pivot（性别轴投影）")
+
+    # 使用 bias_score 进行聚类分析
+    pivot = pivot_bias
 
     # 层次聚类
     linkage_matrix = linkage(pivot, method="ward")
@@ -716,6 +829,79 @@ def plot_province_clustering(occupation_df, stats_df, year):
     print(f"✓ 省份相似度矩阵已保存: {similarity_file}")
     plt.close()
 
+    # 使用 projection_score 进行聚类分析（如果数据可用）
+    if pivot_projection is not None and len(pivot_projection) > 0:
+        print(f"\n  生成性别轴投影方法的聚类分析...")
+
+        # 层次聚类
+        linkage_matrix_proj = linkage(pivot_projection, method="ward")
+
+        # 绘制树状图
+        fig, ax = plt.subplots(1, 1, figsize=(14, 8))
+
+        dendrogram(
+            linkage_matrix_proj,
+            labels=pivot_projection.index.tolist(),
+            leaf_font_size=11,
+            ax=ax,
+            color_threshold=0.7 * max(linkage_matrix_proj[:, 2]),
+        )
+
+        ax.set_title(
+            f"省份性别观念模式聚类分析 ({year}年)\n基于职业性别偏向模式（性别轴投影方法）",
+            fontsize=14,
+            fontweight="bold",
+            pad=20,
+        )
+        ax.set_xlabel("省份", fontsize=12, fontweight="bold")
+        ax.set_ylabel("距离（差异程度）", fontsize=12, fontweight="bold")
+        ax.grid(axis="y", alpha=0.3, linestyle="--")
+
+        plt.tight_layout()
+        cluster_file_proj = os.path.join(
+            OUTPUT_DIR, f"province_clustering_projection_{year}.pdf"
+        )
+        plt.savefig(cluster_file_proj, format="pdf", bbox_inches="tight")
+        print(f"✓ 省份聚类图（投影方法）已保存: {cluster_file_proj}")
+        plt.close()
+
+        # 绘制热力图：省份相似度矩阵
+        distances_proj = pdist(pivot_projection, metric="euclidean")
+        distance_matrix_proj = squareform(distances_proj)
+
+        # 转换为相似度
+        max_dist_proj = distance_matrix_proj.max()
+        similarity_matrix_proj = 1 - (distance_matrix_proj / max_dist_proj)
+
+        fig, ax = plt.subplots(1, 1, figsize=(12, 10))
+
+        sns.heatmap(
+            similarity_matrix_proj,
+            xticklabels=pivot_projection.index,
+            yticklabels=pivot_projection.index,
+            annot=False,
+            fmt=".2f",
+            cmap="YlOrRd",
+            cbar_kws={"label": "模式相似度"},
+            ax=ax,
+            square=True,
+        )
+
+        ax.set_title(
+            f"省份性别观念模式相似度矩阵 ({year}年，性别轴投影方法)\n颜色越深 = 模式越相似",
+            fontsize=14,
+            fontweight="bold",
+            pad=20,
+        )
+
+        plt.tight_layout()
+        similarity_file_proj = os.path.join(
+            OUTPUT_DIR, f"province_similarity_projection_{year}.pdf"
+        )
+        plt.savefig(similarity_file_proj, format="pdf", bbox_inches="tight")
+        print(f"✓ 省份相似度矩阵（投影方法）已保存: {similarity_file_proj}")
+        plt.close()
+
 
 def plot_province_comparison(stats_df, year):
     """省份多维度对比图"""
@@ -723,10 +909,17 @@ def plot_province_comparison(stats_df, year):
 
     # 1. 隔离程度 vs 平均偏向
     ax = axes[0, 0]
+    # 使用 vocab_size 作为点的大小（如果存在），否则使用固定大小
+    size_col = "vocab_size" if "vocab_size" in stats_df.columns else None
+    if size_col:
+        sizes = stats_df[size_col] / 1000
+    else:
+        sizes = 100  # 固定大小
+
     scatter = ax.scatter(
         stats_df["mean_bias"],
         stats_df["std_bias"],
-        s=stats_df["text_count"] / 1000,
+        s=sizes,
         c=stats_df["std_bias"],
         cmap="Reds",
         alpha=0.6,
@@ -783,18 +976,39 @@ def plot_province_comparison(stats_df, year):
 
     # 3. 数据质量分布
     ax = axes[1, 0]
-    stats_sorted = stats_df.sort_values("text_count", ascending=False)
-    bars = ax.bar(
-        range(len(stats_sorted)),
-        stats_sorted["text_count"] / 10000,
-        color="steelblue",
-        alpha=0.7,
-    )
-    ax.set_xticks(range(len(stats_sorted)))
-    ax.set_xticklabels(stats_sorted["province"], rotation=45, ha="right", fontsize=9)
-    ax.set_ylabel("文本数量（万条）", fontsize=11, fontweight="bold")
-    ax.set_title("各省份数据量分布", fontsize=12, fontweight="bold")
-    ax.grid(axis="y", alpha=0.3)
+    # 使用 vocab_size 作为数据量指标（如果存在），否则使用 occupations_found
+    if "vocab_size" in stats_df.columns:
+        size_col = "vocab_size"
+        unit = 1000
+        ylabel = "词汇表大小（千）"
+    elif "occupations_found" in stats_df.columns:
+        size_col = "occupations_found"
+        unit = 1
+        ylabel = "找到的职业数"
+    else:
+        # 如果没有可用字段，跳过这个子图
+        ax.text(
+            0.5, 0.5, "无数据量信息", ha="center", va="center", transform=ax.transAxes
+        )
+        ax.set_title("各省份数据量分布", fontsize=12, fontweight="bold")
+        ax.axis("off")
+        size_col = None
+
+    if size_col:
+        stats_sorted = stats_df.sort_values(size_col, ascending=False)
+        bars = ax.bar(
+            range(len(stats_sorted)),
+            stats_sorted[size_col] / unit,
+            color="steelblue",
+            alpha=0.7,
+        )
+        ax.set_xticks(range(len(stats_sorted)))
+        ax.set_xticklabels(
+            stats_sorted["province"], rotation=45, ha="right", fontsize=9
+        )
+        ax.set_ylabel(ylabel, fontsize=11, fontweight="bold")
+        ax.set_title("各省份数据量分布", fontsize=12, fontweight="bold")
+        ax.grid(axis="y", alpha=0.3)
 
     # 4. 区域对比箱线图
     ax = axes[1, 1]
@@ -1013,16 +1227,191 @@ def generate_summary_report(stats_df, occupation_df, year):
         f.write(f"五、数据质量说明\n")
         f.write(f"{'='*70}\n\n")
         f.write(f"  总省份数: {len(stats_df)}\n")
-        f.write(f"  总文本数: {stats_df['text_count'].sum():,}\n")
-        f.write(f"  平均每省份文本数: {stats_df['text_count'].mean():,.0f}\n")
-        f.write(
-            f"  文本数最多的省份: {stats_df.nlargest(1, 'text_count')['province'].values[0]}\n"
-        )
-        f.write(
-            f"  文本数最少的省份: {stats_df.nsmallest(1, 'text_count')['province'].values[0]}\n"
-        )
+
+        # 使用可用的数据量字段
+        if "vocab_size" in stats_df.columns:
+            f.write(f"  总词汇表大小: {stats_df['vocab_size'].sum():,}\n")
+            f.write(f"  平均每省份词汇表大小: {stats_df['vocab_size'].mean():,.0f}\n")
+            f.write(
+                f"  词汇表最大的省份: {stats_df.nlargest(1, 'vocab_size')['province'].values[0]}\n"
+            )
+            f.write(
+                f"  词汇表最小的省份: {stats_df.nsmallest(1, 'vocab_size')['province'].values[0]}\n"
+            )
+        elif "occupations_found" in stats_df.columns:
+            f.write(f"  总找到职业数: {stats_df['occupations_found'].sum():,}\n")
+            f.write(
+                f"  平均每省份找到职业数: {stats_df['occupations_found'].mean():,.0f}\n"
+            )
+            f.write(
+                f"  找到职业最多的省份: {stats_df.nlargest(1, 'occupations_found')['province'].values[0]}\n"
+            )
+            f.write(
+                f"  找到职业最少的省份: {stats_df.nsmallest(1, 'occupations_found')['province'].values[0]}\n"
+            )
+        else:
+            f.write(f"  (无数据量信息)\n")
 
     print(f"✓ 分析总结已保存: {report_file}")
+
+
+def plot_domestic_work_gender_projection(domestic_work_projection_df, year):
+    """绘制家务分工词汇在性别轴上的投影分析"""
+    if domestic_work_projection_df is None or len(domestic_work_projection_df) == 0:
+        print("⚠️  没有家务分工投影数据，跳过可视化")
+        return
+
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+
+    # 1. 各省份的work和family词汇平均投影对比
+    ax = axes[0, 0]
+    df_sorted = domestic_work_projection_df.sort_values("domain_gender_bias")
+    x = np.arange(len(df_sorted))
+    width = 0.35
+
+    bars1 = ax.barh(
+        x - width / 2,
+        df_sorted["work_mean_projection"],
+        width,
+        label="work词汇平均投影",
+        color="#1f77b4",
+        alpha=0.7,
+    )
+    bars2 = ax.barh(
+        x + width / 2,
+        df_sorted["family_mean_projection"],
+        width,
+        label="family词汇平均投影",
+        color="#ff7f0e",
+        alpha=0.7,
+    )
+
+    ax.set_yticks(x)
+    ax.set_yticklabels(df_sorted["province"])
+    ax.set_xlabel("在性别轴上的投影分数", fontsize=11, fontweight="bold")
+    ax.set_title(
+        "各省份work/family词汇在性别轴上的投影对比", fontsize=12, fontweight="bold"
+    )
+    ax.axvline(x=0, color="black", linestyle="--", linewidth=1, alpha=0.5)
+    ax.legend(fontsize=10)
+    ax.grid(axis="x", alpha=0.3)
+
+    # 2. 场域性别偏向（domain_gender_bias）排名
+    ax = axes[0, 1]
+    df_sorted_bias = domestic_work_projection_df.sort_values(
+        "domain_gender_bias", ascending=True
+    )
+    colors = [
+        "#d62728" if x < 0 else "#2ca02c" for x in df_sorted_bias["domain_gender_bias"]
+    ]
+    bars = ax.barh(
+        df_sorted_bias["province"],
+        df_sorted_bias["domain_gender_bias"],
+        color=colors,
+        alpha=0.7,
+    )
+
+    ax.axvline(x=0, color="black", linestyle="--", linewidth=1)
+    ax.set_xlabel(
+        "场域性别偏向分数\n(负=work更偏女性, 正=family更偏女性)",
+        fontsize=11,
+        fontweight="bold",
+    )
+    ax.set_title("各省份场域性别偏向排名", fontsize=12, fontweight="bold")
+    ax.grid(axis="x", alpha=0.3)
+
+    for bar in bars:
+        width = bar.get_width()
+        ax.text(
+            width + (0.01 if width > 0 else -0.01),
+            bar.get_y() + bar.get_height() / 2,
+            f"{width:+.3f}",
+            va="center",
+            ha="left" if width > 0 else "right",
+            fontsize=8,
+        )
+
+    # 3. work和family投影的散点图
+    ax = axes[1, 0]
+    scatter = ax.scatter(
+        domestic_work_projection_df["work_mean_projection"],
+        domestic_work_projection_df["family_mean_projection"],
+        s=100,
+        c=domestic_work_projection_df["domain_gender_bias"],
+        cmap="RdYlGn",
+        alpha=0.6,
+        edgecolors="black",
+        linewidth=1,
+    )
+
+    for _, row in domestic_work_projection_df.iterrows():
+        ax.annotate(
+            row["province"],
+            (row["work_mean_projection"], row["family_mean_projection"]),
+            fontsize=8,
+            ha="center",
+        )
+
+    ax.axhline(y=0, color="gray", linestyle="--", alpha=0.5)
+    ax.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+    ax.plot([-1, 1], [-1, 1], "k--", alpha=0.3, label="y=x")
+
+    ax.set_xlabel(
+        "work词汇平均投影\n(负=偏男性, 正=偏女性)", fontsize=11, fontweight="bold"
+    )
+    ax.set_ylabel(
+        "family词汇平均投影\n(负=偏男性, 正=偏女性)", fontsize=11, fontweight="bold"
+    )
+    ax.set_title(
+        "work vs family词汇在性别轴上的投影关系", fontsize=12, fontweight="bold"
+    )
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=9)
+    plt.colorbar(scatter, ax=ax, label="场域性别偏向")
+
+    # 4. 按区域分组的箱线图
+    ax = axes[1, 1]
+    # 添加区域信息
+    if "region" not in domestic_work_projection_df.columns:
+        domestic_work_projection_df["region"] = domestic_work_projection_df[
+            "province"
+        ].map(PROVINCE_TO_REGION)
+        domestic_work_projection_df["region"] = domestic_work_projection_df[
+            "region"
+        ].fillna("未知区域")
+
+    region_order = ["华北", "东北", "华东", "华中", "华南", "西南", "西北"]
+    data_by_region = [
+        domestic_work_projection_df[domestic_work_projection_df["region"] == r][
+            "domain_gender_bias"
+        ].values
+        for r in region_order
+        if r in domestic_work_projection_df["region"].values
+    ]
+    labels_with_data = [
+        r for r in region_order if r in domestic_work_projection_df["region"].values
+    ]
+
+    if data_by_region:
+        bp = ax.boxplot(data_by_region, labels=labels_with_data, patch_artist=True)
+        for patch, color in zip(
+            bp["boxes"], plt.cm.Set3(np.linspace(0, 1, len(data_by_region)))
+        ):
+            patch.set_facecolor(color)
+
+        ax.axhline(y=0, color="black", linestyle="--", linewidth=1, alpha=0.5)
+        ax.set_ylabel("场域性别偏向分数", fontsize=11, fontweight="bold")
+        ax.set_title("各地理区域场域性别偏向分布", fontsize=12, fontweight="bold")
+        ax.grid(axis="y", alpha=0.3)
+        plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha="right")
+
+    plt.tight_layout()
+    projection_file = os.path.join(
+        OUTPUT_DIR, f"domestic_work_gender_projection_{year}.pdf"
+    )
+    plt.savefig(projection_file, format="pdf", bbox_inches="tight")
+    print(f"✓ 家务分工词汇性别轴投影分析图已保存: {projection_file}")
+    plt.close()
 
 
 def main(year: int, shapefile: str = None):
@@ -1039,7 +1428,13 @@ def main(year: int, shapefile: str = None):
     print(f"{'='*70}\n")
 
     # 加载数据
-    stats_df, occupation_df = load_results(year)
+    (
+        stats_df,
+        occupation_df,
+        pivot_bias_df,
+        pivot_projection_df,
+        domestic_work_projection_df,
+    ) = load_results(year)
     if stats_df is None or occupation_df is None:
         return
 
@@ -1053,7 +1448,9 @@ def main(year: int, shapefile: str = None):
 
     # 3. 省份聚类分析
     print(f"\n🌳 生成省份聚类分析...")
-    plot_province_clustering(occupation_df, stats_df, year)
+    plot_province_clustering(
+        occupation_df, stats_df, year, pivot_bias_df, pivot_projection_df
+    )
 
     # 4. 省份多维度对比
     print(f"\n📈 生成省份对比图...")
@@ -1066,7 +1463,11 @@ def main(year: int, shapefile: str = None):
         if occ in occupation_df["occupation"].values:
             plot_occupation_by_province(occupation_df, occ, year)
 
-    # 6. 生成总结报告
+    # 6. 家务分工词汇性别轴投影分析
+    print(f"\n🏠 生成家务分工词汇性别轴投影分析...")
+    plot_domestic_work_gender_projection(domestic_work_projection_df, year)
+
+    # 7. 生成总结报告
     print(f"\n📝 生成总结报告...")
     generate_summary_report(stats_df, occupation_df, year)
 
@@ -1078,11 +1479,22 @@ def main(year: int, shapefile: str = None):
     print(f"  1. segregation_map_{year}.pdf - 中国地图（性别隔离程度）")
     print(f"  2. segregation_map_regional_{year}.pdf - 中国地图（按区域着色）")
     print(f"  3. segregation_ranking_{year}.pdf - 省份排名图")
-    print(f"  4. province_clustering_{year}.pdf - 省份聚类树状图")
-    print(f"  5. province_similarity_{year}.pdf - 省份相似度热力图")
-    print(f"  6. province_comparison_{year}.pdf - 省份多维度对比")
-    print(f"  7. occupation_[职业名]_{year}.pdf - 各职业的省份分析")
-    print(f"  8. visualization_summary_{year}.txt - 文字总结报告\n")
+    print(f"  4. province_clustering_{year}.pdf - 省份聚类树状图（余弦相似度差值方法）")
+    print(
+        f"  5. province_similarity_{year}.pdf - 省份相似度热力图（余弦相似度差值方法）"
+    )
+    print(
+        f"  6. province_clustering_projection_{year}.pdf - 省份聚类树状图（性别轴投影方法）"
+    )
+    print(
+        f"  7. province_similarity_projection_{year}.pdf - 省份相似度热力图（性别轴投影方法）"
+    )
+    print(f"  8. province_comparison_{year}.pdf - 省份多维度对比")
+    print(f"  9. occupation_[职业名]_{year}.pdf - 各职业的省份分析")
+    print(
+        f"  10. domestic_work_gender_projection_{year}.pdf - 家务分工词汇性别轴投影分析"
+    )
+    print(f"  11. visualization_summary_{year}.txt - 文字总结报告\n")
 
 
 if __name__ == "__main__":

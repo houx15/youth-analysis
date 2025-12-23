@@ -25,7 +25,7 @@ import glob
 warnings.filterwarnings("ignore")
 
 MODEL_DIR = "gender_embedding/embedding_models"
-OUTPUT_DIR = "embedding_analysis"
+OUTPUT_DIR = "gender_embedding/embedding_analysis"
 WORDLISTS_DIR = "wordlists"
 
 # 确保输出目录存在
@@ -166,7 +166,7 @@ def compute_gender_bias_projection(occupation_vec, male_vec, female_vec):
 
 def compute_domain_bias(word_vec, family_vec, work_vec):
     """
-    计算词汇在家庭场域 vs 工作场域的偏向分数
+    计算词汇在家庭场域 vs 工作场域的偏向分数（基于余弦相似度差值）
 
     返回：
         bias_score: 正值=偏家庭场域，负值=偏工作场域，接近0=中性
@@ -356,7 +356,7 @@ def analyze_model(province, model):
             f"| 偏向分数: {occ['bias_score']:+.3f}"
         )
 
-    # 计算家务分工词汇分析
+    # 计算家务分工场域分析（性别词在场域上的偏向）
     family_vec, family_found = get_word_set_embedding(
         model, DOMESTIC_WORK_WORDS["family"]
     )
@@ -372,7 +372,8 @@ def analyze_model(province, model):
             f"  ✓ 找到工作场域词: {len(work_found)}/{len(DOMESTIC_WORK_WORDS['work'])} 个"
         )
 
-        # 计算男性词和女性词在家庭场域 vs 工作场域的偏向
+        # 计算男性词和女性词在家庭场域 vs 工作场域的偏向（两种方法）
+        # 方法1：余弦相似度差值
         male_domain_bias, male_family_sim, male_work_sim = compute_domain_bias(
             male_vec, family_vec, work_vec
         )
@@ -380,10 +381,42 @@ def analyze_model(province, model):
             female_vec, family_vec, work_vec
         )
 
+        # 方法2：计算work和family词汇在性别轴上的平均投影
+        # work词汇在性别轴上的平均投影
+        work_projections = []
+        for word in DOMESTIC_WORK_WORDS["work"]:
+            word_vec = get_word_embedding(model, word)
+            if word_vec is not None:
+                projection, _ = compute_gender_bias_projection(
+                    word_vec, male_vec, female_vec
+                )
+                work_projections.append(projection)
+
+        # family词汇在性别轴上的平均投影
+        family_projections = []
+        for word in DOMESTIC_WORK_WORDS["family"]:
+            word_vec = get_word_embedding(model, word)
+            if word_vec is not None:
+                projection, _ = compute_gender_bias_projection(
+                    word_vec, male_vec, female_vec
+                )
+                family_projections.append(projection)
+
+        # bias = family偏女性的程度 - work偏女性的程度
+        # (family的平均投影 - work的平均投影)
+        if work_projections and family_projections:
+            work_mean_projection = float(np.mean(work_projections))
+            family_mean_projection = float(np.mean(family_projections))
+            domain_gender_bias = family_mean_projection - work_mean_projection
+        else:
+            work_mean_projection = None
+            family_mean_projection = None
+            domain_gender_bias = None
+
         domestic_work_results.append(
             {
                 "word_type": "male",
-                "domain_bias": float(male_domain_bias),
+                "domain_bias": float(male_domain_bias),  # 余弦相似度差值方法
                 "family_similarity": float(male_family_sim),
                 "work_similarity": float(male_work_sim),
             }
@@ -391,25 +424,47 @@ def analyze_model(province, model):
         domestic_work_results.append(
             {
                 "word_type": "female",
-                "domain_bias": float(female_domain_bias),
+                "domain_bias": float(female_domain_bias),  # 余弦相似度差值方法
                 "family_similarity": float(female_family_sim),
                 "work_similarity": float(female_work_sim),
             }
         )
 
+        # 添加work和family词汇在性别轴上的投影结果
+        if work_mean_projection is not None and family_mean_projection is not None:
+            domestic_work_results.append(
+                {
+                    "word_type": "work_words_projection",
+                    "work_mean_projection": work_mean_projection,
+                    "family_mean_projection": family_mean_projection,
+                    "domain_gender_bias": domain_gender_bias,
+                }
+            )
+
         print(f"\n  🏠 性别在家庭场域 vs 工作场域的偏向:")
+        print(f"    余弦相似度差值方法:")
         print(
-            f"    男性: 场域偏向分数 {male_domain_bias:+.3f} "
+            f"      男性: 场域偏向分数 {male_domain_bias:+.3f} "
             f"(家庭: {male_family_sim:.3f}, 工作: {male_work_sim:.3f})"
         )
         print(
-            f"    女性: 场域偏向分数 {female_domain_bias:+.3f} "
+            f"      女性: 场域偏向分数 {female_domain_bias:+.3f} "
             f"(家庭: {female_family_sim:.3f}, 工作: {female_work_sim:.3f})"
         )
         print(
-            f"    性别差异: {female_domain_bias - male_domain_bias:+.3f} "
+            f"      性别差异: {female_domain_bias - male_domain_bias:+.3f} "
             f"(正值表示女性更偏向家庭场域)"
         )
+
+        # 打印work和family词汇在性别轴上的投影
+        if work_mean_projection is not None and family_mean_projection is not None:
+            print(f"    性别轴投影方法（work/family词汇）:")
+            print(f"      work词汇平均投影: {work_mean_projection:+.3f}")
+            print(f"      family词汇平均投影: {family_mean_projection:+.3f}")
+            print(
+                f"      场域性别偏向: {domain_gender_bias:+.3f} "
+                f"(正值表示family比work更偏女性)"
+            )
 
     # 计算统计指标
     bias_scores = [r["bias_score"] for r in occupation_results]
@@ -444,6 +499,7 @@ def analyze_model(province, model):
             (r for r in domestic_work_results if r["word_type"] == "female"), None
         )
         if male_domain and female_domain:
+            # 余弦相似度差值方法
             stats["male_domain_bias"] = male_domain["domain_bias"]
             stats["female_domain_bias"] = female_domain["domain_bias"]
             stats["gender_domain_gap"] = (
@@ -536,25 +592,48 @@ def save_results(results, province_stats, year):
 
     # 2.5. 保存家务分工场域偏向数据
     domestic_work_data = []
+    domestic_work_projection_data = []
     for result in results:
         province = result["province"]
         if result.get("domestic_work_results"):
             for dw in result["domestic_work_results"]:
-                domestic_work_data.append(
-                    {
-                        "province": province,
-                        "word_type": dw["word_type"],
-                        "domain_bias": dw["domain_bias"],
-                        "family_similarity": dw["family_similarity"],
-                        "work_similarity": dw["work_similarity"],
-                    }
-                )
+                if dw["word_type"] == "work_words_projection":
+                    # 保存work和family词汇在性别轴上的投影数据
+                    domestic_work_projection_data.append(
+                        {
+                            "province": province,
+                            "work_mean_projection": dw.get("work_mean_projection"),
+                            "family_mean_projection": dw.get("family_mean_projection"),
+                            "domain_gender_bias": dw.get("domain_gender_bias"),
+                        }
+                    )
+                else:
+                    # 保存性别词在场域上的偏向数据
+                    domestic_work_data.append(
+                        {
+                            "province": province,
+                            "word_type": dw["word_type"],
+                            "domain_bias": dw["domain_bias"],  # 余弦相似度差值方法
+                            "family_similarity": dw["family_similarity"],
+                            "work_similarity": dw["work_similarity"],
+                        }
+                    )
 
     if domestic_work_data:
         domestic_work_df = pd.DataFrame(domestic_work_data)
         domestic_work_file = os.path.join(year_output_dir, f"domestic_work_bias.csv")
         domestic_work_df.to_csv(domestic_work_file, index=False, encoding="utf-8-sig")
         print(f"✓ 家务分工场域偏向数据: {domestic_work_file}")
+
+    if domestic_work_projection_data:
+        domestic_work_projection_df = pd.DataFrame(domestic_work_projection_data)
+        domestic_work_projection_file = os.path.join(
+            year_output_dir, f"domestic_work_gender_projection.csv"
+        )
+        domestic_work_projection_df.to_csv(
+            domestic_work_projection_file, index=False, encoding="utf-8-sig"
+        )
+        print(f"✓ 家务分工词汇性别轴投影数据: {domestic_work_projection_file}")
 
     # 3. 保存宽格式数据（省份×职业矩阵）
     # 3.1 余弦相似度差值方法的矩阵
