@@ -25,7 +25,7 @@ import glob
 warnings.filterwarnings("ignore")
 
 MODEL_DIR = "gender_embedding/embedding_models"
-OUTPUT_DIR = "gender_embedding/embedding_analysis"
+OUTPUT_DIR = "gender_embedding/results/embedding_analysis"
 WORDLISTS_DIR = "wordlists"
 
 # 确保输出目录存在

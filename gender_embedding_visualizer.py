@@ -37,8 +37,8 @@ try:
 except:
     pass
 
-INPUT_DIR = "gender_embedding/embedding_analysis"
-OUTPUT_DIR = "gender_embedding/embedding_visualization"
+INPUT_DIR = "gender_embedding/results/embedding_analysis"
+OUTPUT_DIR = "gender_embedding/results/embedding_visualization"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # 省份编码映射（GB/T 2260 中华人民共和国行政区划代码）
