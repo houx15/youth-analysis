@@ -12,6 +12,9 @@ def extract_7z_files(source_folder, target_folder):
         # 检查文件是否是.7z文件
         if file_name.endswith(".7z"):
             file_path = os.path.join(source_folder, file_name)
+            out_path = os.path.join(target_folder, file_name).replace(".7z", "")
+            if os.path.exists(out_path):
+                continue
             with py7zr.SevenZipFile(file_path, mode="r") as archive:
                 # 解压文件到目标文件夹
                 archive.extractall(path=target_folder)

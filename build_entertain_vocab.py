@@ -50,15 +50,16 @@ import os
 import re
 import json
 from datetime import datetime, timedelta
-from collections import Counter
+from collections import Counter, defaultdict
 import fire
 
 from configs.configs import ORIGIN_DATA_DIR
-from utils.utils import extract_single_7z_file
+from utils.utils import extract_single_7z_file, extract_7z_files
 
 # 导入jieba进行分词和词性标注
 try:
     import jieba.posseg as pseg
+
     print("✓ 使用 jieba 进行中文分词和词性标注")
     JIEBA_AVAILABLE = True
 except ImportError:
@@ -72,6 +73,16 @@ def get_bangdan_files_dir(year):
 
 def get_bangdan_unzipped_files_dir(year):
     return f"bangdan_data/{year}/"
+
+
+def unzip_all_bangdan_files(year):
+    """
+    将原始微博数据解压缩到当前目录的bangdan_data文件夹
+    """
+    bangdan_files_dir = get_bangdan_files_dir(year)
+    unzipped_dir = get_bangdan_unzipped_files_dir(year)
+    extract_7z_files(source_folder=bangdan_files_dir, target_folder=unzipped_dir)
+    return True
 
 
 def extract_nouns(text):
@@ -107,9 +118,9 @@ def extract_nouns(text):
             # - nt: 机构团体名
             # - nw: 作品名
             # - nrfg: 人名 (复合)
-            if flag.startswith('n') and 2 <= len(word) <= 4:
+            if flag in ["nr", "nrfg", "nw"] and 2 <= len(word) <= 4:
                 # 确保是中文字符
-                if all('\u4e00' <= char <= '\u9fff' for char in word):
+                if all("\u4e00" <= char <= "\u9fff" for char in word):
                     nouns.append(word)
     except Exception as e:
         print(f"jieba处理出错: {e}")
@@ -127,7 +138,7 @@ def is_advertisement(actionlog_ext):
     Returns:
         bool: True表示是广告
     """
-    if actionlog_ext and 'ads_word' in actionlog_ext:
+    if actionlog_ext and "ads_word" in actionlog_ext:
         return True
     return False
 
@@ -219,19 +230,11 @@ def extract_hotwords_from_bangdan_file(file_path, verbose=False):
 
     if verbose:
         print(f"  文件: {os.path.basename(file_path)}")
-        print(f"    有效热搜: {valid_count}, 过滤广告: {ad_count}, 提取名词: {len(nouns_list)}")
+        print(
+            f"    有效热搜: {valid_count}, 过滤广告: {ad_count}, 提取名词: {len(nouns_list)}"
+        )
 
     return nouns_list
-
-
-def unzip_all_bangdan_files():
-    """
-    将原始微博数据解压缩到当前目录的bangdan_data文件夹
-    """
-    for year in ANALYSIS_YEARS:
-        bangdan_files_dir = get_bangdan_files_dir(year)
-        unzipped_dir = get_bangdan_unzipped_files_dir(year)
-        extract_7z_files(source_folder=bangdan_files_dir, target_folder=unzipped_dir)
 
 
 def explore_bangdan_data(year: int):
@@ -350,7 +353,9 @@ def explore_bangdan_data(year: int):
     print("没有找到有效的bangdan数据")
 
 
-def build_entertainment_vocab(year: int, top_n: int = 5000, output_file: str = None):
+def build_entertainment_vocab(
+    year: int, top_n: int = 5000, output_file: str = None, mode: str = "test"
+):
     """
     构建娱乐词汇表：从bangdan数据中提取名词并按频率排序
 
@@ -374,12 +379,10 @@ def build_entertainment_vocab(year: int, top_n: int = 5000, output_file: str = N
     # 确保输出目录存在
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
 
-    # 获取bangdan数据目录
+    if mode != "test":
+        unzip_all_bangdan_files(year)
+
     data_dir = get_bangdan_unzipped_files_dir(year)
-    if not os.path.exists(data_dir):
-        print(f"❌ 数据目录不存在: {data_dir}")
-        print(f"   请先运行 explore 命令解压数据")
-        return
 
     # 获取所有bangdan文件
     bangdan_files = [
@@ -396,7 +399,7 @@ def build_entertainment_vocab(year: int, top_n: int = 5000, output_file: str = N
     print(f"✓ 找到 {len(bangdan_files)} 个bangdan文件\n")
 
     # 提取所有名词
-    all_nouns = []
+    all_nouns = defaultdict(int)
     print("开始处理文件...")
 
     for i, file_path in enumerate(bangdan_files, 1):
@@ -404,16 +407,14 @@ def build_entertainment_vocab(year: int, top_n: int = 5000, output_file: str = N
             print(f"  进度: {i}/{len(bangdan_files)} ({i/len(bangdan_files)*100:.1f}%)")
 
         nouns = extract_hotwords_from_bangdan_file(file_path, verbose=False)
-        all_nouns.extend(nouns)
+        for noun in nouns:
+            all_nouns[noun] += 1
 
     print(f"\n✓ 处理完成！共提取 {len(all_nouns)} 个名词（含重复）\n")
 
-    # 统计词频
-    noun_counter = Counter(all_nouns)
-    print(f"✓ 去重后共 {len(noun_counter)} 个唯一名词\n")
-
     # 按频率排序
-    sorted_nouns = noun_counter.most_common(top_n)
+    sorted_nouns = sorted(all_nouns.items(), key=lambda x: x[1], reverse=True)
+    sorted_nouns = sorted_nouns[:top_n]
 
     # 输出到文件
     with open(output_file, "w", encoding="utf-8") as f:
@@ -437,7 +438,9 @@ def build_entertainment_vocab(year: int, top_n: int = 5000, output_file: str = N
     print(f"  唯一名词数: {len(noun_counter):,}")
     print(f"  输出词汇数: {min(top_n, len(sorted_nouns)):,}")
     print(f"  最高频次: {sorted_nouns[0][1] if sorted_nouns else 0}")
-    print(f"  最低频次（Top {top_n}）: {sorted_nouns[min(top_n-1, len(sorted_nouns)-1)][1] if sorted_nouns else 0}")
+    print(
+        f"  最低频次（Top {top_n}）: {sorted_nouns[min(top_n-1, len(sorted_nouns)-1)][1] if sorted_nouns else 0}"
+    )
     print(f"{'='*70}")
     print(f"\n💡 提示: 请手工审查输出文件，筛选出娱乐相关的名词\n")
 
