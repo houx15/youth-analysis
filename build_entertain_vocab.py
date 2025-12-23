@@ -435,7 +435,7 @@ def build_entertainment_vocab(
     print(f"\n{'='*70}")
     print(f"统计信息:")
     print(f"  总名词数（含重复）: {len(all_nouns):,}")
-    print(f"  唯一名词数: {len(noun_counter):,}")
+    print(f"  唯一名词数: {len(all_nouns):,}")
     print(f"  输出词汇数: {min(top_n, len(sorted_nouns)):,}")
     print(f"  最高频次: {sorted_nouns[0][1] if sorted_nouns else 0}")
     print(
