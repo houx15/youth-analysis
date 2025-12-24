@@ -413,10 +413,9 @@ def build_entertainment_vocab(
     print(f"\n✓ 处理完成！共提取 {len(all_nouns)} 个名词（含重复）\n")
 
     # 按频率排序
-
-    all_nouns = {noun: count for noun, count in all_nouns if count > 5}
-    sorted_nouns = sorted(all_nouns.items(), key=lambda x: x[1], reverse=True)
     # 只保留频率大于5的词
+    all_nouns = {noun: count for noun, count in all_nouns.items() if count > 5}
+    sorted_nouns = sorted(all_nouns.items(), key=lambda x: x[1], reverse=True)
     sorted_nouns = sorted_nouns[:top_n]
 
     # 输出到文件
