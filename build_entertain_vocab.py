@@ -414,6 +414,8 @@ def build_entertainment_vocab(
 
     # 按频率排序
     sorted_nouns = sorted(all_nouns.items(), key=lambda x: x[1], reverse=True)
+    # 只保留频率大于5的词
+    sorted_nouns = [noun for noun, count in sorted_nouns if count > 5]
     sorted_nouns = sorted_nouns[:top_n]
 
     # 输出到文件
