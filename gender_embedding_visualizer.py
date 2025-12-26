@@ -1044,7 +1044,7 @@ def plot_province_comparison(stats_df, year):
 
 
 def plot_occupation_by_province(occupation_df, occupation_name, year):
-    """特定职业在各省份的性别偏向对比"""
+    """特定职业在各省份的性别偏向对比（包含两种方法）"""
     occ_data = occupation_df[occupation_df["occupation"] == occupation_name].copy()
 
     if len(occ_data) == 0:
@@ -1053,9 +1053,10 @@ def plot_occupation_by_province(occupation_df, occupation_name, year):
 
     occ_data = occ_data.sort_values("bias_score")
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+    fig, axes = plt.subplots(2, 2, figsize=(18, 12))
 
-    # 左图：性别偏向分数
+    # 1. 左上：余弦相似度差值方法
+    ax1 = axes[0, 0]
     colors = ["#d62728" if x < 0 else "#2ca02c" for x in occ_data["bias_score"]]
     bars = ax1.barh(
         occ_data["province"], occ_data["bias_score"], color=colors, alpha=0.7
@@ -1066,7 +1067,7 @@ def plot_occupation_by_province(occupation_df, occupation_name, year):
         "性别偏向分数\n(负=偏男性, 正=偏女性)", fontsize=11, fontweight="bold"
     )
     ax1.set_title(
-        f'"{occupation_name}"的性别关联：各省份差异', fontsize=12, fontweight="bold"
+        f'"{occupation_name}"的性别关联（余弦相似度差值方法）', fontsize=12, fontweight="bold"
     )
     ax1.grid(axis="x", alpha=0.3)
 
@@ -1081,11 +1082,40 @@ def plot_occupation_by_province(occupation_df, occupation_name, year):
             fontsize=8,
         )
 
-    # 右图：男性/女性相似度对比
+    # 2. 右上：性别轴投影方法
+    ax2 = axes[0, 1]
+    occ_data_proj = occ_data.sort_values("projection_score")
+    colors_proj = ["#d62728" if x < 0 else "#2ca02c" for x in occ_data_proj["projection_score"]]
+    bars_proj = ax2.barh(
+        occ_data_proj["province"], occ_data_proj["projection_score"], color=colors_proj, alpha=0.7
+    )
+
+    ax2.axvline(x=0, color="black", linestyle="--", linewidth=1)
+    ax2.set_xlabel(
+        "性别轴投影分数\n(负=偏男性, 正=偏女性)", fontsize=11, fontweight="bold"
+    )
+    ax2.set_title(
+        f'"{occupation_name}"的性别关联（性别轴投影方法）', fontsize=12, fontweight="bold"
+    )
+    ax2.grid(axis="x", alpha=0.3)
+
+    for bar in bars_proj:
+        width = bar.get_width()
+        ax2.text(
+            width + (0.005 if width > 0 else -0.005),
+            bar.get_y() + bar.get_height() / 2,
+            f"{width:+.3f}",
+            va="center",
+            ha="left" if width > 0 else "right",
+            fontsize=8,
+        )
+
+    # 3. 左下：男性/女性相似度对比
+    ax3 = axes[1, 0]
     x = np.arange(len(occ_data))
     width = 0.35
 
-    bars1 = ax2.barh(
+    bars1 = ax3.barh(
         x - width / 2,
         occ_data["male_similarity"],
         width,
@@ -1093,7 +1123,7 @@ def plot_occupation_by_province(occupation_df, occupation_name, year):
         color="#1f77b4",
         alpha=0.7,
     )
-    bars2 = ax2.barh(
+    bars2 = ax3.barh(
         x + width / 2,
         occ_data["female_similarity"],
         width,
@@ -1102,14 +1132,42 @@ def plot_occupation_by_province(occupation_df, occupation_name, year):
         alpha=0.7,
     )
 
-    ax2.set_yticks(x)
-    ax2.set_yticklabels(occ_data["province"])
-    ax2.set_xlabel("与性别词的相似度", fontsize=11, fontweight="bold")
-    ax2.set_title(
+    ax3.set_yticks(x)
+    ax3.set_yticklabels(occ_data["province"])
+    ax3.set_xlabel("与性别词的相似度", fontsize=11, fontweight="bold")
+    ax3.set_title(
         f'"{occupation_name}"与性别词的相似度分解', fontsize=12, fontweight="bold"
     )
-    ax2.legend(fontsize=10)
-    ax2.grid(axis="x", alpha=0.3)
+    ax3.legend(fontsize=10)
+    ax3.grid(axis="x", alpha=0.3)
+
+    # 4. 右下：两种方法的对比散点图
+    ax4 = axes[1, 1]
+    scatter = ax4.scatter(
+        occ_data["bias_score"],
+        occ_data["projection_score"],
+        s=100,
+        alpha=0.6,
+        edgecolors="black",
+        linewidth=1,
+    )
+
+    for _, row in occ_data.iterrows():
+        ax4.annotate(
+            row["province"],
+            (row["bias_score"], row["projection_score"]),
+            fontsize=8,
+            ha="center",
+        )
+
+    ax4.axhline(y=0, color="gray", linestyle="--", alpha=0.5)
+    ax4.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+    ax4.set_xlabel("余弦相似度差值", fontsize=11, fontweight="bold")
+    ax4.set_ylabel("性别轴投影分数", fontsize=11, fontweight="bold")
+    ax4.set_title(
+        f'"{occupation_name}"两种方法对比', fontsize=12, fontweight="bold"
+    )
+    ax4.grid(alpha=0.3)
 
     plt.tight_layout()
     occ_file = os.path.join(OUTPUT_DIR, f"occupation_{occupation_name}_{year}.pdf")
@@ -1258,6 +1316,313 @@ def generate_summary_report(stats_df, occupation_df, year):
             f.write(f"  (无数据量信息)\n")
 
     print(f"✓ 分析总结已保存: {report_file}")
+
+
+def plot_occupation_overview(occupation_df, year):
+    """职业性别偏向综合分析（两种方法对比）"""
+    print(f"  生成职业性别偏向综合分析图...")
+
+    # 计算每个职业的跨省份平均值
+    occ_avg = occupation_df.groupby("occupation").agg({
+        "bias_score": ["mean", "std"],
+        "projection_score": ["mean", "std"]
+    }).reset_index()
+    occ_avg.columns = ["occupation", "bias_mean", "bias_std", "proj_mean", "proj_std"]
+
+    fig, axes = plt.subplots(2, 2, figsize=(18, 12))
+
+    # 1. 左上：余弦相似度差值方法 - 最偏女性/男性职业
+    ax1 = axes[0, 0]
+    top_female = occ_avg.nlargest(10, "bias_mean").sort_values("bias_mean")
+    top_male = occ_avg.nsmallest(10, "bias_mean").sort_values("bias_mean")
+    combined = pd.concat([top_male, top_female])
+
+    colors = ["#d62728" if x < 0 else "#2ca02c" for x in combined["bias_mean"]]
+    bars = ax1.barh(combined["occupation"], combined["bias_mean"], color=colors, alpha=0.7)
+
+    ax1.axvline(x=0, color="black", linestyle="--", linewidth=1)
+    ax1.set_xlabel("平均性别偏向分数", fontsize=11, fontweight="bold")
+    ax1.set_title("职业性别偏向排名（余弦相似度差值方法）", fontsize=12, fontweight="bold")
+    ax1.grid(axis="x", alpha=0.3)
+
+    for bar in bars:
+        width = bar.get_width()
+        ax1.text(
+            width + (0.005 if width > 0 else -0.005),
+            bar.get_y() + bar.get_height() / 2,
+            f"{width:+.3f}",
+            va="center",
+            ha="left" if width > 0 else "right",
+            fontsize=8,
+        )
+
+    # 2. 右上：性别轴投影方法 - 最偏女性/男性职业
+    ax2 = axes[0, 1]
+    top_female_proj = occ_avg.nlargest(10, "proj_mean").sort_values("proj_mean")
+    top_male_proj = occ_avg.nsmallest(10, "proj_mean").sort_values("proj_mean")
+    combined_proj = pd.concat([top_male_proj, top_female_proj])
+
+    colors_proj = ["#d62728" if x < 0 else "#2ca02c" for x in combined_proj["proj_mean"]]
+    bars_proj = ax2.barh(combined_proj["occupation"], combined_proj["proj_mean"],
+                         color=colors_proj, alpha=0.7)
+
+    ax2.axvline(x=0, color="black", linestyle="--", linewidth=1)
+    ax2.set_xlabel("平均性别轴投影分数", fontsize=11, fontweight="bold")
+    ax2.set_title("职业性别偏向排名（性别轴投影方法）", fontsize=12, fontweight="bold")
+    ax2.grid(axis="x", alpha=0.3)
+
+    for bar in bars_proj:
+        width = bar.get_width()
+        ax2.text(
+            width + (0.005 if width > 0 else -0.005),
+            bar.get_y() + bar.get_height() / 2,
+            f"{width:+.3f}",
+            va="center",
+            ha="left" if width > 0 else "right",
+            fontsize=8,
+        )
+
+    # 3. 左下：两种方法相关性散点图
+    ax3 = axes[1, 0]
+    scatter = ax3.scatter(
+        occ_avg["bias_mean"],
+        occ_avg["proj_mean"],
+        s=100,
+        alpha=0.6,
+        edgecolors="black",
+        linewidth=1,
+    )
+
+    # 计算相关系数
+    corr = occ_avg[["bias_mean", "proj_mean"]].corr().iloc[0, 1]
+
+    # 添加部分职业标签
+    for _, row in occ_avg.nlargest(5, "bias_mean").iterrows():
+        ax3.annotate(row["occupation"], (row["bias_mean"], row["proj_mean"]),
+                    fontsize=8, ha="center")
+    for _, row in occ_avg.nsmallest(5, "bias_mean").iterrows():
+        ax3.annotate(row["occupation"], (row["bias_mean"], row["proj_mean"]),
+                    fontsize=8, ha="center")
+
+    ax3.axhline(y=0, color="gray", linestyle="--", alpha=0.5)
+    ax3.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+    ax3.set_xlabel("余弦相似度差值", fontsize=11, fontweight="bold")
+    ax3.set_ylabel("性别轴投影分数", fontsize=11, fontweight="bold")
+    ax3.set_title(f"两种方法对比 (相关系数: {corr:.3f})", fontsize=12, fontweight="bold")
+    ax3.grid(alpha=0.3)
+
+    # 4. 右下：职业间差异程度对比
+    ax4 = axes[1, 1]
+    occ_variability = occ_avg.nlargest(15, "bias_std").sort_values("bias_std")
+
+    x = np.arange(len(occ_variability))
+    width = 0.35
+
+    bars1 = ax4.barh(x - width/2, occ_variability["bias_std"], width,
+                     label="余弦相似度差值", color="#1f77b4", alpha=0.7)
+    bars2 = ax4.barh(x + width/2, occ_variability["proj_std"], width,
+                     label="性别轴投影", color="#ff7f0e", alpha=0.7)
+
+    ax4.set_yticks(x)
+    ax4.set_yticklabels(occ_variability["occupation"])
+    ax4.set_xlabel("省份间差异（标准差）", fontsize=11, fontweight="bold")
+    ax4.set_title("职业性别观念省份间差异最大的职业", fontsize=12, fontweight="bold")
+    ax4.legend(fontsize=10)
+    ax4.grid(axis="x", alpha=0.3)
+
+    plt.tight_layout()
+    overview_file = os.path.join(OUTPUT_DIR, f"occupation_overview_{year}.pdf")
+    plt.savefig(overview_file, format="pdf", bbox_inches="tight")
+    print(f"✓ 职业综合分析图已保存: {overview_file}")
+    plt.close()
+
+
+def plot_domestic_work_comprehensive(occupation_df, year):
+    """家务分工场域分析（两种方法综合）
+
+    从occupation_df加载domestic_work_bias.csv数据进行分析
+    """
+    print(f"  生成家务分工场域综合分析图...")
+
+    # 加载家务分工数据
+    year_input_dir = os.path.join(INPUT_DIR, str(year))
+    domestic_work_file = os.path.join(year_input_dir, "domestic_work_bias.csv")
+    domestic_work_projection_file = os.path.join(
+        year_input_dir, "domestic_work_gender_projection.csv"
+    )
+
+    if not os.path.exists(domestic_work_file):
+        print(f"  ⚠️  未找到家务分工数据: {domestic_work_file}")
+        return
+
+    domestic_work_df = pd.read_csv(domestic_work_file)
+
+    # 转换省份编码
+    def convert_province_code(province):
+        if pd.isna(province):
+            return province
+        if isinstance(province, (int, float)):
+            code_str = str(int(province))
+        else:
+            code_str = str(province).strip()
+
+        if code_str in PROVINCE_CODE_TO_NAME:
+            return PROVINCE_CODE_TO_NAME[code_str]
+        elif code_str in PROVINCE_TO_REGION:
+            return code_str
+        return code_str
+
+    domestic_work_df["province"] = domestic_work_df["province"].apply(convert_province_code)
+    domestic_work_df = domestic_work_df[domestic_work_df["province"] != "未知"].copy()
+
+    # 加载投影数据（如果存在）
+    domestic_work_projection_df = None
+    if os.path.exists(domestic_work_projection_file):
+        domestic_work_projection_df = pd.read_csv(domestic_work_projection_file)
+        domestic_work_projection_df["province"] = domestic_work_projection_df["province"].apply(
+            convert_province_code
+        )
+        domestic_work_projection_df = domestic_work_projection_df[
+            domestic_work_projection_df["province"] != "未知"
+        ].copy()
+
+    fig, axes = plt.subplots(2, 2, figsize=(18, 12))
+
+    # 1. 左上：余弦相似度差值方法 - 性别在家庭/工作场域的偏向
+    ax1 = axes[0, 0]
+
+    # 计算每个省份的性别场域差异
+    province_gaps = []
+    for province in domestic_work_df["province"].unique():
+        prov_df = domestic_work_df[domestic_work_df["province"] == province]
+        male_bias = prov_df[prov_df["word_type"] == "male"]["domain_bias"].values
+        female_bias = prov_df[prov_df["word_type"] == "female"]["domain_bias"].values
+
+        if len(male_bias) > 0 and len(female_bias) > 0:
+            gap = female_bias[0] - male_bias[0]
+            province_gaps.append({
+                "province": province,
+                "male_domain_bias": male_bias[0],
+                "female_domain_bias": female_bias[0],
+                "gender_domain_gap": gap
+            })
+
+    gaps_df = pd.DataFrame(province_gaps).sort_values("gender_domain_gap")
+
+    colors = ["#d62728" if x < 0 else "#2ca02c" for x in gaps_df["gender_domain_gap"]]
+    bars = ax1.barh(gaps_df["province"], gaps_df["gender_domain_gap"],
+                    color=colors, alpha=0.7)
+
+    ax1.axvline(x=0, color="black", linestyle="--", linewidth=1)
+    ax1.set_xlabel("性别场域差异\n(正=女性更偏家庭)", fontsize=11, fontweight="bold")
+    ax1.set_title("性别在家庭-工作场域的差异（余弦相似度差值方法）",
+                  fontsize=12, fontweight="bold")
+    ax1.grid(axis="x", alpha=0.3)
+
+    for bar in bars:
+        width = bar.get_width()
+        ax1.text(
+            width + (0.005 if width > 0 else -0.005),
+            bar.get_y() + bar.get_height() / 2,
+            f"{width:+.3f}",
+            va="center",
+            ha="left" if width > 0 else "right",
+            fontsize=8,
+        )
+
+    # 2. 右上：性别轴投影方法 - 场域性别偏向
+    ax2 = axes[0, 1]
+    if domestic_work_projection_df is not None and len(domestic_work_projection_df) > 0:
+        proj_sorted = domestic_work_projection_df.sort_values("domain_gender_bias")
+        colors_proj = ["#d62728" if x < 0 else "#2ca02c"
+                      for x in proj_sorted["domain_gender_bias"]]
+        bars_proj = ax2.barh(proj_sorted["province"],
+                            proj_sorted["domain_gender_bias"],
+                            color=colors_proj, alpha=0.7)
+
+        ax2.axvline(x=0, color="black", linestyle="--", linewidth=1)
+        ax2.set_xlabel("场域性别偏向\n(正=family更偏女性)", fontsize=11, fontweight="bold")
+        ax2.set_title("家庭-工作场域性别偏向（性别轴投影方法）",
+                      fontsize=12, fontweight="bold")
+        ax2.grid(axis="x", alpha=0.3)
+
+        for bar in bars_proj:
+            width = bar.get_width()
+            ax2.text(
+                width + (0.005 if width > 0 else -0.005),
+                bar.get_y() + bar.get_height() / 2,
+                f"{width:+.3f}",
+                va="center",
+                ha="left" if width > 0 else "right",
+                fontsize=8,
+            )
+    else:
+        ax2.text(0.5, 0.5, "无投影数据", ha="center", va="center",
+                transform=ax2.transAxes, fontsize=14)
+        ax2.set_title("家庭-工作场域性别偏向（性别轴投影方法）",
+                      fontsize=12, fontweight="bold")
+
+    # 3. 左下：男性/女性在家庭-工作场域的偏向对比（余弦相似度）
+    ax3 = axes[1, 0]
+    x = np.arange(len(gaps_df))
+    width = 0.35
+
+    bars1 = ax3.barh(x - width/2, gaps_df["male_domain_bias"], width,
+                     label="男性场域偏向", color="#1f77b4", alpha=0.7)
+    bars2 = ax3.barh(x + width/2, gaps_df["female_domain_bias"], width,
+                     label="女性场域偏向", color="#ff7f0e", alpha=0.7)
+
+    ax3.set_yticks(x)
+    ax3.set_yticklabels(gaps_df["province"])
+    ax3.axvline(x=0, color="black", linestyle="--", linewidth=1)
+    ax3.set_xlabel("场域偏向分数\n(正=偏家庭, 负=偏工作)", fontsize=11, fontweight="bold")
+    ax3.set_title("男性/女性在家庭-工作场域的偏向对比", fontsize=12, fontweight="bold")
+    ax3.legend(fontsize=10)
+    ax3.grid(axis="x", alpha=0.3)
+
+    # 4. 右下：两种方法的相关性分析
+    ax4 = axes[1, 1]
+    if domestic_work_projection_df is not None and len(domestic_work_projection_df) > 0:
+        # 合并两个数据框
+        merged = gaps_df.merge(domestic_work_projection_df, on="province")
+
+        scatter = ax4.scatter(
+            merged["gender_domain_gap"],
+            merged["domain_gender_bias"],
+            s=100,
+            alpha=0.6,
+            edgecolors="black",
+            linewidth=1,
+        )
+
+        for _, row in merged.iterrows():
+            ax4.annotate(
+                row["province"],
+                (row["gender_domain_gap"], row["domain_gender_bias"]),
+                fontsize=8,
+                ha="center",
+            )
+
+        # 计算相关系数
+        corr = merged[["gender_domain_gap", "domain_gender_bias"]].corr().iloc[0, 1]
+
+        ax4.axhline(y=0, color="gray", linestyle="--", alpha=0.5)
+        ax4.axvline(x=0, color="gray", linestyle="--", alpha=0.5)
+        ax4.set_xlabel("余弦相似度差值方法", fontsize=11, fontweight="bold")
+        ax4.set_ylabel("性别轴投影方法", fontsize=11, fontweight="bold")
+        ax4.set_title(f"两种方法对比 (相关系数: {corr:.3f})", fontsize=12, fontweight="bold")
+        ax4.grid(alpha=0.3)
+    else:
+        ax4.text(0.5, 0.5, "无投影数据", ha="center", va="center",
+                transform=ax4.transAxes, fontsize=14)
+        ax4.set_title("两种方法对比", fontsize=12, fontweight="bold")
+
+    plt.tight_layout()
+    comprehensive_file = os.path.join(OUTPUT_DIR,
+                                     f"domestic_work_comprehensive_{year}.pdf")
+    plt.savefig(comprehensive_file, format="pdf", bbox_inches="tight")
+    print(f"✓ 家务分工综合分析图已保存: {comprehensive_file}")
+    plt.close()
 
 
 def plot_domestic_work_gender_projection(domestic_work_projection_df, year):
@@ -1456,18 +1821,26 @@ def main(year: int, shapefile: str = None):
     print(f"\n📈 生成省份对比图...")
     plot_province_comparison(stats_df, year)
 
-    # 5. 特定职业的省份差异
+    # 5. **NEW** 职业性别偏向综合分析（两种方法）
+    print(f"\n💼 生成职业性别偏向综合分析...")
+    plot_occupation_overview(occupation_df, year)
+
+    # 6. 特定职业的省份差异（更新为包含两种方法）
     print(f"\n👔 生成典型职业分析...")
     key_occupations = ["护士", "程序员", "教师", "医生", "CEO"]
     for occ in key_occupations:
         if occ in occupation_df["occupation"].values:
             plot_occupation_by_province(occupation_df, occ, year)
 
-    # 6. 家务分工词汇性别轴投影分析
-    print(f"\n🏠 生成家务分工词汇性别轴投影分析...")
+    # 7. **NEW** 家务分工场域综合分析（两种方法）
+    print(f"\n🏠 生成家务分工场域综合分析...")
+    plot_domestic_work_comprehensive(occupation_df, year)
+
+    # 8. 家务分工词汇性别轴投影分析（原有功能，保留）
+    print(f"\n🏠 生成家务分工词汇性别轴投影详细分析...")
     plot_domestic_work_gender_projection(domestic_work_projection_df, year)
 
-    # 7. 生成总结报告
+    # 9. 生成总结报告
     print(f"\n📝 生成总结报告...")
     generate_summary_report(stats_df, occupation_df, year)
 
@@ -1476,25 +1849,28 @@ def main(year: int, shapefile: str = None):
     print(f"{'='*70}\n")
 
     print(f"生成的文件包括:")
+    print(f"\n【省份层面分析】")
     print(f"  1. segregation_map_{year}.pdf - 中国地图（性别隔离程度）")
     print(f"  2. segregation_map_regional_{year}.pdf - 中国地图（按区域着色）")
     print(f"  3. segregation_ranking_{year}.pdf - 省份排名图")
     print(f"  4. province_clustering_{year}.pdf - 省份聚类树状图（余弦相似度差值方法）")
-    print(
-        f"  5. province_similarity_{year}.pdf - 省份相似度热力图（余弦相似度差值方法）"
-    )
-    print(
-        f"  6. province_clustering_projection_{year}.pdf - 省份聚类树状图（性别轴投影方法）"
-    )
-    print(
-        f"  7. province_similarity_projection_{year}.pdf - 省份相似度热力图（性别轴投影方法）"
-    )
+    print(f"  5. province_similarity_{year}.pdf - 省份相似度热力图（余弦相似度差值方法）")
+    print(f"  6. province_clustering_projection_{year}.pdf - 省份聚类树状图（性别轴投影方法）")
+    print(f"  7. province_similarity_projection_{year}.pdf - 省份相似度热力图（性别轴投影方法）")
     print(f"  8. province_comparison_{year}.pdf - 省份多维度对比")
-    print(f"  9. occupation_[职业名]_{year}.pdf - 各职业的省份分析")
-    print(
-        f"  10. domestic_work_gender_projection_{year}.pdf - 家务分工词汇性别轴投影分析"
-    )
-    print(f"  11. visualization_summary_{year}.txt - 文字总结报告\n")
+    print(f"\n【职业性别偏向分析】")
+    print(f"  9. occupation_overview_{year}.pdf - **NEW** 职业性别偏向综合分析（两种方法对比）")
+    print(f"  10. occupation_[职业名]_{year}.pdf - 特定职业的省份分析（更新为包含两种方法）")
+    print(f"\n【家务分工场域分析】")
+    print(f"  11. domestic_work_comprehensive_{year}.pdf - **NEW** 家务分工场域综合分析（两种方法对比）")
+    print(f"  12. domestic_work_gender_projection_{year}.pdf - 家务分工词汇性别轴投影详细分析")
+    print(f"\n【总结报告】")
+    print(f"  13. visualization_summary_{year}.txt - 文字总结报告\n")
+    print(f"\n✨ **主要更新**：")
+    print(f"  - 所有分析现在包含两种方法：余弦相似度差值 + 性别轴投影")
+    print(f"  - 新增职业性别偏向综合分析，直接对比两种方法")
+    print(f"  - 新增家务分工场域综合分析，展示两种方法的一致性")
+    print(f"  - 更新职业分析图，包含4个子图展示完整信息\n")
 
 
 if __name__ == "__main__":
