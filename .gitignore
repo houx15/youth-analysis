@@ -183,3 +183,8 @@ data/*
 user_count*/
 *_dedup/
 *.c
+*/*_report_*/*
+
+gender_norms/results/*
+figures/*
+*.parquet
