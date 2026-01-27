@@ -32,8 +32,8 @@ warnings.filterwarnings("ignore")
 # 配置
 # =============================================================================
 
-MODEL_DIR = "gender_embedding/embedding_models"
-OUTPUT_DIR = "gender_embedding/results/gender_norm_index"
+MODEL_DIR = "gender_norms/gender_embedding/embedding_models"
+OUTPUT_DIR = "gender_norms/gender_embedding/results/gender_norm_index"
 WORDLISTS_DIR = "gender_norms/wordlists"
 
 # 确保输出目录存在
@@ -396,7 +396,9 @@ def run_oov_check(
                 "word": word,
                 "category": info["category"],
                 "n_provinces_found": n_found,
-                "coverage_rate": n_found / total_provinces if total_provinces > 0 else 0,
+                "coverage_rate": (
+                    n_found / total_provinces if total_provinces > 0 else 0
+                ),
                 "missing_provinces": ",".join(missing[:5])
                 + ("..." if len(missing) > 5 else ""),
             }
@@ -419,7 +421,9 @@ def run_oov_check(
     if len(high_oov_words) > 0:
         print(f"\n  [警告] 以下词在超过50%省份OOV（建议检查）:")
         for _, row in high_oov_words.iterrows():
-            print(f"    - [{row['category']}] {row['word']}: {row['n_provinces_found']}/{total_provinces}")
+            print(
+                f"    - [{row['category']}] {row['word']}: {row['n_provinces_found']}/{total_provinces}"
+            )
 
     return province_coverage_df, word_coverage_df, province_oov_details
 
@@ -437,7 +441,9 @@ def get_word_vector(model: KeyedVectors, word: str) -> Optional[np.ndarray]:
         return None
 
 
-def compute_centroid(model: KeyedVectors, words: List[str]) -> Tuple[np.ndarray, List[str]]:
+def compute_centroid(
+    model: KeyedVectors, words: List[str]
+) -> Tuple[np.ndarray, List[str]]:
     """计算一组词的质心向量"""
     vectors = []
     found_words = []
@@ -771,8 +777,12 @@ def compute_weat_for_dimension(
         cohens_d=cohens_d,
         group1_mean=float(np.mean(group1_values)),
         group2_mean=float(np.mean(group2_values)),
-        group1_std=float(np.std(group1_values, ddof=1)) if len(group1_values) > 1 else 0.0,
-        group2_std=float(np.std(group2_values, ddof=1)) if len(group2_values) > 1 else 0.0,
+        group1_std=(
+            float(np.std(group1_values, ddof=1)) if len(group1_values) > 1 else 0.0
+        ),
+        group2_std=(
+            float(np.std(group2_values, ddof=1)) if len(group2_values) > 1 else 0.0
+        ),
         group1_n=len(group1_values),
         group2_n=len(group2_values),
         pooled_std=pooled_std,

@@ -51,7 +51,7 @@ except:
 # 配置
 # =============================================================================
 
-INPUT_DIR = "gender_embedding/results/gender_norm_index"
+INPUT_DIR = "gender_norms/gender_embedding/results/gender_norm_index"
 SHAPEFILE_DIR = "configs/china_shp"
 
 # 省份名称映射（用于地图）
@@ -251,7 +251,14 @@ def plot_projection_boxplot(projection_df: pd.DataFrame, year: int):
 
     # 2. 分类别的投影分布（violin plot）
     ax2 = axes[1]
-    category_order = ["family", "work", "leadership", "non_leadership", "stem", "non_stem"]
+    category_order = [
+        "family",
+        "work",
+        "leadership",
+        "non_leadership",
+        "stem",
+        "non_stem",
+    ]
     category_labels = {
         "family": "家庭",
         "work": "工作",
@@ -262,7 +269,9 @@ def plot_projection_boxplot(projection_df: pd.DataFrame, year: int):
     }
 
     # 只保留存在的类别
-    existing_categories = [c for c in category_order if c in projection_df["category"].unique()]
+    existing_categories = [
+        c for c in category_order if c in projection_df["category"].unique()
+    ]
 
     sns.violinplot(
         data=projection_df[projection_df["category"].isin(existing_categories)],
@@ -316,7 +325,9 @@ def plot_weat_distribution(weat_df: pd.DataFrame, year: int):
         dim_data = weat_df[weat_df["dimension"] == dim]["cohens_d"]
 
         if len(dim_data) == 0:
-            ax.text(0.5, 0.5, "无数据", ha="center", va="center", transform=ax.transAxes)
+            ax.text(
+                0.5, 0.5, "无数据", ha="center", va="center", transform=ax.transAxes
+            )
             continue
 
         # 绘制histogram + KDE
@@ -332,8 +343,20 @@ def plot_weat_distribution(weat_df: pd.DataFrame, year: int):
         # 添加均值和中位数线
         mean_val = dim_data.mean()
         median_val = dim_data.median()
-        ax.axvline(x=mean_val, color="red", linestyle="--", linewidth=2, label=f"均值: {mean_val:.3f}")
-        ax.axvline(x=median_val, color="blue", linestyle=":", linewidth=2, label=f"中位数: {median_val:.3f}")
+        ax.axvline(
+            x=mean_val,
+            color="red",
+            linestyle="--",
+            linewidth=2,
+            label=f"均值: {mean_val:.3f}",
+        )
+        ax.axvline(
+            x=median_val,
+            color="blue",
+            linestyle=":",
+            linewidth=2,
+            label=f"中位数: {median_val:.3f}",
+        )
         ax.axvline(x=0, color="black", linestyle="-", linewidth=1, alpha=0.5)
 
         ax.set_xlabel("Cohen's d", fontsize=12, fontweight="bold")
@@ -505,8 +528,20 @@ def plot_province_map(
 
     # 识别省份名称列
     possible_name_cols = [
-        "ADM1_ZH", "admin1", "NAME_1", "name_1", "NAME", "name",
-        "PROV", "prov", "Province", "province", "NAME_CH", "name_ch", "FCNAME", "fcname",
+        "ADM1_ZH",
+        "admin1",
+        "NAME_1",
+        "name_1",
+        "NAME",
+        "name",
+        "PROV",
+        "prov",
+        "Province",
+        "province",
+        "NAME_CH",
+        "name_ch",
+        "FCNAME",
+        "fcname",
     ]
     name_col = None
     for col in possible_name_cols:
@@ -533,7 +568,9 @@ def plot_province_map(
 
         # 映射省份名称
         dim_data["province_full"] = dim_data["province"].map(PROVINCE_NAME_MAPPING)
-        dim_data["province_full"] = dim_data["province_full"].fillna(dim_data["province"])
+        dim_data["province_full"] = dim_data["province_full"].fillna(
+            dim_data["province"]
+        )
 
         # 合并数据
         china_map_merged = china_map.merge(
@@ -605,7 +642,11 @@ def plot_category_comparison(projection_df: pd.DataFrame, year: int):
         return
 
     # 计算每个省份每个类别的平均投影
-    category_means = projection_df.groupby(["province", "category"])["cosine_sim"].mean().reset_index()
+    category_means = (
+        projection_df.groupby(["province", "category"])["cosine_sim"]
+        .mean()
+        .reset_index()
+    )
 
     # 对比维度
     comparisons = [
@@ -619,11 +660,17 @@ def plot_category_comparison(projection_df: pd.DataFrame, year: int):
     for i, (cat1, cat2, title) in enumerate(comparisons):
         ax = axes[i]
 
-        cat1_data = category_means[category_means["category"] == cat1][["province", "cosine_sim"]]
-        cat2_data = category_means[category_means["category"] == cat2][["province", "cosine_sim"]]
+        cat1_data = category_means[category_means["category"] == cat1][
+            ["province", "cosine_sim"]
+        ]
+        cat2_data = category_means[category_means["category"] == cat2][
+            ["province", "cosine_sim"]
+        ]
 
         if len(cat1_data) == 0 or len(cat2_data) == 0:
-            ax.text(0.5, 0.5, "无数据", ha="center", va="center", transform=ax.transAxes)
+            ax.text(
+                0.5, 0.5, "无数据", ha="center", va="center", transform=ax.transAxes
+            )
             continue
 
         merged = cat1_data.merge(cat2_data, on="province", suffixes=("_1", "_2"))

@@ -24,8 +24,8 @@ import glob
 
 warnings.filterwarnings("ignore")
 
-MODEL_DIR = "gender_embedding/embedding_models"
-OUTPUT_DIR = "gender_embedding/results/embedding_analysis"
+MODEL_DIR = "gender_norms/gender_embedding/embedding_models"
+OUTPUT_DIR = "gender_norms/gender_embedding/results/embedding_analysis"
 WORDLISTS_DIR = "wordlists"
 
 # 确保输出目录存在
@@ -278,9 +278,15 @@ def analyze_model(province, model):
         return None
 
     report_lines.append(f"找到男性词: {len(male_found)}/{len(GENDER_WORDS['male'])} 个")
-    report_lines.append(f"  {', '.join(male_found[:15])}{'...' if len(male_found) > 15 else ''}")
-    report_lines.append(f"找到女性词: {len(female_found)}/{len(GENDER_WORDS['female'])} 个")
-    report_lines.append(f"  {', '.join(female_found[:15])}{'...' if len(female_found) > 15 else ''}\n")
+    report_lines.append(
+        f"  {', '.join(male_found[:15])}{'...' if len(male_found) > 15 else ''}"
+    )
+    report_lines.append(
+        f"找到女性词: {len(female_found)}/{len(GENDER_WORDS['female'])} 个"
+    )
+    report_lines.append(
+        f"  {', '.join(female_found[:15])}{'...' if len(female_found) > 15 else ''}\n"
+    )
 
     # 计算每个职业词的性别偏向（使用两种方法）
     occupation_results = []
@@ -314,7 +320,9 @@ def analyze_model(province, model):
         report_lines.append(f"❌ 没有找到任何职业词\n")
         return None
 
-    report_lines.append(f"找到职业词: {len(found_occupations)}/{len(ALL_OCCUPATIONS)} 个\n")
+    report_lines.append(
+        f"找到职业词: {len(found_occupations)}/{len(ALL_OCCUPATIONS)} 个\n"
+    )
 
     # 排序并展示结果（按余弦相似度差值）
     occupation_results_sorted = sorted(
@@ -464,7 +472,9 @@ def analyze_model(province, model):
             report_lines.append(
                 f"  余弦相似度差值: {bias_gap:+.3f} (正值表示family比work更偏女性)"
             )
-            report_lines.append(f"  性别轴投影: {proj_gap:+.3f} (正值表示family比work更偏女性)")
+            report_lines.append(
+                f"  性别轴投影: {proj_gap:+.3f} (正值表示family比work更偏女性)"
+            )
 
         # 展示最偏女性和最偏男性的词（按余弦相似度差值）
         sorted_results = sorted(

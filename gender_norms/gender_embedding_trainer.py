@@ -33,8 +33,8 @@ warnings.filterwarnings("ignore")
 
 DATA_DIR_2020 = "cleaned_weibo_cov"
 DATA_DIR_2024 = "../cleaned_weibo_data"
-PREPARED_DIR_2024 = "gender_embedding/prepared_weibo_2024"
-OUTPUT_DIR = "gender_embedding/embedding_models"
+PREPARED_DIR_2024 = "gender_norms/gender_embedding/prepared_weibo_2024"
+OUTPUT_DIR = "gender_norms/gender_embedding/embedding_models"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(PREPARED_DIR_2024, exist_ok=True)
