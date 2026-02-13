@@ -19,6 +19,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.colors import TwoSlopeNorm
 import seaborn as sns
 
 warnings.filterwarnings("ignore")
@@ -52,6 +53,7 @@ except:
 # =============================================================================
 
 INPUT_DIR = "gender_norms/gender_embedding/results/gender_norm_index"
+INPUT_DIR = "gender_norms/results"
 SHAPEFILE_DIR = "configs/china_shp"
 
 # 省份名称映射（用于地图）
@@ -127,6 +129,42 @@ PROVINCE_CODE_TO_NAME = {
     "65": "新疆",
 }
 
+CN_TO_EN_PROVINCE = {
+    "北京": "Beijing",
+    "天津": "Tianjin",
+    "上海": "Shanghai",
+    "重庆": "Chongqing",
+    "河北": "Hebei",
+    "山西": "Shanxi",
+    "辽宁": "Liaoning",
+    "吉林": "Jilin",
+    "黑龙江": "Heilongjiang",
+    "江苏": "Jiangsu",
+    "浙江": "Zhejiang",
+    "安徽": "Anhui",
+    "福建": "Fujian",
+    "江西": "Jiangxi",
+    "山东": "Shandong",
+    "河南": "Henan",
+    "湖北": "Hubei",
+    "湖南": "Hunan",
+    "广东": "Guangdong",
+    "海南": "Hainan",
+    "四川": "Sichuan",
+    "贵州": "Guizhou",
+    "云南": "Yunnan",
+    "陕西": "Shaanxi",
+    "甘肃": "Gansu",
+    "青海": "Qinghai",
+    "广西": "Guangxi",
+    "内蒙古": "Inner Mongolia",
+    "宁夏": "Ningxia",
+    "新疆": "Xinjiang",
+    "西藏": "Tibet",
+    "中国香港": "Hong Kong",
+    "中国澳门": "Macau",
+    "中国台湾": "Taiwan",
+}
 
 # =============================================================================
 # 数据加载
@@ -217,9 +255,10 @@ def plot_projection_boxplot(projection_df: pd.DataFrame, year: int):
         print(f"    [跳过] 无投影数据")
         return
 
+    projection_df["province_en"] = projection_df["province"].map(CN_TO_EN_PROVINCE)
     # 按省份排序
     province_order = (
-        projection_df.groupby("province")["cosine_sim"]
+        projection_df.groupby("province_en")["cosine_sim"]
         .median()
         .sort_values()
         .index.tolist()
@@ -231,18 +270,20 @@ def plot_projection_boxplot(projection_df: pd.DataFrame, year: int):
     ax1 = axes[0]
     sns.boxplot(
         data=projection_df,
-        x="province",
+        x="province_en",
         y="cosine_sim",
         order=province_order,
         ax=ax1,
         palette="Set3",
     )
     ax1.axhline(y=0, color="red", linestyle="--", linewidth=1, alpha=0.7)
-    ax1.set_xlabel("省份", fontsize=12, fontweight="bold")
-    ax1.set_ylabel("余弦相似度（性别轴投影）", fontsize=12, fontweight="bold")
+    ax1.set_xlabel("Province", fontsize=12, fontweight="bold")
+    ax1.set_ylabel(
+        "Cosine Similarity (Gender Axis Projection)", fontsize=12, fontweight="bold"
+    )
     ax1.set_title(
-        f"各省概念词在性别轴上的投影分布 ({year}年)\n"
-        "正值=偏女性方向，负值=偏男性方向",
+        f"Distribution of Concept Words on Gender Axis (Year: {year})\n"
+        "Positive=Female-Biased, Negative=Male-Biased",
         fontsize=14,
         fontweight="bold",
     )
@@ -260,12 +301,12 @@ def plot_projection_boxplot(projection_df: pd.DataFrame, year: int):
         "non_stem",
     ]
     category_labels = {
-        "family": "家庭",
-        "work": "工作",
-        "leadership": "领导力",
-        "non_leadership": "非领导力",
+        "family": "Family",
+        "work": "Work",
+        "leadership": "Leadership",
+        "non_leadership": "Non-Leadership",
         "stem": "STEM",
-        "non_stem": "非STEM",
+        "non_stem": "Non-STEM",
     }
 
     # 只保留存在的类别
@@ -283,10 +324,12 @@ def plot_projection_boxplot(projection_df: pd.DataFrame, year: int):
         inner="box",
     )
     ax2.axhline(y=0, color="red", linestyle="--", linewidth=1, alpha=0.7)
-    ax2.set_xlabel("词类别", fontsize=12, fontweight="bold")
-    ax2.set_ylabel("余弦相似度（性别轴投影）", fontsize=12, fontweight="bold")
+    ax2.set_xlabel("Category", fontsize=12, fontweight="bold")
+    ax2.set_ylabel(
+        "Cosine Similarity (Gender Axis Projection)", fontsize=12, fontweight="bold"
+    )
     ax2.set_title(
-        f"各类别概念词的投影分布 ({year}年)",
+        f"Distribution of Concept Words on Gender Axis (Year: {year})\nPositive=Female-Biased, Negative=Male-Biased",
         fontsize=14,
         fontweight="bold",
     )
@@ -312,9 +355,9 @@ def plot_weat_distribution(weat_df: pd.DataFrame, year: int):
 
     dimensions = ["work_family", "leadership", "stem"]
     dim_labels = {
-        "work_family": "工作-家庭维度\n(正值=家庭偏女性)",
-        "leadership": "领导力维度\n(正值=领导偏男性)",
-        "stem": "STEM维度\n(正值=STEM偏男性)",
+        "work_family": "Work-Family\n(Positive=Women Associated with Family)",
+        "leadership": "Leadership\n(Positive=Men Associated with Leadership)",
+        "stem": "STEM\n(Positive=Men Associated with STEM)",
     }
     colors = ["#2ecc71", "#e74c3c", "#3498db"]
 
@@ -326,7 +369,7 @@ def plot_weat_distribution(weat_df: pd.DataFrame, year: int):
 
         if len(dim_data) == 0:
             ax.text(
-                0.5, 0.5, "无数据", ha="center", va="center", transform=ax.transAxes
+                0.5, 0.5, "No Data", ha="center", va="center", transform=ax.transAxes
             )
             continue
 
@@ -348,25 +391,25 @@ def plot_weat_distribution(weat_df: pd.DataFrame, year: int):
             color="red",
             linestyle="--",
             linewidth=2,
-            label=f"均值: {mean_val:.3f}",
+            label=f"Mean: {mean_val:.3f}",
         )
         ax.axvline(
             x=median_val,
             color="blue",
             linestyle=":",
             linewidth=2,
-            label=f"中位数: {median_val:.3f}",
+            label=f"Median: {median_val:.3f}",
         )
         ax.axvline(x=0, color="black", linestyle="-", linewidth=1, alpha=0.5)
 
         ax.set_xlabel("Cohen's d", fontsize=12, fontweight="bold")
-        ax.set_ylabel("频数", fontsize=12, fontweight="bold")
+        ax.set_ylabel("Frequency", fontsize=12, fontweight="bold")
         ax.set_title(dim_labels[dim], fontsize=13, fontweight="bold")
         ax.legend(fontsize=10)
         ax.grid(axis="y", alpha=0.3)
 
     plt.suptitle(
-        f"Gender Norm Index 分布 ({year}年)\n|d|≈0.2小效应, |d|≈0.5中效应, |d|≈0.8大效应",
+        f"Gender Norm Index Distribution (Year: {year})\n|d|≈0.2 Small Effect, |d|≈0.5 Medium Effect, |d|≈0.8 Large Effect",
         fontsize=14,
         fontweight="bold",
     )
@@ -390,9 +433,9 @@ def plot_weat_ranking(weat_df: pd.DataFrame, year: int):
 
     dimensions = ["work_family", "leadership", "stem"]
     dim_labels = {
-        "work_family": "工作-家庭维度 (d)",
-        "leadership": "领导力维度 (d)",
-        "stem": "STEM维度 (d)",
+        "work_family": "Work-Family (d)",
+        "leadership": "Leadership (d)",
+        "stem": "STEM (d)",
     }
     colors = ["#2ecc71", "#e74c3c", "#3498db"]
 
@@ -400,6 +443,9 @@ def plot_weat_ranking(weat_df: pd.DataFrame, year: int):
         fig, ax = plt.subplots(1, 1, figsize=(12, 10))
 
         dim_data = weat_df[weat_df["dimension"] == dim].copy()
+
+        dim_data["province_en"] = dim_data["province"].map(CN_TO_EN_PROVINCE)
+
         if len(dim_data) == 0:
             plt.close()
             continue
@@ -410,7 +456,7 @@ def plot_weat_ranking(weat_df: pd.DataFrame, year: int):
         bar_colors = [color if d >= 0 else "#95a5a6" for d in dim_data["cohens_d"]]
 
         bars = ax.barh(
-            dim_data["province"],
+            dim_data["province_en"],
             dim_data["cohens_d"],
             color=bar_colors,
             alpha=0.7,
@@ -432,7 +478,7 @@ def plot_weat_ranking(weat_df: pd.DataFrame, year: int):
         ax.axvline(x=0, color="black", linestyle="-", linewidth=1)
         ax.set_xlabel(dim_labels[dim], fontsize=12, fontweight="bold")
         ax.set_title(
-            f"各省份 {dim_labels[dim]} 排名 ({year}年)",
+            f"Ranking of {dim_labels[dim]} by Province (Year: {year})",
             fontsize=14,
             fontweight="bold",
         )
@@ -455,9 +501,11 @@ def plot_weat_heatmap(weat_df: pd.DataFrame, year: int):
         print(f"    [跳过] 无WEAT数据")
         return
 
+    weat_df["province_en"] = weat_df["province"].map(CN_TO_EN_PROVINCE)
+
     # 转换为宽格式
     pivot_df = weat_df.pivot_table(
-        index="province",
+        index="province_en",
         columns="dimension",
         values="cohens_d",
         aggfunc="first",
@@ -480,18 +528,18 @@ def plot_weat_heatmap(weat_df: pd.DataFrame, year: int):
         linewidths=0.5,
     )
 
-    ax.set_xlabel("维度", fontsize=12, fontweight="bold")
-    ax.set_ylabel("省份", fontsize=12, fontweight="bold")
+    ax.set_xlabel("Dimension", fontsize=12, fontweight="bold")
+    ax.set_ylabel("Province", fontsize=12, fontweight="bold")
     ax.set_title(
-        f"Gender Norm Index 热力图 ({year}年)\n正值=传统性别规范方向",
+        f"Gender Norm Index Heatmap (Year: {year})\nPositive=Traditional Gender Norm Direction",
         fontsize=14,
         fontweight="bold",
     )
 
     # 修改列标签
     col_labels = {
-        "work_family": "工作-家庭",
-        "leadership": "领导力",
+        "work_family": "Work-Family",
+        "leadership": "Leadership",
         "stem": "STEM",
     }
     ax.set_xticklabels([col_labels.get(c, c) for c in pivot_df.columns])
@@ -555,9 +603,9 @@ def plot_province_map(
 
     dimensions = ["work_family", "leadership", "stem"]
     dim_labels = {
-        "work_family": "工作-家庭维度",
-        "leadership": "领导力维度",
-        "stem": "STEM维度",
+        "work_family": "Work-Family",
+        "leadership": "Leadership",
+        "stem": "STEM",
     }
 
     for dim in dimensions:
@@ -577,18 +625,38 @@ def plot_province_map(
             dim_data, left_on=name_col, right_on="province_full", how="left"
         )
 
+        china_map_merged["province_en"] = china_map_merged["province"].map(
+            CN_TO_EN_PROVINCE
+        )
+
+        # 绘制地图
+        # 计算对称色标范围（推荐用分位数避免极端值压扁）
+        values = dim_data["cohens_d"].dropna()
+        if len(values) == 0:
+            continue
+
+        # 方案A：用最大绝对值（最直观，但容易被极端值拉伸）
+        # M = float(values.abs().max())
+
+        # 方案B（推荐）：用高分位数做截断，更稳定
+        M = float(values.abs().quantile(0.95))
+        if M == 0:
+            M = float(values.abs().max())  # 兜底
+
+        norm = TwoSlopeNorm(vcenter=0.0, vmin=-M, vmax=+M)
+
         # 绘制地图
         fig, ax = plt.subplots(1, 1, figsize=(16, 12))
 
-        # 使用红绿配色
         china_map_merged.plot(
             column="cohens_d",
-            cmap="RdYlGn",
+            cmap="RdBu_r",  # 正值=红色，负值=蓝色（中间接近白）
+            norm=norm,
             linewidth=0.5,
             edgecolor="white",
             legend=True,
             ax=ax,
-            missing_kwds={"color": "lightgrey", "label": "无数据"},
+            missing_kwds={"color": "lightgrey", "label": "No Data"},
             legend_kwds={
                 "label": f"Cohen's d ({dim_labels[dim]})",
                 "orientation": "vertical",
@@ -601,7 +669,7 @@ def plot_province_map(
             if pd.notna(row.get("cohens_d")):
                 centroid = row["geometry"].centroid
                 ax.annotate(
-                    text=f"{row['province']}\n{row['cohens_d']:+.2f}",
+                    text=f"{row['province_en']}\n{row['cohens_d']:+.2f}",
                     xy=(centroid.x, centroid.y),
                     ha="center",
                     va="center",
@@ -616,8 +684,8 @@ def plot_province_map(
                 )
 
         ax.set_title(
-            f"Gender Norm Index: {dim_labels[dim]} ({year}年)\n"
-            "正值=传统性别规范方向（颜色越绿=越传统）",
+            f"Gender Norm Index: {dim_labels[dim]} (Year: {year})\n"
+            "Color Scale: Positive=Red, Negative=Blue, Darker=Larger |d|",
             fontsize=16,
             fontweight="bold",
             pad=20,
@@ -641,18 +709,20 @@ def plot_category_comparison(projection_df: pd.DataFrame, year: int):
         print(f"    [跳过] 无投影数据")
         return
 
+    projection_df["province_en"] = projection_df["province"].map(CN_TO_EN_PROVINCE)
+
     # 计算每个省份每个类别的平均投影
     category_means = (
-        projection_df.groupby(["province", "category"])["cosine_sim"]
+        projection_df.groupby(["province_en", "category"])["cosine_sim"]
         .mean()
         .reset_index()
     )
 
     # 对比维度
     comparisons = [
-        ("family", "work", "家庭 vs 工作"),
-        ("non_leadership", "leadership", "非领导 vs 领导"),
-        ("non_stem", "stem", "非STEM vs STEM"),
+        ("family", "work", "Family vs Work"),
+        ("non_leadership", "leadership", "Non-Leadership vs Leadership"),
+        ("non_stem", "stem", "Non-STEM vs STEM"),
     ]
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 8))
@@ -661,19 +731,19 @@ def plot_category_comparison(projection_df: pd.DataFrame, year: int):
         ax = axes[i]
 
         cat1_data = category_means[category_means["category"] == cat1][
-            ["province", "cosine_sim"]
+            ["province_en", "cosine_sim"]
         ]
         cat2_data = category_means[category_means["category"] == cat2][
-            ["province", "cosine_sim"]
+            ["province_en", "cosine_sim"]
         ]
 
         if len(cat1_data) == 0 or len(cat2_data) == 0:
             ax.text(
-                0.5, 0.5, "无数据", ha="center", va="center", transform=ax.transAxes
+                0.5, 0.5, "No Data", ha="center", va="center", transform=ax.transAxes
             )
             continue
 
-        merged = cat1_data.merge(cat2_data, on="province", suffixes=("_1", "_2"))
+        merged = cat1_data.merge(cat2_data, on="province_en", suffixes=("_1", "_2"))
 
         ax.scatter(
             merged["cosine_sim_2"],
@@ -687,7 +757,7 @@ def plot_category_comparison(projection_df: pd.DataFrame, year: int):
         # 添加省份标签
         for _, row in merged.iterrows():
             ax.annotate(
-                row["province"],
+                row["province_en"],
                 (row["cosine_sim_2"], row["cosine_sim_1"]),
                 fontsize=8,
                 alpha=0.8,
@@ -702,13 +772,13 @@ def plot_category_comparison(projection_df: pd.DataFrame, year: int):
         ax.axhline(y=0, color="gray", linestyle=":", alpha=0.5)
         ax.axvline(x=0, color="gray", linestyle=":", alpha=0.5)
 
-        ax.set_xlabel(f"{cat2} 平均投影", fontsize=11, fontweight="bold")
-        ax.set_ylabel(f"{cat1} 平均投影", fontsize=11, fontweight="bold")
+        ax.set_xlabel(f"{cat2} Average Projection", fontsize=11, fontweight="bold")
+        ax.set_ylabel(f"{cat1} Average Projection", fontsize=11, fontweight="bold")
         ax.set_title(title, fontsize=13, fontweight="bold")
         ax.grid(alpha=0.3)
 
     plt.suptitle(
-        f"类别间性别偏向比较 ({year}年)\n点在对角线上方=第一类别更偏女性",
+        f"Comparison of Gender Bias between Categories (Year: {year})\nPoints Above Diagonal=First Category More Female-Biased",
         fontsize=14,
         fontweight="bold",
     )
