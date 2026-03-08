@@ -176,9 +176,50 @@ youth-analysis/
 ├── configs/              # Configuration (configs.example.py → configs.py)
 ├── utils/               # Utility functions
 ├── gender_norms/        # Gender norms submodule (see below)
+│   ├── *.py             # All Python scripts for gender norm analysis
+│   ├── wordlists/       # JSON wordlists
+│   ├── results/         # Analysis results
+│   └── newspaper_data/  # Newspaper analysis data (git ignored)
+│       ├── *.json       # Mapping files
+│       ├── *.csv        # Statistics
+│       ├── logs/        # Log files
+│       └── newspaper_corpus/  # Segmented corpus
+├── *.sh                 # SLURM submission scripts (in root directory)
 ├── *.py                 # Analysis scripts
 ├── *.pyx                # Cython modules
 └── test.py              # Ad-hoc tests
+```
+
+## 📁 File Organization Rules
+
+### Python Scripts
+- **Gender norms scripts**: Place in `gender_norms/` directory
+  - Example: `newspaper_extractor.py`, `newspaper_corpus_builder.py`, etc.
+  - These are part of the gender norms analysis pipeline
+
+### Shell Scripts
+- **SLURM scripts**: Place in project root directory (`*.sh`)
+  - Example: `extract_newspapers.sh`, `build_corpus.sh`, etc.
+  - Use relative paths: `python gender_norms/script_name.py`
+
+### Data Directories
+- **All data outputs**: Store in `gender_norms/newspaper_data/`
+  - This directory is in `.gitignore` (data files not tracked)
+  - Includes: mappings, statistics, logs, corpus files
+
+### Documentation
+- **One consolidated document**: `gender_norms/newspaper_data/README.md`
+  - Consolidate all progress, changelogs, and status into single file
+  - Update incrementally rather than creating multiple docs
+
+### Example Paths
+```bash
+# In SLURM script
+python gender_norms/newspaper_corpus_builder.py build
+
+# Python script reading/writing data
+DATA_DIR = "/lustre/home/2401111059/newspaper_data/pdf_txt"
+OUTPUT_DIR = "gender_norms/newspaper_data/newspaper_corpus"
 ```
 
 ## Gender Norms Submodule (`gender_norms/`)

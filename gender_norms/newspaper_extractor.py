@@ -20,7 +20,7 @@ from tqdm import tqdm
 
 
 DATA_DIR = "/lustre/home/2401111059/newspaper_data/pdf_txt"
-OUTPUT_DIR = "newspaper_data"
+OUTPUT_DIR = "gender_norms/newspaper_data"
 
 
 def extract_newspaper_names(sample_size: int = None):
