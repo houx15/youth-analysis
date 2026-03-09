@@ -23,18 +23,33 @@ DATA_DIR = "/lustre/home/2401111059/newspaper_data/pdf_txt"
 OUTPUT_DIR = "gender_norms/newspaper_data"
 
 
-def extract_newspaper_names(sample_size: int = None):
+def extract_newspaper_names(sample_size: int = None, incremental: bool = True):
     """
     从所有JSONL文件中提取唯一的报纸名称
     
     Args:
         sample_size: 如果提供，只处理每个文件的前sample_size行（用于测试）
+        incremental: 是否增量提取（跳过已有映射的报纸）
     """
     print(f"\n{'='*60}")
     print(f"📰 开始提取报纸名称")
     print(f"{'='*60}\n")
     
     os.makedirs(OUTPUT_DIR, exist_ok=True)
+    
+    # 尝试加载已有映射
+    existing_newspapers = set()
+    mapping_file = os.path.join(OUTPUT_DIR, "newspaper_province_mapping.json")
+    
+    if incremental and os.path.exists(mapping_file):
+        try:
+            with open(mapping_file, 'r', encoding='utf-8') as f:
+                existing_mapping = json.load(f)
+                existing_newspapers = set(existing_mapping.keys())
+            print(f"🔄 增量模式: 已有 {len(existing_newspapers)} 种报纸映射")
+        except Exception as e:
+            print(f"⚠️  加载映射文件失败: {e}，将全量提取")
+            existing_newspapers = set()
     
     # 获取所有JSONL文件
     all_files = sorted([f for f in os.listdir(DATA_DIR) if f.endswith('.json')])
@@ -43,6 +58,7 @@ def extract_newspaper_names(sample_size: int = None):
     # 统计报纸名称和文章数量
     newspaper_counts: Dict[str, int] = defaultdict(int)
     total_articles = 0
+    skipped_articles = 0
     errors = 0
     
     print(f"\n开始处理文件...\n")
@@ -91,8 +107,12 @@ def extract_newspaper_names(sample_size: int = None):
                         source = article.get('source', '').strip()
                         
                         if source:
-                            newspaper_counts[source] += 1
-                            total_articles += 1
+                            # 增量模式：跳过已有映射的报纸
+                            if incremental and source in existing_newspapers:
+                                skipped_articles += 1
+                            else:
+                                newspaper_counts[source] += 1
+                                total_articles += 1
                         
                         line_count += 1
                         
@@ -108,21 +128,22 @@ def extract_newspaper_names(sample_size: int = None):
     print(f"\n{'='*60}")
     print(f"✅ 提取完成")
     print(f"{'='*60}")
-    print(f"  总文章数: {total_articles:,}")
-    print(f"  唯一报纸数: {len(newspaper_counts):,}")
+    print(f"  新发现文章数: {total_articles:,}")
+    print(f"  跳过已有映射: {skipped_articles:,}")
+    print(f"  新发现报纸数: {len(newspaper_counts):,}")
     print(f"  错误数: {errors:,}")
     
     # 按文章数量排序
     sorted_newspapers = sorted(newspaper_counts.items(), key=lambda x: x[1], reverse=True)
     
-    # 保存报纸名称列表（txt格式）
+    # 保存报纸名称列表（txt格式）- 覆盖式写入
     names_file = os.path.join(OUTPUT_DIR, "newspaper_names.txt")
     with open(names_file, 'w', encoding='utf-8') as f:
         for name, count in sorted_newspapers:
             f.write(f"{name}\n")
-    print(f"\n💾 报纸名称列表已保存: {names_file}")
+    print(f"\n💾 报纸名称列表已保存（覆盖）: {names_file}")
     
-    # 保存带统计的CSV文件
+    # 保存带统计的CSV文件 - 覆盖式写入
     stats_file = os.path.join(OUTPUT_DIR, "newspaper_stats.csv")
     with open(stats_file, 'w', encoding='utf-8-sig') as f:
         f.write("报纸名称,文章数量\n")
@@ -131,21 +152,17 @@ def extract_newspaper_names(sample_size: int = None):
             if ',' in name or '"' in name:
                 name = '"' + name.replace('"', '""') + '"'
             f.write(f"{name},{count}\n")
-    print(f"💾 报纸统计已保存: {stats_file}")
+    print(f"💾 报纸统计已保存（覆盖）: {stats_file}")
     
     # 打印前20个报纸（预览）
-    print(f"\n📊 前20个报纸（按文章数排序）:")
-    print(f"{'序号':<6} {'报纸名称':<30} {'文章数量':>10}")
-    print("-" * 50)
-    for i, (name, count) in enumerate(sorted_newspapers[:20], 1):
-        print(f"{i:<6} {name:<30} {count:>10,}")
-    
-    # 检查是否有潜在的全国性报纸
-    national_keywords = ['人民', '光明', '经济', '参考', '环球', '中国']
-    print(f"\n🔍 潜在的全国性报纸:")
-    for name, count in sorted_newspapers:
-        if any(keyword in name for keyword in national_keywords):
-            print(f"  - {name}: {count:,} 篇文章")
+    if sorted_newspapers:
+        print(f"\n📊 前20个新报纸（按文章数排序）:")
+        print(f"{'序号':<6} {'报纸名称':<30} {'文章数量':>10}")
+        print("-" * 50)
+        for i, (name, count) in enumerate(sorted_newspapers[:20], 1):
+            print(f"{i:<6} {name:<30} {count:>10,}")
+    else:
+        print(f"\n✓ 没有发现新报纸，所有报纸都已在映射中")
     
     return sorted_newspapers
 
@@ -168,7 +185,7 @@ def preview_file(filename: str = None, n_lines: int = 5):
     filepath = os.path.join(DATA_DIR, filename)
     print(f"\n📖 预览文件: {filename}\n")
     
-    with open(filepath, 'r', encoding='utf-8') as f:
+    with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
         for i, line in enumerate(f):
             if i >= n_lines:
                 break
