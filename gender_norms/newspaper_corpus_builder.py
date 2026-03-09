@@ -231,35 +231,8 @@ def build_corpus(max_files: int = None, min_article_length: int = 50, resume: bo
     for filename in tqdm(all_files, desc="处理文件"):
         filepath = os.path.join(DATA_DIR, filename)
         
-        # 尝试不同编码
-        file_handle = None
-        successful_encoding = None
-        encodings = ['utf-8', 'gb18030', 'gbk', 'gb2312', 'latin1']
-        
-        for encoding in encodings:
-            try:
-                file_handle = open(filepath, 'r', encoding=encoding)
-                # 测试读取前几行
-                for _ in range(10):
-                    test_line = file_handle.readline()
-                    if not test_line:
-                        break
-                file_handle.seek(0)  # 重置到文件开头
-                successful_encoding = encoding
-                break
-            except (UnicodeDecodeError, UnicodeError):
-                if file_handle:
-                    file_handle.close()
-                    file_handle = None
-                continue
-        
-        if file_handle is None:
-            # 所有编码都失败，使用utf-8 with errors='ignore'跳过无效字节
-            file_handle = open(filepath, 'r', encoding='utf-8', errors='ignore')
-            successful_encoding = 'utf-8 (ignoring errors)'
-        
         try:
-            with file_handle as f:
+            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
                 for line_num, line in enumerate(f):
                     line = line.strip()
                     if not line:
