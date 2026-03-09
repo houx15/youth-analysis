@@ -283,15 +283,15 @@ def build_corpus(max_files: int = None, min_article_length: int = 50, resume: bo
             print(f"\n❌ 读取文件 {filename} 失败: {e}")
             stats['errors'] += 1
             continue
-            
-            # 标记文件已处理
-            processed_files.add(filename)
-            
-            # 每100个文件保存一次进度
-            if len(processed_files) % 100 == 0 and resume:
-                checkpoint_file = os.path.join(LOG_DIR, 'processed_files.json')
-                with open(checkpoint_file, 'w', encoding='utf-8') as f:
-                    json.dump(list(processed_files), f, ensure_ascii=False)
+        
+        # 标记文件已处理（成功处理或跳过错误行）
+        processed_files.add(filename)
+        
+        # 每100个文件保存一次进度
+        if len(processed_files) % 100 == 0 and resume:
+            checkpoint_file = os.path.join(LOG_DIR, 'processed_files.json')
+            with open(checkpoint_file, 'w', encoding='utf-8') as f:
+                json.dump(list(processed_files), f, ensure_ascii=False)
     
     # 关闭所有写入器
     print(f"\n\n💾 保存语料库...")
