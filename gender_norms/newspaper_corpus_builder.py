@@ -168,7 +168,7 @@ class ProvinceCorpusWriter:
         }
 
 
-def build_corpus(max_files: int = None, min_article_length: int = 50, resume: bool = True):
+def build_corpus(max_files: int = None, min_article_length: int = 50, resume: bool = True, file_list: str = None):
     """
     构建省级语料库
     
@@ -176,6 +176,7 @@ def build_corpus(max_files: int = None, min_article_length: int = 50, resume: bo
         max_files: 最多处理多少个文件（None表示全部，用于测试）
         min_article_length: 文章最小字符数（默认50）
         resume: 是否增量处理（跳过已处理的文件）
+        file_list: 指定要处理的文件列表（txt文件路径，每行一个文件名）
     """
     print(f"\n{'='*60}")
     print(f"📰 开始构建报纸省级语料库")
@@ -184,8 +185,15 @@ def build_corpus(max_files: int = None, min_article_length: int = 50, resume: bo
     # 加载映射
     mapping = load_mapping()
     
-    # 获取所有文件
-    all_files = sorted([f for f in os.listdir(DATA_DIR) if f.endswith('.json')])
+    # 获取要处理的文件列表
+    if file_list and os.path.exists(file_list):
+        # 从文件列表读取
+        with open(file_list, 'r', encoding='utf-8') as f:
+            all_files = [line.strip() for line in f if line.strip()]
+        print(f"📋 从文件列表读取: {len(all_files)} 个文件")
+    else:
+        # 获取所有文件
+        all_files = sorted([f for f in os.listdir(DATA_DIR) if f.endswith('.json')])
     
     # 增量处理：检查已处理的文件
     processed_files = set()
@@ -246,9 +254,9 @@ def build_corpus(max_files: int = None, min_article_length: int = 50, resume: bo
                 continue
         
         if file_handle is None:
-            # 所有编码都失败，使用utf-8 with errors='replace'作为最后手段
-            file_handle = open(filepath, 'r', encoding='utf-8', errors='replace')
-            successful_encoding = 'utf-8 (with replacement)'
+            # 所有编码都失败，使用utf-8 with errors='ignore'跳过无效字节
+            file_handle = open(filepath, 'r', encoding='utf-8', errors='ignore')
+            successful_encoding = 'utf-8 (ignoring errors)'
         
         try:
             with file_handle as f:
