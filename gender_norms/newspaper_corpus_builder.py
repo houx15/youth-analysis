@@ -240,6 +240,11 @@ def build_corpus(max_files: int = None, min_article_length: int = 50, resume: bo
                     
                     try:
                         article = json.loads(line)
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        stats['errors'] += 1
+                        continue
+                    
+                    try:
                         source = article.get('source', '').strip()
                         text = article.get('pdf_txt', '')
                         
@@ -271,16 +276,13 @@ def build_corpus(max_files: int = None, min_article_length: int = 50, resume: bo
                         
                         stats['total_articles'] += 1
                         stats['province_articles'][province] += 1
-                        
-                    except json.JSONDecodeError as e:
-                        # 只记录前几次错误
-                        if stats['errors'] < 5:
-                            print(f"\n⚠️  JSON解析错误 {filename}:{line_num}: {str(e)[:100]}")
+                    except Exception:
                         stats['errors'] += 1
                         continue
-                    except Exception as e:
-                        stats['errors'] += 1
-                        continue
+        except Exception as e:
+            print(f"\n❌ 读取文件 {filename} 失败: {e}")
+            stats['errors'] += 1
+            continue
             
             # 标记文件已处理
             processed_files.add(filename)
@@ -290,11 +292,6 @@ def build_corpus(max_files: int = None, min_article_length: int = 50, resume: bo
                 checkpoint_file = os.path.join(LOG_DIR, 'processed_files.json')
                 with open(checkpoint_file, 'w', encoding='utf-8') as f:
                     json.dump(list(processed_files), f, ensure_ascii=False)
-        
-        except Exception as e:
-            print(f"\n❌ 处理文件 {filename} 失败: {e}")
-            stats['errors'] += 1
-            continue
     
     # 关闭所有写入器
     print(f"\n\n💾 保存语料库...")

@@ -80,6 +80,11 @@ def extract_newspaper_names(sample_size: int = None, incremental: bool = True):
                     
                     try:
                         article = json.loads(line)
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        errors += 1
+                        continue
+                    
+                    try:
                         source = article.get('source', '').strip()
                         
                         if source:
@@ -91,13 +96,11 @@ def extract_newspaper_names(sample_size: int = None, incremental: bool = True):
                                 total_articles += 1
                         
                         line_count += 1
-                        
-                    except json.JSONDecodeError as e:
+                    except Exception:
                         errors += 1
                         continue
-                        
         except Exception as e:
-            print(f"\n❌ 处理文件 {filename} 失败: {e}")
+            print(f"\n❌ 读取文件 {filename} 失败: {e}")
             errors += 1
             continue
     
