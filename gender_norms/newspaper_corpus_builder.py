@@ -168,13 +168,14 @@ class ProvinceCorpusWriter:
         }
 
 
-def build_corpus(max_files: int = None, min_article_length: int = 50):
+def build_corpus(max_files: int = None, min_article_length: int = 50, resume: bool = True):
     """
     构建省级语料库
     
     Args:
         max_files: 最多处理多少个文件（None表示全部，用于测试）
         min_article_length: 文章最小字符数（默认50）
+        resume: 是否增量处理（跳过已处理的文件）
     """
     print(f"\n{'='*60}")
     print(f"📰 开始构建报纸省级语料库")
@@ -185,10 +186,26 @@ def build_corpus(max_files: int = None, min_article_length: int = 50):
     
     # 获取所有文件
     all_files = sorted([f for f in os.listdir(DATA_DIR) if f.endswith('.json')])
+    
+    # 增量处理：检查已处理的文件
+    processed_files = set()
+    if resume:
+        checkpoint_file = os.path.join(LOG_DIR, 'processed_files.json')
+        if os.path.exists(checkpoint_file):
+            with open(checkpoint_file, 'r', encoding='utf-8') as f:
+                processed_files = set(json.load(f))
+            print(f"🔄 增量模式: 已处理 {len(processed_files)} 个文件")
+    
+    # 过滤已处理的文件
+    if resume and processed_files:
+        all_files = [f for f in all_files if f not in processed_files]
+        print(f"📂 剩余 {len(all_files)} 个文件待处理")
+    else:
+        print(f"📂 找到 {len(all_files)} 个文件待处理")
+    
     if max_files:
         all_files = all_files[:max_files]
     
-    print(f"📂 找到 {len(all_files)} 个文件待处理")
     print(f"📊 映射到 {len(set(mapping.values()))} 个省份\n")
     
     # 初始化省级写入器
@@ -206,9 +223,36 @@ def build_corpus(max_files: int = None, min_article_length: int = 50):
     for filename in tqdm(all_files, desc="处理文件"):
         filepath = os.path.join(DATA_DIR, filename)
         
+        # 尝试不同编码
+        file_handle = None
+        successful_encoding = None
+        encodings = ['utf-8', 'gb18030', 'gbk', 'gb2312', 'latin1']
+        
+        for encoding in encodings:
+            try:
+                file_handle = open(filepath, 'r', encoding=encoding)
+                # 测试读取前几行
+                for _ in range(10):
+                    test_line = file_handle.readline()
+                    if not test_line:
+                        break
+                file_handle.seek(0)  # 重置到文件开头
+                successful_encoding = encoding
+                break
+            except (UnicodeDecodeError, UnicodeError):
+                if file_handle:
+                    file_handle.close()
+                    file_handle = None
+                continue
+        
+        if file_handle is None:
+            # 所有编码都失败，使用utf-8 with errors='replace'作为最后手段
+            file_handle = open(filepath, 'r', encoding='utf-8', errors='replace')
+            successful_encoding = 'utf-8 (with replacement)'
+        
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                for line in f:
+            with file_handle as f:
+                for line_num, line in enumerate(f):
                     line = line.strip()
                     if not line:
                         continue
@@ -247,12 +291,24 @@ def build_corpus(max_files: int = None, min_article_length: int = 50):
                         stats['total_articles'] += 1
                         stats['province_articles'][province] += 1
                         
-                    except json.JSONDecodeError:
+                    except json.JSONDecodeError as e:
+                        # 只记录前几次错误
+                        if stats['errors'] < 5:
+                            print(f"\n⚠️  JSON解析错误 {filename}:{line_num}: {str(e)[:100]}")
                         stats['errors'] += 1
                         continue
                     except Exception as e:
                         stats['errors'] += 1
                         continue
+            
+            # 标记文件已处理
+            processed_files.add(filename)
+            
+            # 每100个文件保存一次进度
+            if len(processed_files) % 100 == 0 and resume:
+                checkpoint_file = os.path.join(LOG_DIR, 'processed_files.json')
+                with open(checkpoint_file, 'w', encoding='utf-8') as f:
+                    json.dump(list(processed_files), f, ensure_ascii=False)
         
         except Exception as e:
             print(f"\n❌ 处理文件 {filename} 失败: {e}")
@@ -293,6 +349,13 @@ def build_corpus(max_files: int = None, min_article_length: int = 50):
             'writer_stats': writer_stats,
         }, f, ensure_ascii=False, indent=2)
     print(f"\n💾 统计信息已保存: {stats_file}")
+    
+    # 保存已处理文件列表（用于增量处理）
+    if resume:
+        checkpoint_file = os.path.join(LOG_DIR, 'processed_files.json')
+        with open(checkpoint_file, 'w', encoding='utf-8') as f:
+            json.dump(list(processed_files), f, ensure_ascii=False)
+        print(f"💾 已处理文件列表已保存: {checkpoint_file}")
 
 
 if __name__ == "__main__":
