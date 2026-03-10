@@ -34,7 +34,7 @@ warnings.filterwarnings("ignore")
 
 MODEL_DIR = "gender_norms/newspaper_data/embedding_models"
 OUTPUT_DIR = "gender_norms/newspaper_data/gender_norm_index"
-WORDLISTS_DIR = "gender_norms/wordlists"
+WORDLISTS_DIR = "gender_norms/wordlists_newspaper"
 
 DATA_YEAR = 2019
 

@@ -56,7 +56,7 @@ INPUT_DIR = "gender_norms/newspaper_data/gender_norm_index"
 SHAPEFILE_DIR = "configs/china_shp"
 
 DATA_YEAR = 2019
-DATA_SOURCE = "News"
+DATA_SOURCE = "Newspaper (2019)"
 
 PROVINCE_NAME_MAPPING = {
     "北京": "北京市",
