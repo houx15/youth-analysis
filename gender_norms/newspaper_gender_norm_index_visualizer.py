@@ -34,18 +34,8 @@ except ImportError:
     HAS_GEOPANDAS = False
     print("[警告] geopandas未安装, 将跳过地图可视化")
 
-plt.rcParams["font.sans-serif"] = ["SimHei", "DejaVu Sans"]
+plt.rcParams["font.sans-serif"] = ["Noto Sans CJK SC", "Noto Sans CJK JP", "DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False
-
-try:
-    plt.rcParams["font.sans-serif"] = [
-        "Arial Unicode MS",
-        "SimHei",
-        "STHeiti",
-        "Microsoft YaHei",
-    ]
-except:
-    pass
 
 
 # =============================================================================
