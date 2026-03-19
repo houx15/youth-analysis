@@ -222,7 +222,7 @@ def analyze_name_mentions(year, force_recalculate=False):
         print(
             f"  {i+1:2d}. {name}: {count:,} 次 "
             f"(男 {m_count:,}, 女 {f_count:,}, 男/女={ratio:.2f})"
-            f"(平均字符数={name_data["avg_char_count"].mean():.2f}, 字符数>10的比例={name_data["ratio_gt_10_chars"].mean()*100:.2f}%)"
+            f"(平均字符数={name_data['avg_char_count'].mean():.2f}, 字符数>10的比例={name_data['ratio_gt_10_chars'].mean()*100:.2f}%)"
         )
 
 
