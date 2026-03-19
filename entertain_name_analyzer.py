@@ -9,9 +9,13 @@
 输出: analysis_results/entertain_name_mentions_{year}.parquet
   列: name, gender, post_count, avg_char_count, ratio_gt_10_chars
 
+导出清理文本: analysis_results/entertain_texts/{name}_{year}.parquet
+  列: weibo_id, user_id, gender, name, text
+
 用法:
   python entertain_name_analyzer.py analyze 2020
   python entertain_name_analyzer.py analyze 2020 --force_recalculate
+  python entertain_name_analyzer.py export_texts 2020
 """
 
 import os
@@ -226,9 +230,126 @@ def analyze_name_mentions(year, force_recalculate=False):
         )
 
 
+def export_texts(year, force_recalculate=False):
+    """导出每个娱乐人名的清理文本，按名字分文件保存
+
+    输出目录: analysis_results/entertain_texts/
+    每个名字一个parquet: {name}_{year}.parquet
+    列: weibo_id, user_id, gender, name, text
+    """
+    print(f"\n{'='*60}")
+    print(f"导出 {year} 年娱乐人名提及文本")
+    print(f"{'='*60}")
+
+    output_dir = os.path.join(OUTPUT_DIR, "entertain_texts")
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 加载人名列表
+    names = load_entertain_names(year)
+    name_index = build_name_index(names)
+
+    # 扫描所有parquet文件
+    year_dir = os.path.join(DATA_DIR, str(year))
+    if not os.path.exists(year_dir):
+        print(f"未找到 {year} 年的数据目录: {year_dir}")
+        return
+
+    pattern = os.path.join(year_dir, "*.parquet")
+    parquet_files = sorted(glob.glob(pattern))
+    if not parquet_files:
+        print(f"未找到 {year} 年的parquet文件")
+        return
+
+    print(f"找到 {len(parquet_files)} 个文件")
+
+    # 按名字收集文本: name -> list of dicts
+    name_texts = defaultdict(list)
+    total_posts = 0
+    matched_posts = 0
+
+    for file_path in tqdm(parquet_files, desc="导出文本"):
+        try:
+            df = pd.read_parquet(
+                file_path,
+                columns=["weibo_id", "user_id", "weibo_content", "gender"],
+            )
+            df = df[df["gender"].notna()]
+
+            if len(df) == 0:
+                continue
+
+            total_posts += len(df)
+
+            for weibo_id, user_id, content, gender in zip(
+                df["weibo_id"], df["user_id"], df["weibo_content"], df["gender"]
+            ):
+                content = content.split("//")[0]  # 只保留原创
+                cleaned = sentence_cleaner(content)
+                if not cleaned or cleaned == "转发微博":
+                    continue
+
+                found_names = find_names_in_text(cleaned, name_index)
+                if found_names:
+                    matched_posts += 1
+                    for name in found_names:
+                        name_texts[name].append(
+                            {
+                                "weibo_id": str(weibo_id),
+                                "user_id": str(user_id),
+                                "gender": gender,
+                                "name": name,
+                                "text": cleaned,
+                            }
+                        )
+
+        except Exception as e:
+            print(f"处理文件 {file_path} 时出错: {e}")
+            continue
+
+    print(f"\n扫描完成:")
+    print(f"  总帖子数: {total_posts:,}")
+    print(
+        f"  提及娱乐人名的帖子数: {matched_posts:,} ({matched_posts/total_posts*100:.2f}%)"
+    )
+    print(f"  涉及名字数: {len(name_texts)}")
+
+    # 按名字保存parquet
+    total_rows = 0
+    for name, rows in sorted(name_texts.items(), key=lambda x: -len(x[1])):
+        name_df = pd.DataFrame(rows)
+        # 用名字做文件名，去掉不安全字符
+        safe_name = name.replace("/", "_").replace("\\", "_")
+        out_path = os.path.join(output_dir, f"{safe_name}_{year}.parquet")
+        name_df.to_parquet(out_path, engine="fastparquet", index=False)
+        total_rows += len(name_df)
+
+    print(f"\n已保存 {len(name_texts)} 个文件到 {output_dir}/")
+    print(f"总行数: {total_rows:,}")
+
+    # 打印示例: 取前4个名字（按提及数排序），每个10男10女
+    print(f"\n{'='*60}")
+    print("示例文本 (前4个名字, 各10男10女):")
+    print(f"{'='*60}")
+
+    top_names = sorted(name_texts.keys(), key=lambda n: -len(name_texts[n]))[:4]
+    for name in top_names:
+        rows = name_texts[name]
+        name_df = pd.DataFrame(rows)
+        print(f"\n--- {name} (共 {len(name_df)} 条) ---")
+
+        for gender, label in [("m", "男"), ("f", "女")]:
+            g_df = name_df[name_df["gender"] == gender]
+            sample = g_df.head(10)
+            print(f"\n  [{label}] ({len(g_df)} 条, 展示 {len(sample)} 条):")
+            for _, row in sample.iterrows():
+                text_preview = row["text"][:80] + ("..." if len(row["text"]) > 80 else "")
+                print(f"    - {text_preview}")
+
+
 if __name__ == "__main__":
     fire.Fire(
         {
             "analyze": analyze_name_mentions,
+            "export_texts": export_texts,
         }
     )
