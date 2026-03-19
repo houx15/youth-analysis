@@ -74,7 +74,9 @@ def build_name_index(names):
     index = defaultdict(set)
     for name in names:
         index[len(name)].add(name)
-    print(f"  名字长度分布: {', '.join(f'{k}字={len(v)}个' for k, v in sorted(index.items()))}")
+    print(
+        f"  名字长度分布: {', '.join(f'{k}字={len(v)}个' for k, v in sorted(index.items()))}"
+    )
     return dict(index)
 
 
@@ -111,9 +113,7 @@ def analyze_name_mentions(year, force_recalculate=False):
     print(f"分析 {year} 年娱乐人名提及情况")
     print(f"{'='*60}")
 
-    output_file = os.path.join(
-        OUTPUT_DIR, f"entertain_name_mentions_{year}.parquet"
-    )
+    output_file = os.path.join(OUTPUT_DIR, f"entertain_name_mentions_{year}.parquet")
 
     if not force_recalculate and os.path.exists(output_file):
         print(f"结果文件已存在: {output_file}")
@@ -148,9 +148,7 @@ def analyze_name_mentions(year, force_recalculate=False):
 
     for file_path in tqdm(parquet_files, desc="分析人名提及"):
         try:
-            df = pd.read_parquet(
-                file_path, columns=["weibo_content", "gender"]
-            )
+            df = pd.read_parquet(file_path, columns=["weibo_content", "gender"])
             df = df[df["gender"].notna()]
 
             if len(df) == 0:
@@ -159,6 +157,7 @@ def analyze_name_mentions(year, force_recalculate=False):
             total_posts += len(df)
 
             for content, gender in zip(df["weibo_content"], df["gender"]):
+                content = content.split("//")[0]  # 只保留原创
                 cleaned = sentence_cleaner(content)
                 if not cleaned or cleaned == "转发微博":
                     continue
@@ -181,7 +180,9 @@ def analyze_name_mentions(year, force_recalculate=False):
 
     print(f"\n扫描完成:")
     print(f"  总帖子数: {total_posts:,}")
-    print(f"  提及娱乐人名的帖子数: {matched_posts:,} ({matched_posts/total_posts*100:.2f}%)")
+    print(
+        f"  提及娱乐人名的帖子数: {matched_posts:,} ({matched_posts/total_posts*100:.2f}%)"
+    )
 
     # 构建结果DataFrame
     rows = []
@@ -197,9 +198,7 @@ def analyze_name_mentions(year, force_recalculate=False):
         )
 
     result_df = pd.DataFrame(rows)
-    result_df = result_df.sort_values(
-        ["name", "gender"], ignore_index=True
-    )
+    result_df = result_df.sort_values(["name", "gender"], ignore_index=True)
 
     # 保存
     result_df.to_parquet(output_file, engine="fastparquet", index=False)
@@ -212,9 +211,7 @@ def analyze_name_mentions(year, force_recalculate=False):
     print(f"{'='*60}")
 
     name_total = (
-        result_df.groupby("name")["post_count"]
-        .sum()
-        .sort_values(ascending=False)
+        result_df.groupby("name")["post_count"].sum().sort_values(ascending=False)
     )
     for i, (name, count) in enumerate(name_total.head(20).items()):
         name_data = result_df[result_df["name"] == name]
@@ -225,6 +222,7 @@ def analyze_name_mentions(year, force_recalculate=False):
         print(
             f"  {i+1:2d}. {name}: {count:,} 次 "
             f"(男 {m_count:,}, 女 {f_count:,}, 男/女={ratio:.2f})"
+            f"(平均字符数={name_data["avg_char_count"].mean():.2f}, 字符数>10的比例={name_data["ratio_gt_10_chars"].mean()*100:.2f}%)"
         )
 
 
