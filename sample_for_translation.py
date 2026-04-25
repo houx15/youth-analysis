@@ -142,7 +142,7 @@ def main(
     seed: int = DEFAULT_SEED,
 ):
     """
-    抽取用于跨语言验证的微博样本。
+    抽取用于跨语言验证的微博样本（一次抽样、一次翻译，下游对同一份样本做多轮 LLM 重打分）。
 
     Args:
         results_dir: 含 analyze_all_results_group_*.csv 的目录

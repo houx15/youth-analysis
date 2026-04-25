@@ -10,6 +10,7 @@
 
 # Sample 200 weibos (proportional-stratified by opinion class) with their
 # existing Kimi-Chinese sentiment scores, for cross-lingual validation.
+# One sample feeds the downstream multi-round LLM re-scoring.
 # Output: ai_attitudes/weibo_translation_sample.parquet
 #
 # Usage:
