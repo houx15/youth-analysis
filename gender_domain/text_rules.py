@@ -2,12 +2,13 @@
 文本清理、帖子类型判定与词表匹配（纯函数，无 IO，可在本地测试）。
 
 与旧版 utils.utils.sentence_cleaner 的区别：
-1. 转发链的正则改为 //@昵称: 的字面匹配，旧版 [//@].*?[:] 是字符类，
-   会把正文中的 @提及 一直删到下一个冒号。昵称部分做了「有界」处理：
-   长度上限约 40（真实平台限制 30 左右，留了余量），最多允许 3 个
-   以单个空格分隔的片段（容纳"网易 看客"这类带空格的真实昵称）。
-   有界是关键——如果去掉长度上限，就等于重新引入旧版 bug，会把
-   //@ 之后一段很长的正常中文句子也当成昵称吞掉；
+1. 转发链的正则改为要求字面的 //@ 前缀，旧版 [//@].*?[:] 是字符类，
+   单个裸的 @ 就能触发，会把正文中的 @提及 一直删到下一个冒号。
+   经产品侧确认（见 basic_text_extractor.py 对 weibo_content 的抓取
+   方式，链式转发格式是微博平台自身的产出，不是本项目解析引入的）：
+   本人评论必然在第一个 //@ 之前，//@ 之后一律是更早转发者的内容，
+   不存在"//@ 之后还是本人表达"的情况。因此不再对昵称做任何长度或
+   空格限制，//@ 出现后直接删到字符串结尾，不要求后面一定有冒号；
 2. 词表匹配改为最左最长且命中区间不重叠，旧版逐词 count 会让嵌套词重复计字符。
 """
 
@@ -28,20 +29,16 @@ PLAIN_RETWEET_PLACEHOLDERS = {
 # 微博客户端渲染链接卡片时，会在短链接后紧跟固定展示文案"网页链接"；
 # 这里只清除紧邻在 URL 之后（中间最多空白）的这一份文案，不是全文匹配
 # "网页链接"字样——如果它单独出现在正文其他位置，不受影响。
+# 这一步在转发链正则之前执行，所以 http:// 本身不会触发下面的 //@ 匹配。
 _URL_PATTERN = re.compile(
     r"https?://[a-zA-Z0-9./?&=:_%,~#\-]+(?:\s*网页链接)?", re.S
 )
-# 转发链：//@昵称: 之后的内容都不是本人表达。
-# 微博昵称上限约 30 个字符，可能包含个别空格（如"网易 看客"），这里给了
-# 到 40 的宽限（覆盖真实昵称长度统计口径的误差），并把昵称拆成「最多 3 个
-# 不含空白的片段、以单个空格分隔」的形式——既能容纳真实昵称里的空格，
-# 又保持有界，不会退化成旧版 [//@].*?[:] 那种一直吃到下一个冒号的字符类，
-# 吞掉不带 // 前缀、和转发链无关的正常长句。
-_NICK_SEGMENT = r"[^\s:：]{1,40}"
-_RETWEET_CHAIN_PATTERN = re.compile(
-    r"//\s*@" + _NICK_SEGMENT + r"(?: " + _NICK_SEGMENT + r"){0,2}\s*[:：].*$",
-    re.S,
-)
+# 转发链：//@ 出现后，直接删到字符串结尾，不解析昵称、不要求冒号。
+# 依据产品侧确认的规则："//@" 之后一律是更早转发者的内容，本人表达
+# 只可能出现在第一个 //@ 之前，因此没有"删太多"的风险，可以放心不设
+# 上限。要求字面的 // 前缀（而不是旧版 [//@] 字符类）是防止裸 @提及
+# 触发误删的关键，必须保留。
+_RETWEET_CHAIN_PATTERN = re.compile(r"//\s*@.*$", re.S)
 _WHITESPACE_PATTERN = re.compile(r"\s+")
 
 
@@ -61,6 +58,20 @@ def clean_text(content):
     text = _RETWEET_CHAIN_PATTERN.sub("", text)
     text = _WHITESPACE_PATTERN.sub(" ", text)
     return text.strip()
+
+
+def has_retweet_chain(content):
+    """判断原始文本里是否含有 clean_text 会清除的转发链
+
+    供下游写出 chain_stripped 审计列，用来统计规则命中率。
+    缺失值处理方式与 clean_text 保持一致，一律返回 False。
+    """
+    if content is None:
+        return False
+    if isinstance(content, float) and content != content:
+        return False
+    text = str(content)
+    return _RETWEET_CHAIN_PATTERN.search(text) is not None
 
 
 def classify_post_type(is_retweet, cleaned_text):

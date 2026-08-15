@@ -30,45 +30,87 @@ def test_clean_text_handles_missing_values():
     assert tr.clean_text("") == ""
 
 
-# ---- 转发链昵称边界（Fix round 1 回归用例） ----
+# ---- 转发链：//@ 之后一律删到字符串结尾（Fix round 2 定案规则） ----
+#
+# 产品侧确认：微博本人评论必然在第一个 //@ 之前，//@ 之后一律是更早
+# 转发者的内容，不存在"//@ 之后还是本人表达"的情况。因此不再对昵称
+# 做任何长度或空格限制，也不要求后面一定有冒号。round 1 曾经引入过
+# 「有界多段」的昵称正则来处理带空格、超长昵称，但复查发现那只是把
+# 触发失败的阈值从 30 移到了 40、从 0 个空格移到了 1 个空格，问题本质
+# 没解决；round 2 按产品侧定案直接改成无界匹配，下面的用例相应更新。
 
 def test_clean_text_strips_retweet_chain_with_space_in_nickname():
-    # 真实微博昵称可能带空格，例如"网易 新闻"，旧的 [^:：\s] 会导致整条
-    # 转发链匹配失败，把别人的转发评论当成本人内容保留下来
+    # 真实微博昵称可能带空格，例如"网易 新闻"
     text = "自己的评论//@网易 新闻:转发内容"
     assert tr.clean_text(text) == "自己的评论"
 
 
-def test_clean_text_strips_retweet_chain_with_nickname_over_30_chars():
-    # 微博昵称上限约 30 字符，旧的 {1,30} 上限刚好卡在这条平台边界上，
-    # 31 字符的昵称会让整条转发链匹配失败、完全不被清除
-    nickname = "A" * 31
+def test_clean_text_strips_retweet_chain_with_multiple_spaces_in_nickname():
+    # round 1 的有界多段正则只容忍单个空格，round 2 复查发现 2 个及以上
+    # 空格仍会导致整条链匹配失败；无界匹配下不应再有这个问题
+    text = "自己的评论//@网易   新闻:转发内容"
+    assert tr.clean_text(text) == "自己的评论"
+
+
+def test_clean_text_strips_retweet_chain_with_very_long_nickname():
+    # 200 字符的昵称，远超任何真实平台限制，也应该被完整清除
+    nickname = "A" * 200
     text = "自己的评论//@" + nickname + ":转发内容"
     assert tr.clean_text(text) == "自己的评论"
 
 
+def test_clean_text_strips_retweet_chain_without_colon():
+    # //@昵称 后面不一定跟冒号（例如客户端渲染差异），只要出现 //@
+    # 就应该整体删除，不要求冒号存在
+    text = "说得好//@张三 转发"
+    assert tr.clean_text(text) == "说得好"
+
+
 def test_clean_text_strips_multi_segment_retweet_chain():
-    # 多层转发链 //@a:x//@b:y，昵称有界处理后仍要能完整清除
+    # 多层转发链 //@a:x//@b:y 仍要能完整清除
     text = "说得好//@a:x//@b:y"
     assert tr.clean_text(text) == "说得好"
 
 
 def test_clean_text_keeps_ordinary_prose_colon_after_at_mention_without_slashes():
     # 没有 // 前缀的 @提及，无论后面跟多长的正常语句和冒号，都不是转发链，
-    # 必须原样保留——这是和旧版 [//@].*?[:] 行为区分开的核心场景
+    # 必须原样保留——这是和旧版 [//@].*?[:] 行为区分开的核心场景，也是
+    # 无界匹配仍然安全的前提：触发条件是字面的 //，不是裸的 @
     text = "感谢@人民日报 的报道，希望大家都能遵守防疫规定，共同努力：内容很好"
     cleaned = tr.clean_text(text)
     assert "共同努力" in cleaned
     assert "内容很好" in cleaned
 
 
-def test_clean_text_does_not_swallow_long_prose_after_double_slash_at():
-    # 放宽昵称长度和空格容忍度之后，仍必须保持有界：如果 //@ 后面跟着一段
-    # 远超真实昵称长度的正常中文长句，不能把用户自己的前缀评论也吞掉
+def test_clean_text_strips_long_prose_after_double_slash_at():
+    # round 1 曾用这个场景证明"有界"保护了 //@ 后面的长句不被吞掉；
+    # round 2 按产品侧定案反转了这个断言——//@ 之后一律不是本人表达，
+    # 所以现在应该被完整清除，包括"：后面的内容"
     long_prose = "这是一段很长很长完全不像昵称的正常中文描述文字" * 3
     text = "自己的评论//@" + long_prose + "：后面的内容"
-    cleaned = tr.clean_text(text)
-    assert "自己的评论" in cleaned
+    assert tr.clean_text(text) == "自己的评论"
+
+
+# ---- has_retweet_chain ----
+
+def test_has_retweet_chain_true_for_retweet_chain():
+    assert tr.has_retweet_chain("说得好//@张三:同意") is True
+    assert tr.has_retweet_chain("说得好//@张三 转发") is True
+
+
+def test_has_retweet_chain_false_for_plain_text():
+    assert tr.has_retweet_chain("今天天气很好") is False
+
+
+def test_has_retweet_chain_false_for_bare_at_mention():
+    # 裸的 @提及（没有 // 前缀）不算转发链
+    assert tr.has_retweet_chain("感谢@人民日报 的报道：内容很好") is False
+
+
+def test_has_retweet_chain_handles_missing_values():
+    assert tr.has_retweet_chain(None) is False
+    assert tr.has_retweet_chain(float("nan")) is False
+    assert tr.has_retweet_chain("") is False
 
 
 # ---- classify_post_type ----
