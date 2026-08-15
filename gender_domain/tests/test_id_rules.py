@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from gender_domain import id_rules as ir
 
@@ -31,6 +32,23 @@ def test_normalize_id_value_scalar_matches_series_behavior():
     assert ir.normalize_id_value("123") == "123"
     assert ir.normalize_id_value(None) == ""
     assert ir.normalize_id_value(float("nan")) == ""
+
+
+def test_normalize_real_weibo_scale_id_still_exact():
+    # 真实 2020 微博 uid 大约 10 位数字，远低于 float64 精确整数上限
+    # (2**53 约 9.0e15)，必须原样精确归一化，不受精度边界检查影响
+    out = ir.normalize_id_value(6091236422.0)
+    assert out == "6091236422"
+
+
+def test_normalize_id_value_raises_above_float64_safe_integer_range():
+    # Fix round 2 residual：超过 2**53 的浮点 ID 在到达这里之前，
+    # pandas 把整数列上转型为 float64 那一步就已经丢失精度（例如
+    # 19 位 id 6234567890123456789 会变成 6234567890123456512），
+    # 归一化不应该悄悄返回一个错误的字符串，而必须报错
+    too_big = float(2**53) + 1024.0
+    with pytest.raises(ValueError):
+        ir.normalize_id_value(too_big)
 
 
 def test_round_trip_float_column_matches_string_id_set_via_isin():
