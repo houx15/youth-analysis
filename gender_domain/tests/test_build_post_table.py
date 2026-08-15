@@ -55,6 +55,16 @@ def test_process_frame_stores_terms_as_pipe_joined_string():
     assert out.loc["w1", "public_terms"] == "|".join(sorted(["疫情", "防控"]))
 
 
+def test_process_frame_normalizes_user_id_to_string():
+    # Fix round 1 finding：表 A 的 user_id 必须和表 B 一样归一化为字符串，
+    # 否则两表按 user_id join 时类型不一致（这里输入本身就是 int 列，
+    # 归一化必须把它转成不带 ".0" 尾巴的纯数字字符串）。
+    public, celeb = _matchers()
+    out = bpt.process_frame(_frame(), public, celeb)
+    assert list(out["user_id"]) == ["1", "1", "2", "2"]
+    assert out["user_id"].map(type).eq(str).all()
+
+
 def test_process_frame_adds_month_from_date():
     public, celeb = _matchers()
     out = bpt.process_frame(_frame(), public, celeb)

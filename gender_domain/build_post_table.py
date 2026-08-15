@@ -16,6 +16,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from gender_domain import config
+from gender_domain import id_rules as ir
 from gender_domain import text_rules as tr
 
 REQUIRED_COLUMNS = [
@@ -143,6 +144,11 @@ def diagnose_date_mismatch(weibo_ids, time_stamps, filename_date, max_examples=5
 def process_frame(df, public_matcher, celebrity_matcher):
     """对一天（或任意一批）帖子计算领域测量，纯函数便于测试"""
     df = df.drop_duplicates(subset=["weibo_id"], keep="first").copy()
+    # 用 id_rules 归一化 user_id：与表 B（build_retweet_table.py）用同一套
+    # 规则，保证两表 user_id 的字符串表示完全一致，Task 5 才能按 user_id
+    # 直接 join，不会因为某天文件里出现缺失值导致列被上转型为 float64、
+    # 再被裸 astype(str) 变成 "123.0" 这种在两表间对不上的伪 ID。
+    df["user_id"] = ir.normalize_id_series(df["user_id"])
 
     cleaned = df["weibo_content"].map(tr.clean_text)
     df["post_type"] = [

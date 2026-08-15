@@ -64,3 +64,23 @@ def test_process_frame_excludes_source_accounts_own_posts():
     df.loc[0, "user_id"] = 100  # 来源账号自己转发自己
     out = brt.process_frame(df, brt.build_account_lookup(PUBLIC), brt.build_account_lookup(CELEBRITY))
     assert "w1" not in set(out["weibo_id"])
+
+
+def test_process_frame_handles_float_user_id_column_with_null():
+    # Fix round 1 finding：当天文件里如果有缺失 user_id，pandas 会把整数列
+    # 上转型为 float64；归一化必须把 100.0 变成 "100" 而不是 "100.0"，
+    # 否则来源账号自身转发排除（isin(known_sources)）会对整批行静默失配。
+    df = _frame()
+    df["user_id"] = [100.0, 2.0, 3.0, 4.0, None]
+    out = brt.process_frame(df, brt.build_account_lookup(PUBLIC), brt.build_account_lookup(CELEBRITY))
+    # w1 的 user_id 归一化后应等于来源账号 "100"，因而被排除
+    assert "w1" not in set(out["weibo_id"])
+    assert set(out["weibo_id"]) == {"w2", "w4"}
+
+
+def test_process_frame_normalizes_user_id_and_r_user_id_to_string():
+    out = brt.process_frame(
+        _frame(), brt.build_account_lookup(PUBLIC), brt.build_account_lookup(CELEBRITY)
+    )
+    assert out["user_id"].map(type).eq(str).all()
+    assert out["r_user_id"].map(type).eq(str).all()

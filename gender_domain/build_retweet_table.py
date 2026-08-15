@@ -17,6 +17,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from gender_domain import config
+from gender_domain import id_rules as ir
 
 REQUIRED_COLUMNS = [
     "user_id",
@@ -82,16 +83,25 @@ def _filter_retweets(df):
 def _exclude_source_self_retweets(df, known_sources):
     """排除来源账号自己发出的转发（自己转自己或转发另一个来源账号的行为
     不代表"某用户消费了该来源"），返回 (筛选后的 df, 丢弃行数)
+
+    这里用 id_rules 归一化 user_id 而不是裸 astype(str)：user_id 列一旦
+    当天文件里存在缺失值，会被 pandas 上转型为 float64，astype(str) 会把
+    "123" 变成 "123.0"，导致下面的 isin(known_sources) 对整批行静默失配。
     """
     before = len(df)
     df = df.copy()
-    df["user_id"] = df["user_id"].astype(str)
+    df["user_id"] = ir.normalize_id_series(df["user_id"])
     filtered = df[~df["user_id"].isin(known_sources)]
     return filtered, before - len(filtered)
 
 
 def _domain_rows(df, lookup, domain):
-    """取出转发该领域来源账号的记录，标注领域与来源类别；无命中返回 None"""
+    """取出转发该领域来源账号的记录，标注领域与来源类别；无命中返回 None
+
+    r_user_id 在服务器原始数据里按文档是字符串类型，但未针对真实文件核实
+    过（与表 A 对 time_stamp 单位未核实、只能做防御性推断的情况相同）；
+    process_frame 已经用 id_rules 统一归一化过，这里按归一化后的字符串匹配。
+    """
     if not lookup:
         return None
     hit = df[df["r_user_id"].isin(lookup.keys())].copy()
@@ -109,8 +119,12 @@ def process_frame(df, public_lookup, celebrity_lookup):
     出现），会各产出一行，即输出可能比"符合条件的转发数"更多。
     """
     df = df.copy()
-    df["user_id"] = df["user_id"].astype(str)
-    df["r_user_id"] = df["r_user_id"].astype(str)
+    # 用 id_rules 而不是裸 astype(str)：ID 列一旦经过缺失值上转型为
+    # float64，astype(str) 会产出 "123.0" 这种伪 ID，且不会报错，只是
+    # 后续所有基于字符串的匹配（isin/表 A·表 B 的 user_id join）静默失效。
+    # 两张表都必须用同一套归一化，才能保证 user_id 的字符串表示一致可 join。
+    df["user_id"] = ir.normalize_id_series(df["user_id"])
+    df["r_user_id"] = ir.normalize_id_series(df["r_user_id"])
 
     df, _ = _filter_retweets(df)
     known_sources = set(public_lookup.keys()) | set(celebrity_lookup.keys())
