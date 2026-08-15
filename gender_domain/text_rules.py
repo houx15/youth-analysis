@@ -9,6 +9,10 @@
    本人评论必然在第一个 //@ 之前，//@ 之后一律是更早转发者的内容，
    不存在"//@ 之后还是本人表达"的情况。因此不再对昵称做任何长度或
    空格限制，//@ 出现后直接删到字符串结尾，不要求后面一定有冒号；
+   清理顺序也很关键：必须先删转发链、再删链接。原始文本里的 URL
+   字符类不含 @，如果先删链接，短链接紧跟 //@（中间没有空格）时，
+   URL 匹配会把这个 // 吃掉，导致后面的 //@ 转发链完全检测不到，
+   别人的转发内容就会泄漏进本人文本；
 2. 词表匹配改为最左最长且命中区间不重叠，旧版逐词 count 会让嵌套词重复计字符。
 """
 
@@ -26,36 +30,55 @@ PLAIN_RETWEET_PLACEHOLDERS = {
     "repost",
 }
 
-# 微博客户端渲染链接卡片时，会在短链接后紧跟固定展示文案"网页链接"；
-# 这里只清除紧邻在 URL 之后（中间最多空白）的这一份文案，不是全文匹配
-# "网页链接"字样——如果它单独出现在正文其他位置，不受影响。
-# 这一步在转发链正则之前执行，所以 http:// 本身不会触发下面的 //@ 匹配。
-_URL_PATTERN = re.compile(
-    r"https?://[a-zA-Z0-9./?&=:_%,~#\-]+(?:\s*网页链接)?", re.S
-)
 # 转发链：//@ 出现后，直接删到字符串结尾，不解析昵称、不要求冒号。
 # 依据产品侧确认的规则："//@" 之后一律是更早转发者的内容，本人表达
 # 只可能出现在第一个 //@ 之前，因此没有"删太多"的风险，可以放心不设
 # 上限。要求字面的 // 前缀（而不是旧版 [//@] 字符类）是防止裸 @提及
 # 触发误删的关键，必须保留。
+# 必须在删链接之前运行（见下方 clean_text 的清理顺序说明）。
 _RETWEET_CHAIN_PATTERN = re.compile(r"//\s*@.*$", re.S)
+# 微博客户端渲染链接卡片时，会在短链接后紧跟固定展示文案"网页链接"；
+# 这里只清除紧邻在 URL 之后（中间最多空白）的这一份文案，不是全文匹配
+# "网页链接"字样——如果它单独出现在正文其他位置，不受影响。
+# 必须在转发链正则之后运行：URL 字符类不含 @，如果先删链接，短链接
+# 紧跟 //@（例如 http://t.cn/xxx//@张三:...）会把这个 // 当成 URL
+# 路径的一部分吃掉，导致后面的转发链检测不到，别人的转发内容会泄漏
+# 进本人文本。普通 URL（如 http://t.cn/xxx 或 http://user@host/）
+# 对转发链正则总是安全的——它要求 // 后紧跟 @（可有空白），而
+# "http://" 后面是协议路径字符，"http://user@host/" 里的 // 后面是
+# "u"，都不会被转发链正则命中。
+_URL_PATTERN = re.compile(
+    r"https?://[a-zA-Z0-9./?&=:_%,~#\-]+(?:\s*网页链接)?", re.S
+)
 _WHITESPACE_PATTERN = re.compile(r"\s+")
+
+
+def _normalize_or_none(content):
+    """把缺失值统一处理成 None，其余一律转成字符串
+
+    clean_text 和 has_retweet_chain 共用这一步，保证两者对"什么算缺失"
+    的判断完全一致。
+    """
+    if content is None:
+        return None
+    # pandas 的缺失值判断，避免引入 pandas 依赖
+    if isinstance(content, float) and content != content:
+        return None
+    return str(content)
 
 
 def clean_text(content):
     """清理微博文本，只保留用户本人的可见表达
 
-    步骤：去链接 -> 去转发链及其后的全部内容 -> 折叠空白。
+    步骤：去转发链及其后的全部内容 -> 去链接 -> 折叠空白。
+    转发链必须先删——见模块顶部注释里清理顺序的说明。
     缺失值和非字符串一律返回空串。
     """
-    if content is None:
+    text = _normalize_or_none(content)
+    if text is None:
         return ""
-    # pandas 的缺失值判断，避免引入 pandas 依赖
-    if isinstance(content, float) and content != content:
-        return ""
-    text = str(content)
-    text = _URL_PATTERN.sub("", text)
     text = _RETWEET_CHAIN_PATTERN.sub("", text)
+    text = _URL_PATTERN.sub("", text)
     text = _WHITESPACE_PATTERN.sub(" ", text)
     return text.strip()
 
@@ -64,13 +87,14 @@ def has_retweet_chain(content):
     """判断原始文本里是否含有 clean_text 会清除的转发链
 
     供下游写出 chain_stripped 审计列，用来统计规则命中率。
-    缺失值处理方式与 clean_text 保持一致，一律返回 False。
+    直接在原始文本（未删链接）上用同一个转发链正则判断，和 clean_text
+    先删转发链、再删链接的顺序保持一致，保证二者的结论不会互相矛盾：
+    has_retweet_chain(x) 为 True 当且仅当 clean_text(x) 确实删掉过一段
+    转发链。缺失值处理方式与 clean_text 共用同一个归一化函数。
     """
-    if content is None:
+    text = _normalize_or_none(content)
+    if text is None:
         return False
-    if isinstance(content, float) and content != content:
-        return False
-    text = str(content)
     return _RETWEET_CHAIN_PATTERN.search(text) is not None
 
 

@@ -113,6 +113,48 @@ def test_has_retweet_chain_handles_missing_values():
     assert tr.has_retweet_chain("") is False
 
 
+# ---- clean_text / has_retweet_chain 一致性（Fix round 3 回归用例） ----
+#
+# round 2 把转发链正则改成无界匹配后，has_retweet_chain 直接在原始文本
+# （未删链接）上跑同一个正则；但 clean_text 当时仍然是先删链接、再删
+# 转发链。URL 字符类不含 @，短链接紧跟 //@（中间无空格）时，先删链接
+# 会把这个 // 当成 URL 路径的一部分吃掉，导致 clean_text 检测不到后面
+# 的转发链、别人的转发内容泄漏进本人文本，但 has_retweet_chain 仍然
+# 在未处理的原始文本上找到了 //@，两者结论矛盾。round 3 把 clean_text
+# 的顺序改成先删转发链、再删链接，并让 has_retweet_chain 复用同一个
+# 归一化 + 正则，从根源上保证两者不会分歧。
+
+def test_clean_text_and_has_retweet_chain_agree_on_url_immediately_before_chain():
+    # 复查给出的原始复现串：短链接后面紧跟 //@，中间没有空格
+    content = "分享一个链接http://t.cn/RxYz1a//@张三:同意这个观点"
+    assert tr.clean_text(content) == "分享一个链接"
+    assert tr.has_retweet_chain(content) is True
+
+
+def test_clean_text_and_has_retweet_chain_agree_on_url_without_chain():
+    # 只有链接、没有转发链：链接本身仍要被完整清除，且不应被误判为转发链
+    content = "看这个 http://t.cn/abc123 消息"
+    cleaned = tr.clean_text(content)
+    assert "t.cn" not in cleaned
+    assert "abc123" not in cleaned
+    assert tr.has_retweet_chain(content) is False
+
+
+def test_clean_text_and_has_retweet_chain_agree_on_chain_without_url():
+    # 只有转发链、没有链接：不受清理顺序调整影响，行为应保持不变
+    content = "说得好//@张三:同意"
+    assert tr.clean_text(content) == "说得好"
+    assert tr.has_retweet_chain(content) is True
+
+
+def test_clean_text_and_has_retweet_chain_agree_on_bare_at_mention_with_colon():
+    # 裸的 @提及（没有 // 前缀）后面跟正常语句和冒号，两者都不应误判
+    content = "感谢@人民日报 的报道：内容很好"
+    cleaned = tr.clean_text(content)
+    assert "内容很好" in cleaned
+    assert tr.has_retweet_chain(content) is False
+
+
 # ---- classify_post_type ----
 
 def test_classify_original_post():
