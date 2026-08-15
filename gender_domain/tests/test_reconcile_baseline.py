@@ -195,3 +195,63 @@ def test_reconcile_missing_user_table_raises_not_silently_empty(tmp_path, monkey
 
     with pytest.raises(FileNotFoundError):
         rb.reconcile(year=2020)
+
+
+# ---------------------------------------------------------------------------
+# Fix round 2：density 说明按基线是否存在门控 + reconcile 也要写 manifest
+# ---------------------------------------------------------------------------
+
+
+def test_density_difference_notes_are_gated_on_the_density_baseline_being_present():
+    """三条 density 差异来源说明只在真的有 density 基线时才写
+
+    它们描述的是"新表相对旧 density 基线为什么会不同"；基线缺失时照写，
+    会让报告看起来做过一次并不存在的对照。
+    """
+    with_density = rb.build_report(_users(), _overview(), _density(), year=2020)
+    joined = "\n".join(with_density["notes"])
+    assert "嵌套词" in joined
+    assert "清洗正则" in joined
+
+    without_density = rb.build_report(
+        _users(),
+        _overview(),
+        None,
+        year=2020,
+        density_path="viz_data/density_summary_2020.parquet",
+    )
+    joined = "\n".join(without_density["notes"])
+    assert "嵌套词" not in joined
+    assert "清洗正则" not in joined
+    # 但"为什么没做这项对照"必须留痕
+    assert "density_summary_2020.parquet" in joined
+
+
+def test_reconcile_writes_a_manifest_like_every_other_step(tmp_path, monkeypatch):
+    """对照报告同样是正式产出，必须和其它每一步一样写出 manifest"""
+    output_dir = tmp_path / "analysis_data"
+    viz_dir = tmp_path / "viz_data"
+    output_dir.mkdir()
+    viz_dir.mkdir()
+    monkeypatch.setattr(config, "OUTPUT_DIR", str(output_dir))
+    monkeypatch.setattr(rb, "VIZ_DIR", str(viz_dir))
+
+    _users().to_parquet(output_dir / "user_domain_2020.parquet", engine="pyarrow", index=False)
+    _overview().to_parquet(viz_dir / "retweet_overview_2020.parquet", engine="pyarrow", index=False)
+
+    rb.reconcile(year=2020)
+
+    manifest_path = output_dir / "reconciliation_2020" / "manifest.json"
+    assert manifest_path.exists()
+    with open(manifest_path, encoding="utf-8") as f:
+        manifest = json.load(f)
+    assert manifest["step"] == "reconciliation_2020"
+    assert manifest["counts"]["users"] == 4
+    assert manifest["counts"]["gender"] == {"f": 3, "m": 1}
+    # 哪个基线在、哪个缺，必须在 manifest 里能看出来
+    assert manifest["params"]["baseline_present"] == {
+        "retweet_overview": True,
+        "density_summary": False,
+    }
+    assert "user_domain_2020.parquet" in manifest["inputs"]
+    assert "git_dirty" in manifest

@@ -113,6 +113,33 @@ def classify_post_type(is_retweet, cleaned_text):
     return "retweet_comment"
 
 
+# 表达帖的类型口径：原创 + 转发新增评论（纯转发不算本人表达）
+EXPRESSIVE_TYPES = ("original", "retweet_comment")
+
+
+def is_expressive(post_type, n_chars):
+    """表达帖的唯一权威定义（标量版）
+
+    口径（研究负责人裁定）：类型属于 EXPRESSIVE_TYPES，且清洗后字符数 > 0。
+    清洗后为零字符的帖子（纯图片、纯链接）不承载任何可测量的文字表达，
+    必须从所有内容/表达类指标的分子与分母里剔除；这类帖子仍然保留在
+    表 A 里（是数据事实，不删行），只是不进任何内容指标的分母。
+
+    这个定义只能写在这一处：表 A 用它写出 is_expressive 列，表 C/表 D
+    两条聚合路径都直接消费那一列，任何一方都不允许自己再推一遍口径，
+    否则两张表会在同一个列名下用不同分母（这正是修复前的真实缺陷）。
+    """
+    return post_type in EXPRESSIVE_TYPES and n_chars > 0
+
+
+def is_expressive_series(post_type, n_chars):
+    """表达帖判定（向量版），与 is_expressive 同一定义
+
+    只用 Series 自带方法，不引入 pandas 依赖，保持本模块的纯函数属性。
+    """
+    return post_type.isin(EXPRESSIVE_TYPES) & (n_chars > 0)
+
+
 class VocabMatcher:
     """最左最长、命中区间不重叠的词表匹配器
 

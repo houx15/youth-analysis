@@ -11,6 +11,7 @@
 """
 
 import glob
+import json
 import os
 
 import fire
@@ -19,15 +20,71 @@ import pandas as pd
 
 from gender_domain import config
 from gender_domain import id_rules as ir
+from gender_domain import text_rules as tr
 
 DOMAINS = ("public", "celebrity")
-EXPRESSIVE_TYPES = ("original", "retweet_comment")
+# 表达帖口径的唯一来源是 text_rules，本模块不另立定义
+EXPRESSIVE_TYPES = tr.EXPRESSIVE_TYPES
+
+# 表 A 分片里表 C/表 D 真正用到的列。parquet 必须显式指定 columns：
+# 表 A 还带着 public_terms / celebrity_terms 两列竖线拼接的命中词字符串，
+# 全年一次性读进内存却一次都用不到，是纯粹的浪费。
+POST_SHARD_COLUMNS = [
+    "weibo_id",
+    "user_id",
+    "date",
+    "month",
+    "gender",
+    "post_type",
+    "n_chars",
+    "is_expressive",
+] + [
+    f"{domain}_{suffix}"
+    for domain in DOMAINS
+    for suffix in ("hit", "n_hits", "chars_hit", "density")
+]
+
+# 表 B 分片里表 C/表 D 真正用到的列
+EVENT_SHARD_COLUMNS = [
+    "user_id",
+    "weibo_id",
+    "month",
+    "source_domain",
+    "delay_seconds",
+    "delay_valid",
+]
 
 
 def _safe_divide(numerator, denominator):
     """分母为 0 时返回 NaN，避免把"没有分母"写成 0"""
     denominator = denominator.replace(0, np.nan)
     return numerator / denominator
+
+
+def _ensure_is_expressive(df):
+    """保证帖子表带有权威的 is_expressive 列（就地补齐并返回同一个 df）
+
+    表 A 从 v2 起自带 is_expressive 列（由 text_rules.is_expressive_series
+    唯一定义）。表 C 与表 D 两条聚合路径都只读这一列，谁都不许自己再按
+    post_type 推一遍——修复前正是因为两边各推各的，才出现同名列
+    ({d}_char_density、{d}_topical_share) 在两张表里用了不同分母。
+
+    只有读到旧版分片（没有这一列）时才现场补，且仍然调用同一个定义函数，
+    不复制口径；同时打印中文警告，让"分片是旧版"这件事不会静默通过。
+    """
+    if "is_expressive" not in df.columns:
+        print("警告: 表 A 分片缺少 is_expressive 列（旧版分片），按 text_rules 同一口径现场推导")
+        df["is_expressive"] = tr.is_expressive_series(df["post_type"], df["n_chars"])
+    else:
+        # astype(bool) 会把 NaN 静默变成 True，那等于凭空把一批帖子塞进分母。
+        # 缺失说明这一列本身不可信，宁可显式失败也不能接着算。
+        n_missing = int(df["is_expressive"].isna().sum())
+        if n_missing:
+            raise ValueError(
+                f"表 A 的 is_expressive 列有 {n_missing} 行缺失，表达帖口径不可信，拒绝继续聚合"
+            )
+        df["is_expressive"] = df["is_expressive"].astype(bool)
+    return df
 
 
 def aggregate_posts(post_df):
@@ -37,7 +94,7 @@ def aggregate_posts(post_df):
     # 上转型为 float64，裸 astype(str) 会产出 "123.0" 这种伪 ID，导致后续
     # 与表 B 聚合结果 join 时静默对不上（见 id_rules.py 顶部说明）。
     df["user_id"] = ir.normalize_id_series(df["user_id"])
-    df["is_expressive"] = df["post_type"].isin(EXPRESSIVE_TYPES)
+    df = _ensure_is_expressive(df)
     df["is_retweet_post"] = df["post_type"].isin(("retweet_plain", "retweet_comment"))
 
     base = df.groupby("user_id").agg(
@@ -83,7 +140,9 @@ def aggregate_posts(post_df):
         base[f"{domain}_hits_per_1k"] = _safe_divide(agg["n_hits"], agg["chars"]) * 1000
         base[f"{domain}_post_mean_density"] = agg["post_mean_density"]
 
-        # 并行口径：全部帖子为分母
+        # 并行口径：全部帖子为分母（13.1 分母稳健性用）。
+        # 这个口径刻意保持"字面上的全部帖子"，不采纳零字符帖排除规则——
+        # 它存在的意义就是与旧流水线口径可比，一旦跟着主口径改就失去比较价值。
         all_hits = df.groupby("user_id")[hit_col].sum().reindex(base.index).fillna(0)
         base[f"{domain}_topical_share_allposts"] = _safe_divide(all_hits, base["n_posts"])
 
@@ -125,7 +184,7 @@ def aggregate_user_month(post_df, event_df):
     """表 D：用户—月份面板，帖子或转发事件任一存在即为活跃月"""
     posts = post_df.copy()
     posts["user_id"] = ir.normalize_id_series(posts["user_id"])
-    posts["is_expressive"] = posts["post_type"].isin(EXPRESSIVE_TYPES)
+    posts = _ensure_is_expressive(posts)
     posts["is_retweet_post"] = posts["post_type"].isin(("retweet_plain", "retweet_comment"))
 
     monthly = posts.groupby(["user_id", "month"]).agg(
@@ -135,10 +194,16 @@ def aggregate_user_month(post_df, event_df):
         n_expressive_posts=("is_expressive", "sum"),
         n_active_days=("date", "nunique"),
     )
+    # 内容指标必须与表 C（aggregate_posts）用同一个表达帖子集：
+    # 修复前这里的分子分母都取自全部帖子，而分母列名却是 n_expressive_posts，
+    # 于是同名的 {d}_char_density / {d}_topical_share 在表 C 和表 D 里口径不同
+    # （纯转发的"转发微博"有 4 个真实字符，会实打实地稀释表 D 的字符分母），
+    # 且 topical_share 可能大于 1（分子数全部帖子、分母只数表达帖）。
+    expressive = posts[posts["is_expressive"]]
     for domain in DOMAINS:
-        hits = posts[posts[f"{domain}_hit"]].groupby(["user_id", "month"]).size()
-        chars = posts.groupby(["user_id", "month"])["n_chars"].sum()
-        chars_hit = posts.groupby(["user_id", "month"])[f"{domain}_chars_hit"].sum()
+        hits = expressive[expressive[f"{domain}_hit"]].groupby(["user_id", "month"]).size()
+        chars = expressive.groupby(["user_id", "month"])["n_chars"].sum()
+        chars_hit = expressive.groupby(["user_id", "month"])[f"{domain}_chars_hit"].sum()
         monthly[f"{domain}_topical_posts"] = hits.reindex(monthly.index).fillna(0).astype(int)
         monthly[f"{domain}_topical_share"] = _safe_divide(
             monthly[f"{domain}_topical_posts"], monthly["n_expressive_posts"]
@@ -192,16 +257,23 @@ def aggregate_user_month(post_df, event_df):
     return panel.reset_index()
 
 
-def _source_combo(row):
-    public = row["public_source_entered"]
-    celebrity = row["celebrity_source_entered"]
-    if public and celebrity:
-        return "both"
-    if public:
-        return "public_only"
-    if celebrity:
-        return "celebrity_only"
-    return "neither"
+def _source_combo_series(public_entered, celebrity_entered):
+    """向量化生成参与组合，避免在千万行量级上逐行 apply
+
+    逐行 apply 会把每一行都拉回 Python 解释器执行一次函数调用；这里改成
+    两个布尔掩码的组合，语义与原来的逐行判断完全一致。
+    """
+    # 用 eq(True) 而不是 fillna(False).astype(bool)：左连接留下的 NaN 在
+    # object 列上 fillna 会触发 pandas 的静默降型（未来版本行为会变），
+    # eq(True) 直接把 NaN/None 判成 False，语义相同且结果稳定是纯 bool
+    public = public_entered.eq(True).to_numpy()
+    celebrity = celebrity_entered.eq(True).to_numpy()
+    combo = np.select(
+        [public & celebrity, public & ~celebrity, ~public & celebrity],
+        ["both", "public_only", "celebrity_only"],
+        default="neither",
+    )
+    return pd.Series(combo, index=public_entered.index, dtype=object)
 
 
 def diagnose_event_only_users(post_agg, event_agg, max_examples=5):
@@ -243,7 +315,9 @@ def combine_user_table(post_agg, event_agg, month_panel):
 
     for domain in DOMAINS:
         combined[f"{domain}_source_count"] = combined[f"{domain}_source_count"].fillna(0).astype(int)
-        combined[f"{domain}_source_entered"] = combined[f"{domain}_source_entered"].fillna(False)
+        # 左连接后没有转发事件的用户在这一列上是 NaN，等价于"没有进入"；
+        # eq(True) 一步得到纯 bool 列，避免 object 列 fillna 的静默降型
+        combined[f"{domain}_source_entered"] = combined[f"{domain}_source_entered"].eq(True)
         combined[f"{domain}_source_months"] = combined[f"{domain}_source_months"].fillna(0).astype(int)
         # 配置比例：该领域来源转发数 ÷ 用户全部转发帖数，上限截到 1
         share = _safe_divide(combined[f"{domain}_source_count"], combined["n_retweets"])
@@ -253,23 +327,67 @@ def combine_user_table(post_agg, event_agg, month_panel):
             combined[f"{domain}_source_months"], combined["n_active_months_panel"]
         )
 
-    combined["source_combo"] = combined.apply(_source_combo, axis=1)
+    combined["source_combo"] = _source_combo_series(
+        combined["public_source_entered"], combined["celebrity_source_entered"]
+    )
     return combined
 
 
-def _read_shards(name, year):
+def _read_shards(name, year, columns):
+    """读取某一步的全年分片，返回 (合并后的 DataFrame, 分片文件列表)
+
+    必须显式传 columns：表 A 的 {domain}_terms 是竖线拼接的命中词字符串，
+    表 C/表 D 一次都用不到，全年读进来只是白白占内存。
+    """
     pattern = os.path.join(config.OUTPUT_DIR, f"{name}_{year}", "month=*.parquet")
     files = sorted(glob.glob(pattern))
     if not files:
         raise FileNotFoundError(f"未找到分片: {pattern}")
-    print(f"读取 {len(files)} 个 {name} 分片")
-    return pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+    print(f"读取 {len(files)} 个 {name} 分片，列 {len(columns)} 个")
+    frame = pd.concat(
+        [pd.read_parquet(f, columns=columns) for f in files], ignore_index=True
+    )
+    return frame, files
+
+
+def collect_shard_fingerprints(shard_dir, files):
+    """从表 A/表 B 的分月 manifest 里收集词表/账号名单指纹
+
+    表 C 和表 D 是论文数字的直接来源，却是全流程里唯一不记指纹的一步：
+    它不自己加载词表和账号名单，指纹只能从上游分片的 manifest 继承过来。
+
+    每个指纹项的值是"全年各月出现过的不同取值"排序去重后的列表：正常情况
+    下应该只有一个元素（全年用同一份词表）；出现多个元素就说明不同月份用的
+    词表/名单不一样，必须人工核实，而不是被一个取值悄悄代表。
+    分月 manifest 缺失时显式记入 missing_manifests，绝不静默省略指纹——
+    否则"没有指纹"和"指纹一致"在文件里长得一模一样。
+    """
+    collected = {}
+    missing = []
+    for path in files:
+        shard_name = os.path.basename(path).replace(".parquet", "")
+        month_part = shard_name.split("=")[-1]
+        manifest_path = os.path.join(shard_dir, f"manifest_month_{month_part}", "manifest.json")
+        if not os.path.exists(manifest_path):
+            missing.append(os.path.basename(shard_dir) + f"/manifest_month_{month_part}")
+            continue
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            shard_manifest = json.load(f)
+        for key, value in (shard_manifest.get("fingerprints") or {}).items():
+            collected.setdefault(key, set()).add(value)
+
+    out = {key: sorted(values) for key, values in collected.items()}
+    if missing:
+        print(f"警告: {len(missing)} 个分片缺少 manifest，指纹无法继承: {missing[:5]}")
+    # 即使为空也显式写出这个键，让"没有缺失"是一个被记录的事实
+    out["missing_manifests"] = missing
+    return out
 
 
 def build(year=config.YEAR):
     """从表 A/B 分片生成表 C 与表 D"""
-    posts = _read_shards("post_domain_measures", year)
-    events = _read_shards("retweet_domain_events", year)
+    posts, post_files = _read_shards("post_domain_measures", year, POST_SHARD_COLUMNS)
+    events, event_files = _read_shards("retweet_domain_events", year, EVENT_SHARD_COLUMNS)
     print(f"帖子 {len(posts):,} 行，转发事件 {len(events):,} 行")
 
     post_agg = aggregate_posts(posts)
@@ -293,16 +411,30 @@ def build(year=config.YEAR):
     print(f"已保存: {user_path}（{len(user_table):,} 用户）")
     print(f"已保存: {panel_path}（{len(panel):,} 用户-月）")
 
+    post_dir = os.path.join(config.OUTPUT_DIR, f"post_domain_measures_{year}")
+    event_dir = os.path.join(config.OUTPUT_DIR, f"retweet_domain_events_{year}")
     manifest = config.build_manifest(
         step=f"user_tables_{year}",
-        inputs=[f"post_domain_measures_{year}", f"retweet_domain_events_{year}"],
-        params={"year": year, "expressive_types": list(EXPRESSIVE_TYPES)},
+        # inputs 记录实际 glob 到的分片文件，而不是目录名：目录名说不清
+        # 这次到底读到了哪几个月（少跑一个月和跑全了在目录名上看不出差别）
+        inputs=[os.path.relpath(p, config.OUTPUT_DIR) for p in post_files + event_files],
+        params={
+            "year": year,
+            "expressive_types": list(EXPRESSIVE_TYPES),
+            "expressive_requires_nonzero_chars": True,
+        },
         counts={
             "users": int(len(user_table)),
             "user_months": int(len(panel)),
             "gender": user_table["gender"].value_counts().to_dict(),
             "source_combo": user_table["source_combo"].value_counts().to_dict(),
             "event_only_users": event_only,
+        },
+        # 表 C/表 D 自己不加载词表和账号名单，指纹从上游分片 manifest 继承，
+        # 让这两张（论文数字直接来源的）表也能自证用的是哪一版词表/名单
+        fingerprints={
+            "post_shards": collect_shard_fingerprints(post_dir, post_files),
+            "retweet_shards": collect_shard_fingerprints(event_dir, event_files),
         },
     )
     config.write_manifest(manifest, os.path.join(config.OUTPUT_DIR, f"user_tables_{year}"))

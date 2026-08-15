@@ -1,6 +1,10 @@
+import json
+import os
+
 import pandas as pd
 
 from gender_domain import build_post_table as bpt
+from gender_domain import config
 from gender_domain import text_rules as tr
 
 
@@ -111,16 +115,38 @@ def test_drop_gender_null_counts_dropped_rows():
             "gender": ["m", None, "f", None],
         }
     )
-    filtered, dropped = bpt._drop_gender_null(df)
+    filtered, dropped_null, dropped_blank = bpt._drop_gender_null(df)
     assert list(filtered["weibo_id"]) == ["a", "c"]
-    assert dropped == 2
+    assert dropped_null == 2
+    assert dropped_blank == 0
 
 
 def test_drop_gender_null_counts_zero_when_nothing_dropped():
     df = pd.DataFrame({"weibo_id": ["a", "b"], "gender": ["m", "f"]})
-    filtered, dropped = bpt._drop_gender_null(df)
+    filtered, dropped_null, dropped_blank = bpt._drop_gender_null(df)
     assert len(filtered) == 2
-    assert dropped == 0
+    assert dropped_null == 0
+    assert dropped_blank == 0
+
+
+def test_drop_gender_null_also_excludes_empty_and_whitespace_gender():
+    """空字符串/纯空白的 gender 必须和空值一样被排除，且分开计数
+
+    notna() 挡不住 "" 和 "  "：它们会一路活到表 C，在所有按 gender 分组的
+    统计里变成一个静默的第三性别组。这里同时验证两点：确实被排除了，
+    以及两类原因（真空值 vs 空白串）在 manifest 里能分别看到量级。
+    """
+    df = pd.DataFrame(
+        {
+            "weibo_id": ["a", "b", "c", "d", "e"],
+            "gender": ["m", "", "   ", None, "f"],
+        }
+    )
+    filtered, dropped_null, dropped_blank = bpt._drop_gender_null(df)
+    assert list(filtered["weibo_id"]) == ["a", "e"]
+    assert set(filtered["gender"]) == {"m", "f"}
+    assert dropped_null == 1
+    assert dropped_blank == 2
 
 
 def test_dedup_with_count_counts_duplicate_weibo_id():
@@ -187,3 +213,135 @@ def test_diagnose_date_mismatch_caps_examples_at_max_examples():
     )
     assert diag["mismatch_count"] == 8
     assert len(diag["example_weibo_ids"]) == 3
+
+
+# ---------------------------------------------------------------------------
+# Fix round 2：表达帖口径（零字符帖排除）与 build_month 端到端
+# ---------------------------------------------------------------------------
+
+
+def test_process_frame_writes_is_expressive_column():
+    """表 A 必须自带 is_expressive 列——它是表 C/表 D 共用的唯一权威口径"""
+    public, celeb = _matchers()
+    out = bpt.process_frame(_frame(), public, celeb).set_index("weibo_id")
+    assert "is_expressive" in out.columns
+    assert out.loc["w1", "is_expressive"]  # 原创且有正文
+    assert not out.loc["w2", "is_expressive"]  # 纯转发
+    assert not out.loc["w4", "is_expressive"]  # 转发且正文缺失
+
+
+def test_zero_char_original_is_not_expressive():
+    """清洗后零字符的原创帖（纯图片/纯链接）不算表达帖
+
+    研究负责人裁定：这类帖子不承载任何可测量的文字表达，必须排除出所有
+    内容/表达指标的分子分母；但行本身保留在表 A 里，不做删除。
+    """
+    public, celeb = _matchers()
+    df = _frame()
+    df.loc[2, "weibo_content"] = "http://t.cn/abc"  # w3 原创但清洗后只剩空串
+    out = bpt.process_frame(df, public, celeb).set_index("weibo_id")
+    assert out.loc["w3", "post_type"] == "original"
+    assert out.loc["w3", "n_chars"] == 0
+    assert not out.loc["w3", "is_expressive"]
+    # 行必须仍然在表里
+    assert "w3" in out.index
+
+
+def _write_day(data_dir, year, date_str, rows):
+    """把一天的原始帖子写成服务器同构的日文件"""
+    day_dir = os.path.join(data_dir, str(year))
+    os.makedirs(day_dir, exist_ok=True)
+    pd.DataFrame(rows).to_parquet(
+        os.path.join(day_dir, f"{date_str}.parquet"), engine="pyarrow", index=False
+    )
+
+
+def _raw_post(weibo_id, user_id, content, is_retweet="0", gender="m"):
+    return {
+        "weibo_id": weibo_id,
+        "user_id": user_id,
+        "weibo_content": content,
+        "is_retweet": is_retweet,
+        "gender": gender,
+        "province": "11",
+        "time_stamp": 1583020800,
+    }
+
+
+def test_build_month_end_to_end_writes_parquet_and_manifest(tmp_path, monkeypatch):
+    """表 A 端到端：真实落盘 + manifest 内容逐项核对
+
+    逐步样本流必须自洽：rows_in == 各项丢弃之和 + rows_written。
+    这条端到端用例存在的意义是：纯函数测试测不到 build_month 里的记账、
+    去重、manifest 组装（第 7 号发现正是因为没有这类用例才活到了终审）。
+    """
+    data_dir = tmp_path / "cleaned_weibo_cov"
+    output_dir = tmp_path / "analysis_data"
+    monkeypatch.setattr(config, "DATA_DIR", str(data_dir))
+    monkeypatch.setattr(config, "OUTPUT_DIR", str(output_dir))
+    monkeypatch.setattr(config, "load_public_vocabulary", lambda year: ["疫情", "防控"])
+    monkeypatch.setattr(config, "load_celebrity_vocabulary", lambda year: ["周杰伦"])
+
+    _write_day(
+        str(data_dir),
+        2020,
+        "2020-03-01",
+        [
+            _raw_post("w1", 1, "疫情防控通报"),
+            _raw_post("w2", 1, "转发微博", is_retweet="1"),
+            # 纯图片帖：原创但清洗后零字符，行保留、不算表达帖
+            _raw_post("w3", 2, None, gender="f"),
+            # gender 为空白串 / 空值，两类必须分开计数并双双排除
+            _raw_post("w4", 3, "喜欢周杰伦的歌", gender="  "),
+            _raw_post("w5", 4, "测试", gender=None),
+            # 同一天内重复的 weibo_id
+            _raw_post("w1", 1, "疫情防控通报"),
+        ],
+    )
+    _write_day(
+        str(data_dir),
+        2020,
+        "2020-03-02",
+        [
+            # 跨日文件重复的 weibo_id
+            _raw_post("w1", 1, "疫情防控通报"),
+            _raw_post("w6", 2, "疫情", gender="f"),
+        ],
+    )
+
+    out_path = bpt.build_month(2020, 3)
+    assert out_path is not None
+    assert os.path.exists(out_path)
+
+    written = pd.read_parquet(out_path, columns=bpt.OUTPUT_COLUMNS)
+    assert set(written["weibo_id"]) == {"w1", "w2", "w3", "w6"}
+    # 空白 gender 绝不能变成第三个性别组
+    assert set(written["gender"]) == {"m", "f"}
+
+    manifest_path = os.path.join(
+        str(output_dir), "post_domain_measures_2020", "manifest_month_03", "manifest.json"
+    )
+    with open(manifest_path, encoding="utf-8") as f:
+        manifest = json.load(f)
+    counts = manifest["counts"]
+    assert counts["rows_in"] == 8
+    assert counts["rows_dropped_gender_null"] == 1
+    assert counts["rows_dropped_gender_blank"] == 1
+    assert counts["rows_dropped_within_day_dedup"] == 1
+    assert counts["rows_dropped_cross_file_dedup"] == 1
+    assert counts["rows_written"] == 4
+    # 逐步样本流自洽
+    assert counts["rows_in"] == (
+        counts["rows_dropped_gender_null"]
+        + counts["rows_dropped_gender_blank"]
+        + counts["rows_dropped_within_day_dedup"]
+        + counts["rows_dropped_cross_file_dedup"]
+        + counts["rows_written"]
+    )
+    # 零字符帖的量级必须可测：w3 是唯一一条，且它本来会被算作表达帖
+    assert counts["zero_char_posts"] == {"total": 1, "would_be_expressive": 1}
+    # 表达帖：w1、w6（w2 是纯转发，w3 零字符）
+    assert counts["n_expressive_posts"] == 2
+    assert manifest["fingerprints"]["public_vocab"] == config.fingerprint_terms(["疫情", "防控"])
+    assert manifest["fingerprints"]["celebrity_vocab"] == config.fingerprint_terms(["周杰伦"])
+    assert "git_dirty" in manifest

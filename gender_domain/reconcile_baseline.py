@@ -101,18 +101,25 @@ def build_report(users, overview, density, year, overview_path=None, density_pat
     else:
         report["notes"].append(f"未找到 {overview_path or '(未提供路径)'}，跳过转发基线对照")
 
+    # 三条 density 差异来源说明都只在 density 基线真的存在时才写：
+    # 它们描述的是"新表相对旧 density 基线为什么会不同"，没有基线可比时
+    # 写出来只会让报告看起来做过一次并不存在的对照。
     if density is not None:
         report["baseline"]["density_summary"] = density.to_dict(orient="records")
         report["notes"].append(
             "旧 density 覆盖全部帖子（纯转发计为 0），新表主口径只用表达帖，差异应向上"
         )
+        report["notes"].append(
+            "旧 density 逐词累加会让嵌套词重复计字符，新表为最左最长不重叠，差异应向上"
+        )
+        report["notes"].append(
+            "旧文本清洗正则会误伤正常的 @提及、且未能剥净部分转发链，新清洗器把 //@ 到帖尾整段截断"
+        )
     else:
-        report["notes"].append(f"未找到 {density_path or '(未提供路径)'}，跳过 density 基线对照")
-
-    report["notes"].append("旧 density 逐词累加会让嵌套词重复计字符，新表为最左最长不重叠，差异应向上")
-    report["notes"].append(
-        "旧文本清洗正则会误伤正常的 @提及、且未能剥净部分转发链，新清洗器把 //@ 到帖尾整段截断"
-    )
+        report["notes"].append(
+            f"未找到 {density_path or '(未提供路径)'}，跳过 density 基线对照"
+            "（三条 density 差异来源说明一并省略）"
+        )
 
     return report
 
@@ -141,6 +148,33 @@ def reconcile(year=config.YEAR):
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2, default=str)
     print(f"已保存对照报告: {out_path}")
+
+    # 与其它每一步一致地写出 manifest：对照报告同样是正式产出，
+    # 也需要记录代码版本、实际读到的输入（哪些基线在、哪些缺）和样本数
+    inputs = [os.path.basename(user_path)]
+    if overview is not None:
+        inputs.append(os.path.join(VIZ_DIR, os.path.basename(overview_path)))
+    if density is not None:
+        inputs.append(os.path.join(VIZ_DIR, os.path.basename(density_path)))
+    manifest = config.build_manifest(
+        step=f"reconciliation_{year}",
+        inputs=inputs,
+        params={
+            "year": year,
+            "user_table_columns": USER_TABLE_COLUMNS,
+            "baseline_present": {
+                "retweet_overview": overview is not None,
+                "density_summary": density is not None,
+            },
+        },
+        counts={
+            "users": int(len(users)),
+            "gender": users["gender"].value_counts().to_dict(),
+            "notes": len(report["notes"]),
+        },
+    )
+    config.write_manifest(manifest, os.path.join(config.OUTPUT_DIR, f"reconciliation_{year}"))
+
     print(json.dumps(report["new"], ensure_ascii=False, indent=2, default=str))
     return report
 

@@ -1,3 +1,6 @@
+import json
+import os
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -6,23 +9,47 @@ from gender_domain import build_user_tables as but
 
 
 def _posts():
+    """与表 A 同构的帖子夹具（含表 A 写出的 is_expressive 列）
+
+    w2/w8 是纯转发，n_chars 给 4 —— 真实数据里"转发微博"这个占位文本
+    就是 4 个字符。修复前这里写的是 0，恰好是唯一能让表 C 与表 D 的分母
+    差异消失的取值，两个关键缺陷因此在测试里完全不可见。
+    用户 4 全部活动都在 1 月，用来直接比对表 C 与表 D 的同名列。
+    """
     return pd.DataFrame(
         {
-            "weibo_id": ["w1", "w2", "w3", "w4", "w5"],
-            "user_id": ["1", "1", "1", "2", "2"],
-            "date": ["2020-01-05", "2020-01-06", "2020-02-01", "2020-01-05", "2020-01-05"],
-            "month": [1, 1, 2, 1, 1],
-            "gender": ["m", "m", "m", "f", "f"],
-            "post_type": ["original", "retweet_plain", "original", "original", "retweet_comment"],
-            "n_chars": [10, 0, 20, 10, 10],
-            "public_hit": [True, False, False, False, False],
-            "public_n_hits": [2, 0, 0, 0, 0],
-            "public_chars_hit": [4, 0, 0, 0, 0],
-            "public_density": [0.4, 0.0, 0.0, 0.0, 0.0],
-            "celebrity_hit": [False, False, True, True, True],
-            "celebrity_n_hits": [0, 0, 1, 1, 1],
-            "celebrity_chars_hit": [0, 0, 3, 3, 3],
-            "celebrity_density": [0.0, 0.0, 0.15, 0.3, 0.3],
+            "weibo_id": ["w1", "w2", "w3", "w4", "w5", "w7", "w8"],
+            "user_id": ["1", "1", "1", "2", "2", "4", "4"],
+            "date": [
+                "2020-01-05",
+                "2020-01-06",
+                "2020-02-01",
+                "2020-01-05",
+                "2020-01-05",
+                "2020-01-09",
+                "2020-01-09",
+            ],
+            "month": [1, 1, 2, 1, 1, 1, 1],
+            "gender": ["m", "m", "m", "f", "f", "f", "f"],
+            "post_type": [
+                "original",
+                "retweet_plain",
+                "original",
+                "original",
+                "retweet_comment",
+                "original",
+                "retweet_plain",
+            ],
+            "n_chars": [10, 4, 20, 10, 10, 10, 4],
+            "is_expressive": [True, False, True, True, True, True, False],
+            "public_hit": [True, False, False, False, False, True, False],
+            "public_n_hits": [2, 0, 0, 0, 0, 1, 0],
+            "public_chars_hit": [4, 0, 0, 0, 0, 2, 0],
+            "public_density": [0.4, 0.0, 0.0, 0.0, 0.0, 0.2, 0.0],
+            "celebrity_hit": [False, False, True, True, True, False, False],
+            "celebrity_n_hits": [0, 0, 1, 1, 1, 0, 0],
+            "celebrity_chars_hit": [0, 0, 3, 3, 3, 0, 0],
+            "celebrity_density": [0.0, 0.0, 0.15, 0.3, 0.3, 0.0, 0.0],
         }
     )
 
@@ -145,6 +172,7 @@ def test_zero_denominator_yields_nan_not_zero():
             "gender": ["m"],
             "post_type": ["retweet_plain"],
             "n_chars": [0],
+            "is_expressive": [False],
             "public_hit": [False],
             "public_n_hits": [0],
             "public_chars_hit": [0],
@@ -352,3 +380,386 @@ def test_diagnose_event_only_users_counts_without_dropping_anyone():
     diag = but.diagnose_event_only_users(post_agg, event_agg)
     assert diag["event_only_user_count"] == 1
     assert diag["example_user_ids"] == ["3"]
+
+
+# ---------------------------------------------------------------------------
+# Fix round 2：表 C 与表 D 必须共用同一个表达帖分母（终审 CRITICAL 1/2）
+# ---------------------------------------------------------------------------
+
+
+def _single_month_user_row(panel, user_id, month=1):
+    return panel[(panel["user_id"] == user_id) & (panel["month"] == month)].iloc[0]
+
+
+def test_table_d_char_density_equals_table_c_for_single_month_user():
+    """同名列必须同口径：表 D 的 char_density 分母也只能是表达帖
+
+    用户 4 的全部活动都在 1 月，所以表 C（全年）与表 D（该月）算的是
+    同一批帖子，两个数字必须完全相等。手算：表达帖只有原创 w7（10 字，
+    命中 2 字），纯转发 w8 的 4 个字（"转发微博"）不进分母 -> 2/10 = 0.2。
+    修复前表 D 把 w8 的 4 个字也算进分母，得到 2/14 ≈ 0.1429。
+    """
+    posts = _posts()
+    table_c = but.aggregate_posts(posts).set_index("user_id")
+    table_d = but.aggregate_user_month(posts, _events())
+    row = _single_month_user_row(table_d, "4")
+
+    assert table_c.loc["4", "public_char_density"] == pytest.approx(0.2)
+    assert row["public_char_density"] == pytest.approx(0.2)
+    assert row["public_char_density"] == pytest.approx(table_c.loc["4", "public_char_density"])
+    # 修复前的错误取值必须不再出现
+    assert row["public_char_density"] != pytest.approx(2 / 14)
+
+
+def test_table_d_topical_share_equals_table_c_for_single_month_user():
+    """手算：用户 4 表达帖 1 条（w7），其中命中公共事务 1 条 -> 1/1 = 1.0"""
+    posts = _posts()
+    table_c = but.aggregate_posts(posts).set_index("user_id")
+    table_d = but.aggregate_user_month(posts, _events())
+    row = _single_month_user_row(table_d, "4")
+
+    assert table_c.loc["4", "public_topical_share"] == pytest.approx(1.0)
+    assert row["public_topical_share"] == pytest.approx(1.0)
+    assert row["n_expressive_posts"] == table_c.loc["4", "n_expressive_posts"] == 1
+    assert row["public_topical_posts"] == table_c.loc["4", "public_topical_posts"] == 1
+
+
+def test_table_d_expressive_denominator_matches_table_c_for_every_single_month_user():
+    """所有"全部活动都在同一个月"的用户，两张表的同名列都必须相等"""
+    posts = _posts()
+    table_c = but.aggregate_posts(posts).set_index("user_id")
+    table_d = but.aggregate_user_month(posts, _events())
+    single_month_users = [
+        uid for uid in table_c.index if table_c.loc[uid, "n_active_months"] == 1
+    ]
+    assert single_month_users  # 夹具里必须真的有这种用户
+    for uid in single_month_users:
+        month = int(posts[posts["user_id"] == uid]["month"].iloc[0])
+        row = _single_month_user_row(table_d, uid, month)
+        for domain in but.DOMAINS:
+            for col in ("char_density", "topical_share"):
+                c_value = table_c.loc[uid, f"{domain}_{col}"]
+                d_value = row[f"{domain}_{col}"]
+                if pd.isna(c_value):
+                    assert pd.isna(d_value)
+                else:
+                    assert d_value == pytest.approx(c_value)
+
+
+def _posts_with_hitting_plain_retweet():
+    """纯转发帖本身命中了词表词的场景
+
+    真实数据里完全可能发生：转发时平台带出的占位文本或被截断的正文里
+    恰好含有词表里的词。修复前表 D 的分子统计全部帖子、分母只统计表达帖，
+    这种场景会直接把 topical_share 推到 2.0。
+    """
+    return pd.DataFrame(
+        {
+            "weibo_id": ["p1", "p2"],
+            "user_id": ["7", "7"],
+            "date": ["2020-04-01", "2020-04-02"],
+            "month": [4, 4],
+            "gender": ["f", "f"],
+            "post_type": ["original", "retweet_plain"],
+            "n_chars": [10, 4],
+            "is_expressive": [True, False],
+            "public_hit": [True, True],
+            "public_n_hits": [1, 1],
+            "public_chars_hit": [2, 2],
+            "public_density": [0.2, 0.5],
+            "celebrity_hit": [False, False],
+            "celebrity_n_hits": [0, 0],
+            "celebrity_chars_hit": [0, 0],
+            "celebrity_density": [0.0, 0.0],
+        }
+    )
+
+
+def _empty_events():
+    return pd.DataFrame(
+        {
+            "user_id": pd.Series([], dtype="object"),
+            "weibo_id": pd.Series([], dtype="object"),
+            "month": pd.Series([], dtype="int64"),
+            "source_domain": pd.Series([], dtype="object"),
+            "delay_seconds": pd.Series([], dtype="float64"),
+            "delay_valid": pd.Series([], dtype="bool"),
+        }
+    )
+
+
+def test_topical_share_never_exceeds_one_when_a_plain_retweet_hits_vocabulary():
+    """占比是"命中的表达帖 / 表达帖"，两张表都不可能大于 1
+
+    修复前表 D 在这个夹具上算出 2.0（分子 2 条命中帖 / 分母 1 条表达帖）。
+    """
+    posts = _posts_with_hitting_plain_retweet()
+    table_c = but.aggregate_posts(posts).set_index("user_id")
+    table_d = but.aggregate_user_month(posts, _empty_events())
+
+    assert table_c.loc["7", "public_topical_share"] == pytest.approx(1.0)
+    row = _single_month_user_row(table_d, "7", month=4)
+    assert row["public_topical_share"] == pytest.approx(1.0)
+
+    for domain in but.DOMAINS:
+        c_shares = table_c[f"{domain}_topical_share"].dropna()
+        d_shares = table_d[f"{domain}_topical_share"].dropna()
+        assert (c_shares <= 1.0).all()
+        assert (d_shares <= 1.0).all()
+
+
+def test_topical_share_never_exceeds_one_in_the_main_fixture():
+    """主夹具上也把上界断言钉死，防止今后任何改动让它重新越界"""
+    posts = _posts()
+    table_c = but.aggregate_posts(posts)
+    table_d = but.aggregate_user_month(posts, _events())
+    for domain in but.DOMAINS:
+        assert (table_c[f"{domain}_topical_share"].dropna() <= 1.0).all()
+        assert (table_d[f"{domain}_topical_share"].dropna() <= 1.0).all()
+
+
+def _posts_with_image_only_post():
+    """一条纯图片帖（原创但清洗后零字符）+ 一条正常表达帖"""
+    return pd.DataFrame(
+        {
+            "weibo_id": ["i1", "i2"],
+            "user_id": ["8", "8"],
+            "date": ["2020-06-01", "2020-06-02"],
+            "month": [6, 6],
+            "gender": ["m", "m"],
+            "post_type": ["original", "original"],
+            "n_chars": [0, 10],
+            "is_expressive": [False, True],
+            "public_hit": [False, True],
+            "public_n_hits": [0, 1],
+            "public_chars_hit": [0, 2],
+            "public_density": [0.0, 0.2],
+            "celebrity_hit": [False, False],
+            "celebrity_n_hits": [0, 0],
+            "celebrity_chars_hit": [0, 0],
+            "celebrity_density": [0.0, 0.0],
+        }
+    )
+
+
+def test_image_only_post_is_excluded_from_expressive_denominator_in_both_tables():
+    """Ruling A：零字符帖（纯图片/纯链接）不进任何内容指标的分母
+
+    该用户有 2 条帖子，但只有 1 条表达帖，表 C 与表 D 的分母都必须是 1。
+    行本身不被删除，n_posts 仍然是 2。
+    """
+    posts = _posts_with_image_only_post()
+    table_c = but.aggregate_posts(posts).set_index("user_id")
+    table_d = but.aggregate_user_month(posts, _empty_events())
+    row = _single_month_user_row(table_d, "8", month=6)
+
+    assert table_c.loc["8", "n_posts"] == 2
+    assert table_c.loc["8", "n_expressive_posts"] == 1
+    assert row["n_posts"] == 2
+    assert row["n_expressive_posts"] == 1
+    # 分母是 1 不是 2
+    assert table_c.loc["8", "public_topical_share"] == pytest.approx(1.0)
+    assert row["public_topical_share"] == pytest.approx(1.0)
+    # 字符分母也只数表达帖
+    assert table_c.loc["8", "public_char_density"] == pytest.approx(0.2)
+    assert row["public_char_density"] == pytest.approx(0.2)
+
+
+def test_allposts_variant_keeps_its_literal_all_posts_denominator():
+    """_allposts 稳健性口径刻意不采纳零字符帖排除规则
+
+    它存在的意义是与旧流水线可比，跟着主口径改就失去了比较价值。
+    用户 8 有 2 条帖子、1 条命中 -> 1/2 = 0.5（而主口径是 1/1 = 1.0）。
+    """
+    table_c = but.aggregate_posts(_posts_with_image_only_post()).set_index("user_id")
+    assert table_c.loc["8", "public_topical_share_allposts"] == pytest.approx(0.5)
+    assert table_c.loc["8", "public_topical_share"] == pytest.approx(1.0)
+
+
+def test_aggregations_consume_table_a_is_expressive_column_instead_of_re_deriving():
+    """表 A 写出的 is_expressive 是唯一权威口径，聚合端不得自己重推
+
+    这里把 is_expressive 人为改成与 post_type 不一致的取值：如果聚合函数
+    仍然按 post_type 自行推导，就会忽略这一列，两张表就又会各推各的。
+    """
+    posts = _posts_with_image_only_post()
+    posts["is_expressive"] = [True, False]  # 与 post_type/n_chars 刻意不一致
+    table_c = but.aggregate_posts(posts).set_index("user_id")
+    table_d = but.aggregate_user_month(posts, _empty_events())
+    assert table_c.loc["8", "n_expressive_posts"] == 1
+    assert _single_month_user_row(table_d, "8", month=6)["n_expressive_posts"] == 1
+    # 被标为表达帖的是零字符的 i1，命中帖 i2 反而不算 -> 命中数为 0
+    assert table_c.loc["8", "public_topical_posts"] == 0
+
+
+def test_missing_is_expressive_column_falls_back_to_the_same_single_definition():
+    """旧版分片没有 is_expressive 列时，按同一个定义现场推导（并打印警告）"""
+    posts = _posts_with_image_only_post().drop(columns=["is_expressive"])
+    table_c = but.aggregate_posts(posts).set_index("user_id")
+    assert table_c.loc["8", "n_expressive_posts"] == 1
+
+
+def test_source_combo_is_vectorised_and_covers_every_combination():
+    entered_public = pd.Series([True, True, False, False, None])
+    entered_celebrity = pd.Series([True, False, True, False, None])
+    combo = but._source_combo_series(entered_public, entered_celebrity)
+    assert list(combo) == ["both", "public_only", "celebrity_only", "neither", "neither"]
+
+
+# ---------------------------------------------------------------------------
+# Fix round 2：分片读取只取需要的列 + 表 C/D manifest 的输入与指纹
+# ---------------------------------------------------------------------------
+
+
+def _write_post_shards(output_dir, with_manifest_months=(1,)):
+    shard_dir = output_dir / "post_domain_measures_2020"
+    shard_dir.mkdir(parents=True)
+    frame = _posts().copy()
+    # 表 A 真实存在、但表 C/表 D 一次都用不到的列
+    frame["public_terms"] = "疫情|防控"
+    frame["celebrity_terms"] = ""
+    frame["chain_stripped"] = False
+    frame["province"] = "11"
+    for month in sorted(frame["month"].unique()):
+        part = frame[frame["month"] == month]
+        part.to_parquet(
+            shard_dir / f"month={month:02d}.parquet", engine="pyarrow", index=False
+        )
+        if month in with_manifest_months:
+            manifest_dir = shard_dir / f"manifest_month_{month:02d}"
+            manifest_dir.mkdir()
+            with open(manifest_dir / "manifest.json", "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "step": f"post_domain_measures_2020_{month:02d}",
+                        "fingerprints": {
+                            "public_vocab": "aaa11111",
+                            "celebrity_vocab": "bbb22222",
+                        },
+                    },
+                    f,
+                )
+    return shard_dir
+
+
+def _write_event_shards(output_dir):
+    shard_dir = output_dir / "retweet_domain_events_2020"
+    shard_dir.mkdir(parents=True)
+    frame = _events().copy()
+    for month in sorted(frame["month"].unique()):
+        part = frame[frame["month"] == month]
+        part.to_parquet(
+            shard_dir / f"month={month:02d}.parquet", engine="pyarrow", index=False
+        )
+        manifest_dir = shard_dir / f"manifest_month_{month:02d}"
+        manifest_dir.mkdir()
+        with open(manifest_dir / "manifest.json", "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "step": f"retweet_domain_events_2020_{month:02d}",
+                    "fingerprints": {
+                        "public_accounts": "ccc33333",
+                        "celebrity_accounts": "ddd44444",
+                    },
+                },
+                f,
+            )
+    return shard_dir
+
+
+def test_read_shards_requests_only_the_columns_the_aggregations_use(tmp_path, monkeypatch):
+    """parquet 读取必须显式传 columns
+
+    表 A 带着 {domain}_terms 两列竖线拼接的命中词字符串，表 C/表 D 一次
+    都用不到，全年读进内存纯属浪费（也违反项目的全局约定）。
+    """
+    monkeypatch.setattr(but.config, "OUTPUT_DIR", str(tmp_path))
+    _write_post_shards(tmp_path)
+    frame, files = but._read_shards("post_domain_measures", 2020, but.POST_SHARD_COLUMNS)
+    assert list(frame.columns) == but.POST_SHARD_COLUMNS
+    assert "public_terms" not in frame.columns
+    assert "celebrity_terms" not in frame.columns
+    assert len(files) == 2
+
+
+def test_collect_shard_fingerprints_records_missing_manifests_explicitly(tmp_path):
+    """分月 manifest 缺失必须显式记录，不能静默省略指纹
+
+    "没有指纹"和"指纹一致"在文件里长得一模一样，静默省略等于伪装成正常。
+    """
+    shard_dir = _write_post_shards(tmp_path, with_manifest_months=(1,))
+    files = sorted(str(p) for p in shard_dir.glob("month=*.parquet"))
+    fingerprints = but.collect_shard_fingerprints(str(shard_dir), files)
+    assert fingerprints["public_vocab"] == ["aaa11111"]
+    assert fingerprints["celebrity_vocab"] == ["bbb22222"]
+    assert fingerprints["missing_manifests"] == [
+        "post_domain_measures_2020/manifest_month_02"
+    ]
+
+
+def test_collect_shard_fingerprints_surfaces_inconsistent_months(tmp_path):
+    """不同月份用了不同词表时，两个取值都必须留在 manifest 里"""
+    shard_dir = _write_post_shards(tmp_path, with_manifest_months=(1, 2))
+    other = shard_dir / "manifest_month_02" / "manifest.json"
+    with open(other, "w", encoding="utf-8") as f:
+        json.dump({"fingerprints": {"public_vocab": "zzz99999"}}, f)
+    files = sorted(str(p) for p in shard_dir.glob("month=*.parquet"))
+    fingerprints = but.collect_shard_fingerprints(str(shard_dir), files)
+    assert fingerprints["public_vocab"] == ["aaa11111", "zzz99999"]
+    assert fingerprints["missing_manifests"] == []
+
+
+def test_build_writes_tables_and_a_self_describing_manifest(tmp_path, monkeypatch):
+    """表 C/表 D 端到端：落盘 + manifest 记录实际分片与继承的指纹
+
+    这两张表是论文数字的直接来源，却曾是全流程里唯一不记指纹、inputs
+    只写目录名的一步（目录名说不清这次到底读到了哪几个月）。
+    """
+    monkeypatch.setattr(but.config, "OUTPUT_DIR", str(tmp_path))
+    _write_post_shards(tmp_path, with_manifest_months=(1,))
+    _write_event_shards(tmp_path)
+
+    user_path, panel_path = but.build(2020)
+    assert os.path.exists(user_path)
+    assert os.path.exists(panel_path)
+
+    with open(tmp_path / "user_tables_2020" / "manifest.json", encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    # inputs 是实际 glob 到的分片文件，而不是两个目录名
+    assert "post_domain_measures_2020/month=01.parquet" in manifest["inputs"]
+    assert "post_domain_measures_2020/month=02.parquet" in manifest["inputs"]
+    assert "retweet_domain_events_2020/month=01.parquet" in manifest["inputs"]
+    # 指纹从上游分片 manifest 继承
+    assert manifest["fingerprints"]["post_shards"]["public_vocab"] == ["aaa11111"]
+    assert manifest["fingerprints"]["post_shards"]["celebrity_vocab"] == ["bbb22222"]
+    assert manifest["fingerprints"]["retweet_shards"]["public_accounts"] == ["ccc33333"]
+    # 缺失的分月 manifest 被显式记录
+    assert manifest["fingerprints"]["post_shards"]["missing_manifests"] == [
+        "post_domain_measures_2020/manifest_month_02"
+    ]
+    assert manifest["params"]["expressive_requires_nonzero_chars"] is True
+    assert "git_dirty" in manifest
+
+    # 落盘的表 C/表 D 在同名列上必须给出同一个数字（用户 4 只活跃在 1 月）
+    users = pd.read_parquet(
+        user_path, columns=["user_id", "public_char_density", "public_topical_share"]
+    ).set_index("user_id")
+    panel = pd.read_parquet(
+        panel_path,
+        columns=["user_id", "month", "public_char_density", "public_topical_share"],
+    )
+    row = panel[(panel["user_id"] == "4") & (panel["month"] == 1)].iloc[0]
+    assert row["public_char_density"] == pytest.approx(users.loc["4", "public_char_density"])
+    assert row["public_topical_share"] == pytest.approx(users.loc["4", "public_topical_share"])
+
+
+def test_missing_values_in_is_expressive_column_fail_loudly(monkeypatch):
+    """is_expressive 列有缺失时必须报错，不能被 astype(bool) 静默当成 True
+
+    astype(bool) 会把 NaN 变成 True，等于凭空把一批帖子塞进内容指标的分母。
+    """
+    posts = _posts_with_image_only_post()
+    posts["is_expressive"] = [True, None]
+    with pytest.raises(ValueError, match="is_expressive"):
+        but.aggregate_posts(posts)

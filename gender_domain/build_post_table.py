@@ -39,6 +39,9 @@ OUTPUT_COLUMNS = [
     "post_type",
     "chain_stripped",
     "n_chars",
+    # 表达帖标记：口径由 text_rules.is_expressive_series 唯一定义，
+    # 表 C/表 D 都直接读这一列，不各自重推（见 text_rules 里的说明）
+    "is_expressive",
     "public_hit",
     "public_n_hits",
     "public_chars_hit",
@@ -53,14 +56,22 @@ OUTPUT_COLUMNS = [
 
 
 def _drop_gender_null(df):
-    """按 gender 是否为空过滤，返回 (过滤后的 df, 丢弃行数)
+    """按 gender 是否可用过滤，返回 (过滤后的 df, 空值行数, 空白串行数)
+
+    notna() 只能挡住 None/NaN：空字符串和纯空白字符串（" "、"\\t"）都能
+    通过 notna()，会一路活到表 C 里变成第三个"性别组"，静默污染所有按
+    gender 分组的统计。这里把空白串一并排除，并与真正的空值分开计数，
+    便于在 manifest 里看清两类问题各自的量级。
 
     单独抽出便于对丢弃计数做单元测试，也便于在 build_month 里把这一步
     的丢弃数量单独记入 manifest，不与其他丢弃来源混在一起。
     """
-    before = len(df)
-    filtered = df[df["gender"].notna()].copy()
-    return filtered, before - len(filtered)
+    is_null = df["gender"].isna()
+    # astype(str) 会把 NaN 变成 "nan"，所以必须先排除空值再判空白，
+    # 两类计数才不会互相污染
+    is_blank = (~is_null) & (df["gender"].astype(str).str.strip() == "")
+    filtered = df[~(is_null | is_blank)].copy()
+    return filtered, int(is_null.sum()), int(is_blank.sum())
 
 
 def _dedup_with_count(df, subset):
@@ -170,6 +181,10 @@ def process_frame(df, public_matcher, celebrity_matcher):
         df[f"{prefix}_density"] = [m["density"] for m in measures]
 
     df["n_chars"] = [len(t) for t in cleaned]
+    # 表达帖标记只在这里写一次，口径见 text_rules.is_expressive_series：
+    # 清洗后零字符的帖子（纯图片、纯链接）即使类型是原创/带评论转发，
+    # 也不算表达帖，不进任何内容指标的分子分母（但行本身保留）
+    df["is_expressive"] = tr.is_expressive_series(df["post_type"], df["n_chars"])
     df["month"] = pd.to_datetime(df["date"]).dt.month
 
     return df[OUTPUT_COLUMNS].reset_index(drop=True)
@@ -199,6 +214,7 @@ def build_month(year=config.YEAR, month=1):
     parts = []
     rows_in = 0
     rows_dropped_gender_null = 0
+    rows_dropped_gender_blank = 0
     rows_dropped_within_day_dedup = 0
     ts_mismatch_count = 0
     ts_unknown_count = 0
@@ -219,8 +235,9 @@ def build_month(year=config.YEAR, month=1):
                 diag["example_weibo_ids"][: 5 - len(ts_mismatch_examples)]
             )
 
-        df, dropped_gender = _drop_gender_null(df)
-        rows_dropped_gender_null += dropped_gender
+        df, dropped_gender_null, dropped_gender_blank = _drop_gender_null(df)
+        rows_dropped_gender_null += dropped_gender_null
+        rows_dropped_gender_blank += dropped_gender_blank
         if len(df) == 0:
             continue
         df["date"] = filename_date_str
@@ -244,17 +261,37 @@ def build_month(year=config.YEAR, month=1):
     size_mb = os.path.getsize(out_path) / (1024 * 1024)
     print(f"已保存: {out_path}（{len(result):,} 行, {size_mb:.1f} MB）")
 
+    # 零字符帖（纯图片/纯链接）不删行，但会被排除在所有内容指标的分母之外
+    # （研究负责人裁定，见 text_rules.is_expressive）。这里把它的量级写进
+    # manifest：total 是全部零字符帖，would_be_expressive 是"若不加这条
+    # 规则、本来会被算作表达帖"的那部分，即这条规则真正改变的分母大小。
+    zero_char_mask = result["n_chars"] == 0
+    zero_char_total = int(zero_char_mask.sum())
+    zero_char_would_be_expressive = int(
+        (zero_char_mask & result["post_type"].isin(tr.EXPRESSIVE_TYPES)).sum()
+    )
+    print(
+        f"零字符帖 {zero_char_total} 条，其中 {zero_char_would_be_expressive} 条"
+        f"原本会被计为表达帖，已排除出内容指标分母"
+    )
+
     manifest = config.build_manifest(
         step=f"post_domain_measures_{year}_{month:02d}",
         inputs=[os.path.basename(p) for p in files],
-        params={"year": year, "month": month},
+        params={"year": year, "month": month, "expressive_types": list(tr.EXPRESSIVE_TYPES)},
         counts={
-            # 逐步样本流：rows_in == 下面四项丢弃/写出之和，可据此核对流水线
+            # 逐步样本流：rows_in == 下面五项丢弃/写出之和，可据此核对流水线
             "rows_in": rows_in,
             "rows_dropped_gender_null": rows_dropped_gender_null,
+            "rows_dropped_gender_blank": rows_dropped_gender_blank,
             "rows_dropped_within_day_dedup": rows_dropped_within_day_dedup,
             "rows_dropped_cross_file_dedup": rows_dropped_cross_file_dedup,
             "rows_written": int(len(result)),
+            "n_expressive_posts": int(result["is_expressive"].sum()),
+            "zero_char_posts": {
+                "total": zero_char_total,
+                "would_be_expressive": zero_char_would_be_expressive,
+            },
             "post_type": result["post_type"].value_counts().to_dict(),
             "public_hit_rate": float(result["public_hit"].mean()),
             "celebrity_hit_rate": float(result["celebrity_hit"].mean()),
