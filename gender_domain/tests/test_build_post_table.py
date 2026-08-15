@@ -84,3 +84,96 @@ def test_process_frame_deduplicates_weibo_id():
     doubled = pd.concat([_frame(), _frame()], ignore_index=True)
     out = bpt.process_frame(doubled, public, celeb)
     assert len(out) == 4
+    # 丢弃计数 = 输入行数 - 输出行数，build_month 用这个差值记录
+    # within-day dedup 的丢弃数，这里显式验证这个差值是对的
+    assert len(doubled) - len(out) == 4
+
+
+# ---------------------------------------------------------------------------
+# Fix round 1：逐步样本计数（gender 过滤 / 去重）与 date-timestamp 诊断
+# ---------------------------------------------------------------------------
+
+
+def test_drop_gender_null_counts_dropped_rows():
+    df = pd.DataFrame(
+        {
+            "weibo_id": ["a", "b", "c", "d"],
+            "gender": ["m", None, "f", None],
+        }
+    )
+    filtered, dropped = bpt._drop_gender_null(df)
+    assert list(filtered["weibo_id"]) == ["a", "c"]
+    assert dropped == 2
+
+
+def test_drop_gender_null_counts_zero_when_nothing_dropped():
+    df = pd.DataFrame({"weibo_id": ["a", "b"], "gender": ["m", "f"]})
+    filtered, dropped = bpt._drop_gender_null(df)
+    assert len(filtered) == 2
+    assert dropped == 0
+
+
+def test_dedup_with_count_counts_duplicate_weibo_id():
+    df = pd.DataFrame({"weibo_id": ["a", "b", "a", "c", "b"]})
+    deduped, dropped = bpt._dedup_with_count(df, subset=["weibo_id"])
+    assert list(deduped["weibo_id"]) == ["a", "b", "c"]
+    assert dropped == 2
+
+
+def test_diagnose_date_mismatch_flags_row_on_different_date():
+    filename_date = pd.to_datetime("2020-03-01").date()
+    # 第二行的时间戳（秒级）对应 2020-03-02，与文件名日期不一致
+    weibo_ids = ["w1", "w2"]
+    time_stamps = [
+        pd.Timestamp("2020-03-01 08:00:00").timestamp(),
+        pd.Timestamp("2020-03-02 08:00:00").timestamp(),
+    ]
+    diag = bpt.diagnose_date_mismatch(weibo_ids, time_stamps, filename_date)
+    assert diag["mismatch_count"] == 1
+    assert diag["unknown_count"] == 0
+    assert diag["example_weibo_ids"] == ["w2"]
+
+
+def test_diagnose_date_mismatch_all_consistent_gives_zero():
+    filename_date = pd.to_datetime("2020-03-01").date()
+    weibo_ids = ["w1", "w2"]
+    time_stamps = [
+        pd.Timestamp("2020-03-01 00:10:00").timestamp(),
+        pd.Timestamp("2020-03-01 23:50:00").timestamp(),
+    ]
+    diag = bpt.diagnose_date_mismatch(weibo_ids, time_stamps, filename_date)
+    assert diag["mismatch_count"] == 0
+    assert diag["example_weibo_ids"] == []
+
+
+def test_diagnose_date_mismatch_treats_unparseable_timestamp_as_unknown():
+    filename_date = pd.to_datetime("2020-03-01").date()
+    weibo_ids = ["w1", "w2", "w3"]
+    # None、NaN、非数字字符串都算无法解析，计入 unknown 而不是 mismatch
+    time_stamps = [None, float("nan"), "not-a-timestamp"]
+    diag = bpt.diagnose_date_mismatch(weibo_ids, time_stamps, filename_date)
+    assert diag["mismatch_count"] == 0
+    assert diag["unknown_count"] == 3
+    assert diag["example_weibo_ids"] == []
+
+
+def test_diagnose_date_mismatch_infers_millisecond_unit():
+    filename_date = pd.to_datetime("2020-03-02").date()
+    # 秒级时间戳 (~1.58e9) 和毫秒级 (~1.58e12) 都应换算出同一个真实日期
+    seconds = pd.Timestamp("2020-03-02 12:00:00").timestamp()
+    milliseconds = seconds * 1000
+    diag = bpt.diagnose_date_mismatch(["w1"], [milliseconds], filename_date)
+    assert diag["mismatch_count"] == 0
+    assert diag["unknown_count"] == 0
+
+
+def test_diagnose_date_mismatch_caps_examples_at_max_examples():
+    filename_date = pd.to_datetime("2020-03-01").date()
+    mismatched_ts = pd.Timestamp("2020-03-05 00:00:00").timestamp()
+    weibo_ids = [f"w{i}" for i in range(8)]
+    time_stamps = [mismatched_ts] * 8
+    diag = bpt.diagnose_date_mismatch(
+        weibo_ids, time_stamps, filename_date, max_examples=3
+    )
+    assert diag["mismatch_count"] == 8
+    assert len(diag["example_weibo_ids"]) == 3
