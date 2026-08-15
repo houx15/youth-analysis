@@ -43,10 +43,16 @@ def test_process_frame_measures_both_domains_independently():
 
 
 def test_process_frame_stores_terms_as_pipe_joined_string():
+    # 命中词按 Unicode 码点升序排列（而非出现顺序），这样同一命中集合
+    # 无论在文本中出现的先后顺序如何，拼接结果都是确定的，便于跨批次
+    # 对比同一条命中组合是否一致。
     public, celeb = _matchers()
     out = bpt.process_frame(_frame(), public, celeb).set_index("weibo_id")
-    assert out.loc["w1", "public_terms"] == "防控|疫情"
+    assert out.loc["w1", "public_terms"] == "疫情|防控"
     assert out.loc["w2", "public_terms"] == ""
+    # 显式验证排序规则：即使颠倒词表/命中顺序输入，只要命中集合相同，
+    # 结果字符串也必须相同——证明这是排序后的结果，不是偶然的出现顺序。
+    assert out.loc["w1", "public_terms"] == "|".join(sorted(["疫情", "防控"]))
 
 
 def test_process_frame_adds_month_from_date():
