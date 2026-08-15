@@ -107,14 +107,48 @@ These come from section 0.6 of the research design doc. The new pipeline must fi
 6. **Matching rule** — density currently sums `str.count()` per term, so nested long/short terms double-count characters. Switch to longest-match-first with non-overlapping spans.
 7. **Retweet delay** — currently record-level means with conventional standard errors. The paper needs outlier cleaning, user-level medians/quantiles, and user-clustered intervals.
 
-## Four standard tables to build
+## The `gender_domain/` package (new pipeline)
 
-Do not overwrite the existing `analysis_results/` and `viz_data/` outputs — keep them as the baseline for cross-checking. Build on top of them (field lists in section 0.4 of the design doc):
+`gender_domain/` builds the four analysis tables the paper's models read. It is tested locally (`python3 -m pytest gender_domain/ -v`, 128 tests) because all measurement logic is pure; only the IO runs on the server.
 
-- `analysis_data/post_domain_measures_2020.parquet` — one row per post (post type, per-domain hit flag, matched terms, hit characters, density)
-- `analysis_data/retweet_domain_events_2020.parquet` — one row per source retweet (source domain, source account and category, cleaned delay)
-- `analysis_data/user_domain_2020.parquet` — user-level master table (the main analysis table)
-- `analysis_data/user_month_domain_2020.parquet` — user–month panel (persistence and monthly stability)
+| Module | Responsibility |
+|---|---|
+| `config.py` | Paths, vocabulary/account loading from `configs/`, SHA1 fingerprints, manifest writing |
+| `text_rules.py` | Cleaning, post typing, the expressive-post definition, leftmost-longest matcher |
+| `id_rules.py` | Canonical string user IDs (see the float trap below) |
+| `build_post_table.py` | Table A, one row per post, month shards |
+| `build_retweet_table.py` | Table B, one row per source retweet, month shards |
+| `build_user_tables.py` | Tables C and D |
+| `reconcile_baseline.py` | Compares the new tables against `viz_data/` |
+
+Server run order — A and B are independent and can run together:
+
+```bash
+sbatch slurm/build_post_table.slurm       # array 1-12, table A
+sbatch slurm/build_retweet_table.slurm    # array 1-12, table B
+sbatch slurm/build_user_tables.slurm      # tables C and D, after both arrays finish
+sbatch slurm/reconcile_baseline.slurm     # baseline comparison
+# re-run one failed month: sbatch --array=7 slurm/build_post_table.slurm
+```
+
+Output: `analysis_data/{post_domain_measures,retweet_domain_events}_2020/month=NN.parquet` plus per-month manifests, then `user_domain_2020.parquet`, `user_month_domain_2020.parquet`, `reconciliation_2020.json`. Nothing here overwrites `analysis_results/` or `viz_data/` — those stay as the baseline.
+
+### Definitions this pipeline fixes in place
+
+- **Expressive post** = original post or retweet with an added comment, **and** at least one character after cleaning. Image-only and link-only posts are kept as rows but excluded from every content denominator (owner ruling, 2026-08-15). The manifest counts them so the excluded share is reportable by gender.
+- **Plain retweets** (`转发微博`) count as diffusion — they are in `n_retweets` and in source events — but never as expression.
+- **Retweet chain** = everything from `//@` to end of post, stripped before URLs so a URL abutting the chain cannot shield it.
+- **Matching** is leftmost-longest and non-overlapping, so nested vocabulary terms never double-count characters.
+- **Zero denominators yield NaN, never 0** — "no expressive posts" and "0% topical" are different facts.
+- `topical_share` uses expressive posts; `topical_share_allposts` keeps the literal all-posts denominator for comparison with the old pipeline.
+
+### Operational notes
+
+- **Table A shards from before 2026-08-15 are unusable.** They lack the `is_expressive` column, and `build_user_tables` will fail hard with `pyarrow.lib.ArrowInvalid: No match for FieldRef.Name(is_expressive)`. That is intended — rebuild the shards rather than working around it. There is no warning message to look for.
+- **User IDs**: if a daily file has any null `user_id`, pandas upcasts the column to float and a naive `astype(str)` yields `"123.0"`, silently breaking every account-list match and cross-table join. Always go through `id_rules.normalize_id_series`. It refuses values above 2^53, where a float round-trip would return a *wrong* ID rather than a suffixed one.
+- **Manifest counter naming differs between A and B**: Table A separates `rows_dropped_within_day_dedup` from `rows_dropped_cross_file_dedup`; Table B reports both under the latter. The identities still reconcile within each table.
+- Both tables dedup within a month shard only, so a `weibo_id` spanning a month boundary survives twice.
+- Every run records git SHA, a dirty-tree flag, input shards, vocabulary/account fingerprints, and per-stage row counts. Tables C and D inherit fingerprints from the shard manifests rather than re-reading `configs/`, so they describe the vocabulary that actually produced the numbers.
 
 Every production run should record: input files, code version, vocabulary version, account-list version, parameters, and step-by-step sample counts.
 
