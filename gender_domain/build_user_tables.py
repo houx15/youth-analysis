@@ -67,8 +67,13 @@ def aggregate_posts(post_df):
         # 的算术平均，不经过 _safe_divide；如果在这里也 fillna(0)，会把
         # "无表达帖、均值无定义"错误地写成"均值恰好为 0"，违反"零分母
         # 必须是 NaN"的规则，所以这一列刻意不填 0，保留 NaN。
+        # fillna(0) 之后必须显式转回整数类型：reindex 引入的 NaN 会先把
+        # 整列上转型为 float64，fillna(0) 只是把值变成 0.0，不会把 dtype
+        # 转回来，如果不加 astype(int)，只要出现过一个"该用户没有表达帖"
+        # 的场景（真实数据里必然出现），topical_posts 这类计数列在最终
+        # 表 C 里就会一直是浮点数（1.0 而不是 1）。
         count_cols = ["topical_posts", "chars", "chars_hit", "n_hits"]
-        agg[count_cols] = agg[count_cols].fillna(0)
+        agg[count_cols] = agg[count_cols].fillna(0).astype(int)
 
         base[f"{domain}_topical_posts"] = agg["topical_posts"]
         base[f"{domain}_topical_share"] = _safe_divide(
@@ -169,7 +174,20 @@ def aggregate_user_month(post_df, event_df):
     # （0 分母 -> 无法计算），不在这里填充。
     topical_posts_cols = [f"{domain}_topical_posts" for domain in DOMAINS]
     panel[topical_posts_cols] = panel[topical_posts_cols].fillna(0).astype(int)
-    panel["gender"] = panel.groupby(level="user_id")["gender"].ffill().bfill()
+    # gender 是本研究的自变量，绝不能跨用户借值。
+    # SeriesGroupBy.ffill() 返回的已经是普通 Series（不再是分组对象），
+    # 链式 .bfill() 会在整张面板（跨所有用户）上无分组地回填，把相邻
+    # 用户（按 (user_id, month) 排序后紧邻的下一行）的性别错误地抄给
+    # 这个用户——尤其容易发生在某用户的所有月份都只来自事件表（该月
+    # 只转发没发帖），这类行在 monthly 里从未出现过 gender，必须完全
+    # 依赖同一用户组内其它行的 ffill/bfill 才能补上。用 groupby().transform()
+    # 把 ffill 和 bfill 都锁在组内执行，两个方向都不越出 user_id 边界。
+    # 如果某用户的所有行 gender 都缺失（不应该发生，因为上游表 A/B 都已
+    # 过滤掉 gender 为空的行，但这里不假设上游一定做到），组内 ffill/bfill
+    # 找不到任何非空值可借，会原样保留 NaN，不会被强行赋值。
+    panel["gender"] = panel.groupby(level="user_id")["gender"].transform(
+        lambda s: s.ffill().bfill()
+    )
 
     return panel.reset_index()
 
@@ -184,6 +202,27 @@ def _source_combo(row):
     if celebrity:
         return "celebrity_only"
     return "neither"
+
+
+def diagnose_event_only_users(post_agg, event_agg, max_examples=5):
+    """诊断：出现在表 B 聚合结果、但完全没出现在表 A 聚合结果里的用户数
+
+    combine_user_table 用左连接把 event_agg 拼到 post_agg 上（以 post_agg
+    的用户为准）。这隐含一个假设：出现在表 B 的用户一定也出现在表 A——
+    因为每条转发事件的 weibo_id 本身就是一条帖子记录，且两张表用同一套
+    gender 非空过滤，理论上不应该有用户只在事件表出现。但这从未在真实
+    数据上验证过，所以这里不做任何删除/报错（不阻断流程），只计数写入
+    manifest：如果正式跑出来这个数不是 0，说明左连接正在悄悄丢弃这些
+    用户（他们仍会出现在表 D 的用户—月份面板里，因为那里是外连接），
+    需要人工核实，而不是继续信任这个假设。
+    """
+    post_users = set(post_agg["user_id"])
+    event_users = set(event_agg["user_id"])
+    missing = sorted(event_users - post_users)
+    return {
+        "event_only_user_count": len(missing),
+        "example_user_ids": missing[:max_examples],
+    }
 
 
 def combine_user_table(post_agg, event_agg, month_panel):
@@ -236,6 +275,14 @@ def build(year=config.YEAR):
     post_agg = aggregate_posts(posts)
     event_agg = aggregate_events(events)
     panel = aggregate_user_month(posts, events)
+    # 诊断：combine_user_table 的左连接假设"表 B 的用户都在表 A 出现"，
+    # 只计数不阻断，具体见 diagnose_event_only_users 的说明
+    event_only = diagnose_event_only_users(post_agg, event_agg)
+    if event_only["event_only_user_count"] > 0:
+        print(
+            f"警告: {event_only['event_only_user_count']} 个用户只出现在转发事件表，"
+            f"不在帖子表聚合结果中，示例: {event_only['example_user_ids']}"
+        )
     user_table = combine_user_table(post_agg, event_agg, panel)
 
     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
@@ -255,6 +302,7 @@ def build(year=config.YEAR):
             "user_months": int(len(panel)),
             "gender": user_table["gender"].value_counts().to_dict(),
             "source_combo": user_table["source_combo"].value_counts().to_dict(),
+            "event_only_users": event_only,
         },
     )
     config.write_manifest(manifest, os.path.join(config.OUTPUT_DIR, f"user_tables_{year}"))

@@ -193,3 +193,162 @@ def test_user_id_normalization_matches_id_rules_not_bare_astype_str():
     out = but.aggregate_posts(posts)
     assert "123.0" not in set(out["user_id"])
     assert "123" in set(out["user_id"])
+
+
+def test_event_only_user_never_borrows_a_neighbours_gender():
+    """事件表专属月份的用户不能从相邻用户那里"借"性别
+
+    回归用例：user_id "9" 只有帖子（gender "m"），user_id "77" 全年
+    没有任何帖子、只在事件表里出现一次（2月一次公共来源转发）。
+    aggregate_user_month 的 gender 只从帖子表取值（monthly 的
+    gender=("gender","first")），因此用户77在整张面板里没有任何
+    "自己的" gender 事实可用。
+
+    这正是修复前的 bug 复现场景：
+    panel.groupby(level="user_id")["gender"].ffill().bfill() 里，
+    SeriesGroupBy.ffill() 返回的是普通 Series（分组信息已丢失），链式
+    .bfill() 因此在整张面板上无分组回填——用本文件同款最小夹具手工
+    验证过，旧代码会把用户77的 gender 错误地填成用户9的 "m"
+    （见任务报告的复现记录）。正确行为是：既不能凭空获得一个
+    "属于自己"但实际上不存在的性别，也绝不能借用户9的 "m"，
+    应该保持缺失（NaN）。
+    """
+    posts = pd.DataFrame(
+        {
+            "weibo_id": ["w1"],
+            "user_id": ["9"],
+            "date": ["2020-01-05"],
+            "month": [1],
+            "gender": ["m"],
+            "post_type": ["original"],
+            "n_chars": [10],
+            "public_hit": [False],
+            "public_n_hits": [0],
+            "public_chars_hit": [0],
+            "public_density": [0.0],
+            "celebrity_hit": [False],
+            "celebrity_n_hits": [0],
+            "celebrity_chars_hit": [0],
+            "celebrity_density": [0.0],
+        }
+    )
+    events = pd.DataFrame(
+        {
+            "user_id": ["77"],
+            "weibo_id": ["w99"],
+            "r_weibo_id": ["r99"],
+            "date": ["2020-02-01"],
+            "month": [2],
+            "gender": ["f"],
+            "source_domain": ["public"],
+            "delay_seconds": [100.0],
+            "delay_valid": [True],
+        }
+    )
+    panel = but.aggregate_user_month(posts, events)
+    row77 = panel[(panel["user_id"] == "77") & (panel["month"] == 2)].iloc[0]
+    row9 = panel[(panel["user_id"] == "9") & (panel["month"] == 1)].iloc[0]
+
+    assert row9["gender"] == "m"
+    # 关键断言：绝不能等于邻居用户9的 "m"（旧代码的实际错误行为）
+    assert row77["gender"] != "m"
+    # 用户77在帖子表里从未出现过，面板里没有任何"属于自己"的 gender
+    # 事实可用，正确行为是保持缺失，而不是凭空冒出一个值
+    assert pd.isna(row77["gender"])
+
+
+def test_gender_missing_in_every_row_of_a_group_stays_missing():
+    """一个用户所有帖子行的 gender 都缺失时，不能被组内 ffill/bfill 造出一个值
+
+    正常流水线里表 A/表 B 都会在更早的阶段丢弃 gender 为空的行
+    （见 build_post_table.py / build_retweet_table.py 的 _drop_gender_null），
+    但 aggregate_user_month 本身不应该依赖这个前提——如果某个用户组内
+    gender 全部缺失，组内 transform(ffill().bfill()) 找不到任何非空值
+    可供借用，必须原样保留 NaN，不能被强行赋成某个值。
+    """
+    posts = pd.DataFrame(
+        {
+            "weibo_id": ["w1", "w2"],
+            "user_id": ["5", "5"],
+            "date": ["2020-01-05", "2020-01-06"],
+            "month": [1, 1],
+            "gender": [None, None],
+            "post_type": ["original", "original"],
+            "n_chars": [10, 10],
+            "public_hit": [False, False],
+            "public_n_hits": [0, 0],
+            "public_chars_hit": [0, 0],
+            "public_density": [0.0, 0.0],
+            "celebrity_hit": [False, False],
+            "celebrity_n_hits": [0, 0],
+            "celebrity_chars_hit": [0, 0],
+            "celebrity_density": [0.0, 0.0],
+        }
+    )
+    events = pd.DataFrame(
+        {
+            "user_id": pd.Series([], dtype="object"),
+            "weibo_id": pd.Series([], dtype="object"),
+            "r_weibo_id": pd.Series([], dtype="object"),
+            "date": pd.Series([], dtype="object"),
+            "month": pd.Series([], dtype="int64"),
+            "gender": pd.Series([], dtype="object"),
+            "source_domain": pd.Series([], dtype="object"),
+            "delay_seconds": pd.Series([], dtype="float64"),
+            "delay_valid": pd.Series([], dtype="bool"),
+        }
+    )
+    panel = but.aggregate_user_month(posts, events)
+    row = panel[(panel["user_id"] == "5") & (panel["month"] == 1)].iloc[0]
+    assert pd.isna(row["gender"])
+
+
+def test_topical_posts_stays_integer_dtype_when_a_user_has_zero_expressive_posts():
+    """{d}_topical_posts 在混入零表达帖用户后，dtype 仍必须是整数
+
+    reindex 引入的 NaN 会先把整列上转型为 float64；fillna(0) 只改值不改
+    dtype。若聚合函数忘记在 fillna 之后 astype(int)，用给定夹具（每个
+    用户都至少有一条表达帖）测不出来——只有像这里一样混入一个零表达帖
+    用户，才会触发 reindex 产生的 NaN，从而暴露这个 dtype 缺陷。
+    """
+    posts = pd.DataFrame(
+        {
+            "weibo_id": ["w1", "w2"],
+            "user_id": ["1", "2"],
+            "date": ["2020-01-05", "2020-01-05"],
+            "month": [1, 1],
+            "gender": ["m", "f"],
+            # 用户1有一条表达帖；用户2只有纯转发，零表达帖
+            "post_type": ["original", "retweet_plain"],
+            "n_chars": [10, 0],
+            "public_hit": [True, False],
+            "public_n_hits": [1, 0],
+            "public_chars_hit": [2, 0],
+            "public_density": [0.2, 0.0],
+            "celebrity_hit": [False, False],
+            "celebrity_n_hits": [0, 0],
+            "celebrity_chars_hit": [0, 0],
+            "celebrity_density": [0.0, 0.0],
+        }
+    )
+    out = but.aggregate_posts(posts).set_index("user_id")
+    assert pd.api.types.is_integer_dtype(out["public_topical_posts"])
+    assert pd.api.types.is_integer_dtype(out["celebrity_topical_posts"])
+    assert out.loc["1", "public_topical_posts"] == 1
+    assert out.loc["2", "public_topical_posts"] == 0
+
+
+def test_diagnose_event_only_users_counts_without_dropping_anyone():
+    """左连接假设的诊断：只计数，不改变任何表的内容
+
+    combine_user_table 用左连接把 event_agg 拼到 post_agg 上，隐含假设
+    "出现在表 B 的用户一定也出现在表 A"。这个假设从未在真实数据上验证
+    过，所以只做计数写入 manifest，不阻断流程——这里直接测这个计数
+    函数本身：构造一个只出现在 event_agg、不出现在 post_agg 的用户，
+    确认它被正确计数且被列在示例里。
+    """
+    post_agg = pd.DataFrame({"user_id": ["1", "2"]})
+    event_agg = pd.DataFrame({"user_id": ["2", "3"]})
+    diag = but.diagnose_event_only_users(post_agg, event_agg)
+    assert diag["event_only_user_count"] == 1
+    assert diag["example_user_ids"] == ["3"]
