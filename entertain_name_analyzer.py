@@ -54,19 +54,18 @@ except ImportError:
 
 
 def load_entertain_names(year):
-    """加载娱乐人名列表"""
-    # 尝试多个路径
-    for dir_name in ["configs", "wordlists"]:
-        path = os.path.join(dir_name, f"entertainment_nouns_{year}.txt")
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                names = [line.strip() for line in f if line.strip()]
-            print(f"已加载 {len(names)} 个娱乐人名 (from {path})")
-            return names
+    """加载娱乐人名列表
 
-    raise FileNotFoundError(
-        f"未找到娱乐人名文件: configs/entertainment_nouns_{year}.txt"
-    )
+    正式人工审核词表的唯一权威路径为 configs/，与 entertain_density_analyzer 保持一致。
+    """
+    path = os.path.join("configs", f"entertainment_nouns_{year}.txt")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"未找到娱乐人名文件: {path}")
+
+    with open(path, "r", encoding="utf-8") as f:
+        names = [line.strip() for line in f if line.strip()]
+    print(f"已加载 {len(names)} 个娱乐人名 (from {path})")
+    return names
 
 
 def build_name_index(names):

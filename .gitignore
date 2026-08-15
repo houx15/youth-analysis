@@ -68,8 +68,8 @@ instance/
 # Scrapy stuff:
 .scrapy
 
-# Sphinx documentation
-docs/_build/
+# Local research documentation
+docs/
 
 # PyBuilder
 .pybuilder/
@@ -170,6 +170,9 @@ logs/*
 user_profile/*
 huati_bang/*
 *.txt
+# 人工审核后的正式词表需要入库（唯一权威路径）
+!configs/news_vocabulary_*.txt
+!configs/entertainment_nouns_*.txt
 bert-*/*
 
 *_working_data/

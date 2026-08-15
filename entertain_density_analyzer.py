@@ -213,8 +213,12 @@ except ImportError:
 
 
 def load_entertain_vocabulary(year):
-    """加载娱乐名词词表"""
-    vocab_file = os.path.join("wordlists", f"entertainment_nouns_{year}.txt")
+    """加载娱乐名词词表
+
+    正式人工审核词表的唯一权威路径为 configs/，不再从 wordlists/ 读取，
+    避免同一分析出现两个词表版本。
+    """
+    vocab_file = os.path.join("configs", f"entertainment_nouns_{year}.txt")
     if not os.path.exists(vocab_file):
         raise FileNotFoundError(f"未找到娱乐词表文件: {vocab_file}")
 
