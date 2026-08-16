@@ -276,17 +276,29 @@ def replicate_seeds(seed, n_replicates):
     return [int(s) for s in states]
 
 
-def _domain_seed(replicate_seed, domain):
-    """同一个 replicate 下、各领域各自的抽样随机流
+def _domain_seed(replicate_seed, domain, stream=0):
+    """同一个 replicate 下、各领域各条用途各自的随机流
 
     两个领域的词表互不相干，必须各抽各的；但只有 replicate_seed 会被写进
     结果表（一个 replicate 一个 seed），领域 seed 由它确定性派生，因此
     结果仍然完全可复现。
+
+    stream 把"同一个 (replicate, 领域) 下不同用途"的随机数彻底分开：
+    0 是抽词表子集，1 是随机抽样检验抽帖子。两者共用同一个整数种子不会
+    产生系统性偏差（population 不同、抽样形状也不同），但随机抽样检验的
+    全部意义就在于"它与风险集那套推理无关"，让它和抽词共用一个种子是白白
+    削弱这句话，没有任何好处。
     """
     return int(
-        np.random.SeedSequence([int(replicate_seed), DOMAINS.index(domain)])
-        .generate_state(1)[0]
+        np.random.SeedSequence(
+            [int(replicate_seed), DOMAINS.index(domain), int(stream)]
+        ).generate_state(1)[0]
     )
+
+
+# _domain_seed 的 stream 取值：抽词表子集 / 随机抽样检验抽帖子
+_STREAM_TERMS = 0
+_STREAM_PROBE = 1
 
 
 def term_document_frequency(incidence, terms):
@@ -725,9 +737,31 @@ def rescan_hits(year, affected, term_subset, text_cache=None):
     )
 
 
+def exposure_pair(context, domain, term_subset):
+    """(完整口径, 只看子串) 两份暴露面，一个 (replicate, 领域) 只算一次
+
+    每算一份暴露面就是两次稀疏矩阵-向量乘法，在真实数据上是两次三千多万行
+    的整表扫描。同一个 (replicate, 领域) 的同一个词表子集会被
+    calibrate_topical 与三次 diagnostics_row（基础标签 + 两个校准标签）
+    重复用到，各自现算就是十来遍白扫。所以算一次装进这个 dict，往下传。
+    """
+    vocab = context.vocab[domain]
+    retained = inc.normalize_vocabulary(term_subset)
+    return {
+        "full": inc.reaggregation_exposure(
+            context.incidence[domain], retained, vocab,
+            pairs=context.risk_pairs.get(domain),
+        ),
+        "narrow": inc.shadowing_exposure(context.incidence[domain], retained, vocab),
+    }
+
+
 def calibrate_topical(context, domain, term_subset, plan=None, text_cache=None,
-                      n_probe=DEFAULT_N_PROBE, probe_seed=0):
+                      n_probe=DEFAULT_N_PROBE, probe_seed=0, exposure=None):
     """对一个词表子集做重扫校准（风险集之内）加一次随机抽样检验
+
+    Args:
+        exposure: exposure_pair 的返回值；缺省时自己算（单次调用的路径）。
 
     Returns:
         (reagg, corrected, stats)
@@ -751,15 +785,14 @@ def calibrate_topical(context, domain, term_subset, plan=None, text_cache=None,
     # 一致性检查：受影响帖子集合与暴露面必须同一口径。注意它只能发现
     # "本模块与 incidence 的两处实现分叉了"，**发现不了"两处用的是同一个
     # 不完整的定义"**——那件事只有随机抽样检验才看得见。
-    exposure = inc.reaggregation_exposure(
-        context.incidence[domain], term_subset, vocab,
-        pairs=context.risk_pairs.get(domain),
-    )
-    if len(affected) != exposure["n_expressive_posts_possibly_lost"]:
+    if exposure is None:
+        exposure = exposure_pair(context, domain, term_subset)
+    full_exposure = exposure["full"]
+    if len(affected) != full_exposure["n_expressive_posts_possibly_lost"]:
         raise ValueError(
             "受影响帖子数 {} 与 reaggregation_exposure 报的 {} 不一致，"
             "两处口径已经分叉，校准结果不可信".format(
-                len(affected), exposure["n_expressive_posts_possibly_lost"]
+                len(affected), full_exposure["n_expressive_posts_possibly_lost"]
             )
         )
 
@@ -790,7 +823,7 @@ def calibrate_topical(context, domain, term_subset, plan=None, text_cache=None,
     finite = diff[np.isfinite(diff)]
     stats = {
         "n_expressive_posts_possibly_lost": int(
-            exposure["n_expressive_posts_possibly_lost"]
+            full_exposure["n_expressive_posts_possibly_lost"]
         ),
         "n_posts_rescanned": int(len(affected)),
         "n_expressive_posts_recovered": int(len(recovered)),
@@ -823,21 +856,24 @@ def calibrate_topical(context, domain, term_subset, plan=None, text_cache=None,
 
 def diagnostics_row(context, domain, term_subset, variant_label, replicate=0,
                     seed=None, variant_family=VARIANT_FAMILY, calibration=None,
-                    note=None):
+                    note=None, exposure=None):
     """一个 (变体, 领域) 的诊断行
 
     这一行回答三件事：这次剔了多少词；风险集有多大（完整口径与只看子串的
     口径并列）；以及校准过的话，风险集之内实测错了多少、风险集之外的随机
     抽样又看到了什么。未校准的 replicate 的后两组字段一律是 NaN，不是 0——
     "没测过"与"测出来是 0"必须能分开。
+
+    exposure 传 exposure_pair 的返回值可以省掉两次整表扫描；同一个词表
+    子集要写好几行诊断（基础标签 + 两个校准标签）时必须传，否则每行都
+    重扫一遍矩阵。
     """
     vocab = context.vocab[domain]
     retained = inc.normalize_vocabulary(term_subset)
-    pairs = context.risk_pairs.get(domain)
-    full = inc.reaggregation_exposure(
-        context.incidence[domain], retained, vocab, pairs=pairs
-    )
-    narrow = inc.shadowing_exposure(context.incidence[domain], retained, vocab)
+    if exposure is None:
+        exposure = exposure_pair(context, domain, term_subset)
+    full = exposure["full"]
+    narrow = exposure["narrow"]
     row = {
         "variant_family": variant_family,
         "variant_label": variant_label,
@@ -1060,10 +1096,11 @@ def _prepare_calibration(context, subsets_by_replicate, calibrate, seeds,
         plans[replicate] = {}
         for domain, subset in subsets_by_replicate[replicate].items():
             # 抽样种子挂在 replicate 种子上：同一次运行可复现，不同
-            # replicate 抽到的又不是同一批帖子
+            # replicate 抽到的又不是同一批帖子。**stream 必须与抽词的那条
+            # 分开**：随机抽样检验的意义就是独立于词表子集是怎么抽出来的。
             plan = plan_calibration(
                 context, domain, subset, n_probe=n_probe,
-                seed=_domain_seed(seeds[replicate], domain),
+                seed=_domain_seed(seeds[replicate], domain, stream=_STREAM_PROBE),
             )
             plans[replicate][domain] = plan
             frames.extend([plan.affected, plan.probe])
@@ -1112,7 +1149,7 @@ def run_resampling(year=config.YEAR, n_replicates=200, keep=0.8, seed=0,
         {
             domain: stratified_resample(
                 context.vocab[domain], keep=keep, strata=strata[domain],
-                seed=_domain_seed(seeds[replicate], domain),
+                seed=_domain_seed(seeds[replicate], domain, stream=_STREAM_TERMS),
             )
             for domain in context.vocab
         }
@@ -1137,6 +1174,13 @@ def run_resampling(year=config.YEAR, n_replicates=200, keep=0.8, seed=0,
         )
         collected.append(rows)
 
+        # 暴露面一个 (replicate, 领域) 只算一次：下面校准一次、诊断最多三次
+        # 都用同一份，各自现算就是十来遍整表扫描
+        exposures = {
+            domain: exposure_pair(context, domain, subsets[domain])
+            for domain in subsets
+        }
+
         calibration_stats = {}
         diagnostic_rows = []
         if replicate in calibrate:
@@ -1144,7 +1188,7 @@ def run_resampling(year=config.YEAR, n_replicates=200, keep=0.8, seed=0,
             for domain, subset in subsets.items():
                 _, corrected_domain, stats = calibrate_topical(
                     context, domain, subset, plan=plans[replicate][domain],
-                    text_cache=text_cache,
+                    text_cache=text_cache, exposure=exposures[domain],
                 )
                 corrected[domain] = corrected_domain
                 calibration_stats[domain] = stats
@@ -1172,6 +1216,7 @@ def run_resampling(year=config.YEAR, n_replicates=200, keep=0.8, seed=0,
                         variant_family=CALIBRATION_FAMILY,
                         calibration=calibration_stats.get(domain),
                         note="paired_with:{}".format(label),
+                        exposure=exposures[domain],
                     )
                     for domain in sorted(subsets)
                 )
@@ -1180,6 +1225,7 @@ def run_resampling(year=config.YEAR, n_replicates=200, keep=0.8, seed=0,
             diagnostics_row(
                 context, domain, subsets[domain], label, replicate=replicate,
                 seed=replicate_seed, calibration=calibration_stats.get(domain),
+                exposure=exposures[domain],
             )
             for domain in sorted(subsets)
         )

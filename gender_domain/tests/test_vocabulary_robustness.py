@@ -420,6 +420,86 @@ def test_random_probe_detects_misses_the_risk_set_definition_would_have_hidden(c
     assert blind["probe_flip_rate_ci_low"] > 0
 
 
+def test_resampling_exercises_the_boundary_overlap_correction_end_to_end(
+    context, tmp_path
+):
+    """整条 run_resampling 里必须真的走到边界重叠修正，而不是只在单测里走过
+
+    只在 calibrate_topical 上单独测过的修正路径，正是上一轮 Critical 的
+    来源：单点正确、整条流水线没接上，测试也发现不了。这里断言重采样里
+    确实存在这样一个 replicate——它剔掉的词一个都不是子串嵌套关系
+    （n_shadowed_terms == 0），却仍然有帖子被重扫翻案。
+    """
+    diag_path = str(tmp_path / "diag.parquet")
+    voc.run_resampling(
+        YEAR, n_replicates=3, keep=0.8, seed=0, n_calibration=3, n_probe=50,
+        context=context, out_path=str(tmp_path / "vocabulary.parquet"),
+        diag_path=diag_path,
+    )
+    diag = pd.read_parquet(diag_path, columns=list(voc.DIAGNOSTIC_SCHEMA))
+    base = diag[(diag["variant_family"] == voc.VARIANT_FAMILY)
+                & (diag["domain"] == "public")]
+    overlap_only = base[
+        (base["n_shadowed_terms"] == 0)
+        & (base["n_at_risk_terms"] > 0)
+        & (base["n_expressive_posts_recovered"] > 0)
+    ]
+    assert len(overlap_only) > 0, (
+        "没有任何 replicate 走到纯边界重叠的修正路径，夹具没覆盖到这条路："
+        + base[["variant_label", "n_shadowed_terms", "n_at_risk_terms",
+                "n_expressive_posts_recovered"]].to_string()
+    )
+    # 这些 replicate 的重扫名单必须确实比只看子串的名单大
+    row = overlap_only.iloc[0]
+    assert row["n_expressive_posts_possibly_lost"] > 0
+    assert row["n_expressive_posts_possibly_lost_substring_only"] == 0
+
+
+def test_exposure_is_computed_once_per_replicate_and_domain(context, tmp_path, monkeypatch):
+    """暴露面每个 (replicate, 领域) 只能算一次
+
+    每算一份是两次稀疏矩阵-向量乘法，真实数据上是两次三千多万行的整表
+    扫描；校准过的 replicate 会用到四处（一次校准 + 三行诊断），各自现算
+    就是十来遍白扫。
+    """
+    calls = {"full": 0, "narrow": 0}
+    real_full = inc.reaggregation_exposure
+    real_narrow = inc.shadowing_exposure
+
+    def _full(*args, **kwargs):
+        calls["full"] += 1
+        return real_full(*args, **kwargs)
+
+    def _narrow(*args, **kwargs):
+        calls["narrow"] += 1
+        return real_narrow(*args, **kwargs)
+
+    monkeypatch.setattr(inc, "reaggregation_exposure", _full)
+    monkeypatch.setattr(inc, "shadowing_exposure", _narrow)
+    voc.run_resampling(
+        YEAR, n_replicates=1, keep=0.8, seed=0, n_calibration=1, n_probe=20,
+        context=context, out_path=str(tmp_path / "vocabulary.parquet"),
+        diag_path=str(tmp_path / "diag.parquet"),
+    )
+    # 1 个 replicate × 2 个领域，一次校准 + 3 行诊断，全部共用同一份
+    assert calls["full"] == len(voc.DOMAINS)
+    assert calls["narrow"] == len(voc.DOMAINS)
+
+
+def test_probe_draw_uses_a_stream_independent_of_the_term_draw():
+    """抽帖子的随机流必须与抽词的分开——独立检验不该与被检验的对象同源"""
+    seed = voc.replicate_seeds(0, 1)[0]
+    for domain in voc.DOMAINS:
+        terms_seed = voc._domain_seed(seed, domain, stream=voc._STREAM_TERMS)
+        probe_seed = voc._domain_seed(seed, domain, stream=voc._STREAM_PROBE)
+        assert terms_seed != probe_seed
+    # 领域之间也必须分开，且两次派生完全可复现
+    assert (voc._domain_seed(seed, "public", stream=voc._STREAM_PROBE)
+            != voc._domain_seed(seed, "celebrity", stream=voc._STREAM_PROBE))
+    assert (voc._domain_seed(seed, "public", stream=voc._STREAM_PROBE)
+            == voc._domain_seed(seed, "public", stream=voc._STREAM_PROBE))
+
+
 def test_random_probe_reports_a_confidence_interval_not_just_a_point(context):
     """抽到 0 条翻案不等于漏判率为 0，必须给出区间上限"""
     subset = [t for t in PUBLIC_VOCAB if t != "口罩"]
