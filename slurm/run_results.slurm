@@ -3,7 +3,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --time=4:00:00
+#SBATCH --time=8:00:00
 #SBATCH --mem=64G
 #SBATCH --output=job.%j.results.out
 #SBATCH --mail-type=end
@@ -23,7 +23,10 @@
 #         analysis_data/results/models_persistence.parquet,
 #         analysis_data/results/interaction_gender_domain.parquet,
 #         analysis_data/results/decomposition_source_content.parquet,
-#         analysis_data/results/combination_multinomial.parquet
+#         analysis_data/results/combination_multinomial.parquet,
+#         analysis_data/results/monthly_rates.parquet,
+#         analysis_data/results/leave_one_month_out.parquet,
+#         analysis_data/results/delay_quantiles.parquet
 #
 # models_core depends on profile_join: M2 只在 profile_complete 的用户上拟合，
 # 没有跑过 profile_join 就没有这一列，M2 会整层退化成失败留痕行。
@@ -33,6 +36,13 @@
 # 的 M2 列，排在 models_interaction 之后：它与核心结果没有依赖关系，但一旦
 # 作业撞上墙钟被杀，先跑完核心结果更划算。它自己按阶段增量落盘，中途被杀
 # 时已经算完的阶段仍留在磁盘上（见模块里的 _write_partial）。
+# models_temporal（§9 月度稳定性、§10 转发延迟）排在最后：它读的是表 D
+# （用户—月份面板）与表 B（转发事件表），与前面的模块没有依赖关系，但它是
+# 本层里最贵的一步——26 次留一月重估（两个领域各 13 次）都在两百多万行的
+# 面板上拟合、外加按用户聚类的标准误，再加上事件表上的簇 bootstrap。墙钟
+# 因此从 4 小时提到 8 小时；它同样按阶段增量落盘，被杀时已算完的阶段仍在盘上。
+# 延迟阶段的 bootstrap 次数可以用 --n_boot 调低（区间会变粗，但仍然是按用户
+# 整簇重抽样的区间）。
 #
 # Usage:
 #   sbatch slurm/run_results.slurm
@@ -45,3 +55,4 @@ python -m gender_domain.describe build --year=2020
 python -m gender_domain.models_core build --year=2020
 python -m gender_domain.models_interaction build --year=2020
 python -m gender_domain.models_combination build --year=2020
+python -m gender_domain.models_temporal build --year=2020
