@@ -119,16 +119,22 @@ def quantile_column(level, kind):
 
 
 def _save_parquet(frame, path):
-    """写出 parquet 并打印体量；超过上限直接报错"""
+    """写出 parquet 并打印体量；超过上限时删掉文件再报错
+
+    超限必须连文件一起清掉：留在盘上的话，下一次运行只要跳过这一步
+    （或者有人直接去下载目录取文件），就会拿到一个本次运行明确判定为
+    "太大、不该存在"的文件，而错误信息早已滚出屏幕。
+    """
     os.makedirs(os.path.dirname(path), exist_ok=True)
     frame.to_parquet(path, engine="pyarrow", index=False)
     size_mb = os.path.getsize(path) / (1024 * 1024)
     print("  已保存: {}（{:,} 行, {:.2f} MB）".format(path, len(frame), size_mb))
     if size_mb > MAX_FILE_MB:
+        os.remove(path)
         raise ValueError(
             "导出文件 {} 达到 {:.1f} MB，超过 {:.1f} MB 上限：这层的存在意义就是"
-            "让文件小到能下载，超限说明抽样口径设错了".format(
-                path, size_mb, MAX_FILE_MB)
+            "让文件小到能下载，超限说明抽样口径设错了。该文件已删除，"
+            "不会留在下载目录里".format(path, size_mb, MAX_FILE_MB)
         )
     return size_mb
 
@@ -418,21 +424,33 @@ def build(year=config.YEAR, max_points=MAX_POINTS_PER_GROUP, seed=SAMPLE_SEED):
     combo = combo_distribution(user_df)
     _save_parquet(combo, os.path.join(out_dir, COMBO_FILE))
 
+    # measure 由调用处直接给出，不从帧里的第一行反推：某一份分布如果一行
+    # 都没有（例如某年某个领域完全没有事件），反推会得到 None，接着在
+    # DIST_FILES[None] 上抛一个看不出前因后果的 KeyError
     long_frames = [
-        retweet_count_distribution(user_df),
-        density_distribution(user_df),
+        ("retweet_count", retweet_count_distribution(user_df)),
+        ("char_density", density_distribution(user_df)),
     ]
 
     print("\n[3/4] 记录级转发延迟（复用 models_temporal 的清理规则）")
     frames, reports, event_files = mt.load_clean_events(
         year, thresholds=[DELAY_THRESHOLD])
     label = mt.threshold_label(DELAY_THRESHOLD)
-    long_frames.append(delay_distribution(frames[label]))
+    long_frames.append(("delay_hours", delay_distribution(frames[label])))
 
     print("\n[4/4] 分格抽样并写出")
     summaries = []
-    for long_df in long_frames:
-        measure = str(long_df["measure"].iloc[0]) if len(long_df) else None
+    for measure, long_df in long_frames:
+        if measure not in DIST_FILES:
+            raise KeyError(
+                "未知的分布名 {!r}，可用的是 {}".format(
+                    measure, sorted(DIST_FILES)))
+        if long_df.empty:
+            raise ValueError(
+                "{} 的长表一行都没有：{} 年的输入里这份分布是空的，"
+                "空文件导出去只会让本地画出一张空图，先查上游为什么没有数据".format(
+                    measure, year)
+            )
         sampled, summary = sample_distribution(long_df, cap=max_points, seed=seed)
         summaries.append(summary)
         _save_parquet(sampled, os.path.join(out_dir, DIST_FILES[measure]))

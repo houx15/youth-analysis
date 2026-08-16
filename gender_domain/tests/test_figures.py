@@ -16,6 +16,7 @@ from datetime import datetime
 import matplotlib
 matplotlib.use("Agg")
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pytest
@@ -222,9 +223,16 @@ def _decomposition():
 
 
 def _combination():
+    """多项 logit 结果：四类的性别 AME + 八行各性别的模型预测概率
+
+    预测概率与 AME 满足真实模块断言的恒等式 pred_male[c] - pred_female[c]
+    == AME[c]：女性各类别占比固定，男性等于女性加上该层的 AME。
+    """
     rows = []
     ames = {"neither": -0.06, "public_only": 0.09,
             "celebrity_only": -0.05, "both": 0.02}
+    female = {"neither": 0.22, "public_only": 0.13,
+              "celebrity_only": 0.45, "both": 0.20}
     for i, model in enumerate(("M0", "M1", "M2")):
         for category, ame in ames.items():
             est = ame * (1 - 0.2 * i)
@@ -233,10 +241,40 @@ def _combination():
                              se=0.003, ci_low=est - 0.006, ci_high=est + 0.006,
                              scale="probability", n_obs=226000, n_dropped=0,
                              note="mnlogit_base:neither"))
+            for gender in ("male", "female"):
+                value = female[category] + (est if gender == "male" else 0.0)
+                rows.append(_row(
+                    outcome="source_combo", domain="both", model=model,
+                    term="pred_{}_{}".format(gender, category), estimate=value,
+                    se=0.002, ci_low=value - 0.004, ci_high=value + 0.004,
+                    scale="probability", n_obs=226000, n_dropped=0,
+                    note="mnlogit_base:neither+counterfactual_predicted_probability"))
         rows.append(_row(outcome="source_combo", domain="both", model=model,
                          term="gender_male_ame_sum", estimate=0.0, scale="probability",
                          n_obs=226000, n_dropped=0, note="internal_consistency_check"))
     return pd.DataFrame(rows)
+
+
+def _combination_with_flagged_cells():
+    """把 M1 的三个预测格子改成：区间被截断、区间不可用、整格 NaN"""
+    frame = _combination()
+    base = frame["model"] == "M1"
+
+    clipped = base & (frame["term"] == "pred_male_neither")
+    frame.loc[clipped, "ci_low"] = 0.0
+    frame.loc[clipped, "note"] = "counterfactual_predicted_probability+" \
+        "pred_ci_clipped_to_unit_interval"
+
+    unavailable = base & (frame["term"] == "pred_female_public_only")
+    frame.loc[unavailable, ["se", "ci_low", "ci_high"]] = np.nan
+    frame.loc[unavailable, "note"] = "counterfactual_predicted_probability+" \
+        "pred_ci_unavailable"
+
+    absent = base & (frame["term"] == "pred_male_both")
+    frame.loc[absent, ["estimate", "se", "ci_low", "ci_high"]] = np.nan
+    frame.loc[absent, "note"] = "counterfactual_predicted_probability+" \
+        "pred_ci_unavailable"
+    return frame
 
 
 def _combo_distribution():
@@ -497,6 +535,161 @@ def test_did_annotation_reports_missing_estimate():
 # ---------------------------------------------------------------------------
 # NaN 行：必须被显式标注，不能静默跳过
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 有点估计、没有区间的行：绝不能画成一个宽度为 0 的区间
+# ---------------------------------------------------------------------------
+
+def _ci_unavailable_row(**kwargs):
+    """点估计在、区间是 NaN 的一行。
+
+    这不是假想情形：stats_utils.average_marginal_effect 与
+    models_interaction.difference_in_differences 的 bootstrap 分支都会在
+    协方差不可用 / 重拟合失败时返回"有点估计、无区间"的行。
+    """
+    row = _row(outcome="topical_share", domain="celebrity", model="M2",
+               term="gender_male", estimate=0.0405, se=np.nan,
+               ci_low=np.nan, ci_high=np.nan, scale="proportion",
+               n_obs=180000, n_dropped=46000, note="boot_refit_failed:12")
+    row.update(kwargs)
+    return pd.Series(row)
+
+
+def test_estimate_status_calls_a_point_without_interval_ci_unavailable():
+    assert fg.estimate_status(_ci_unavailable_row()) == "ci_unavailable"
+
+
+def test_estimate_status_is_the_same_rule_used_for_predicted_cells():
+    """图 3 的 cell_status 与通用的 estimate_status 必须是同一条规则"""
+    row = _ci_unavailable_row()
+    assert fg.cell_status(row) == fg.estimate_status(row)
+
+
+def test_draw_estimate_draws_no_interval_when_the_ci_is_missing():
+    """没有不确定性的估计不许画成图上最"精确"的那个点"""
+    fig, ax = plt.subplots()
+    flags = []
+    status = fg.draw_estimate(ax, _ci_unavailable_row(), 0, fg.MALE_COLOR, "o",
+                              flags=flags, tag="topical_share/celebrity/M2")
+    plt.close(fig)
+    assert status == "ci_unavailable"
+    # errorbar 会往 ax.containers 里塞一个 ErrorbarContainer；这里不该有
+    assert len(ax.containers) == 0
+    assert flags and "CI unavailable" in flags[0]
+    assert "boot_refit_failed:12" in flags[0]
+
+
+def test_draw_estimate_draws_an_interval_for_a_complete_row():
+    fig, ax = plt.subplots()
+    flags = []
+    row = _ci_unavailable_row(se=0.002, ci_low=0.0365, ci_high=0.0445, note=None)
+    status = fg.draw_estimate(ax, row, 0, fg.MALE_COLOR, "o", flags=flags)
+    plt.close(fig)
+    assert status == "ok"
+    assert len(ax.containers) == 1
+    assert flags == []
+
+
+def test_draw_estimate_marks_a_gap_for_a_missing_estimate():
+    fig, ax = plt.subplots()
+    flags = []
+    row = _ci_unavailable_row(estimate=np.nan, note="empty_sample")
+    status = fg.draw_estimate(ax, row, 0, fg.MALE_COLOR, "o", flags=flags)
+    plt.close(fig)
+    assert status == "missing"
+    assert len(ax.containers) == 0
+    assert flags and "no estimate" in flags[0] and "empty_sample" in flags[0]
+
+
+def test_did_annotation_reports_a_missing_interval_instead_of_nan():
+    frame = _interaction()
+    mask = ((frame["term"] == "gender_male_x_public_did")
+            & (frame["model"] == "M1") & (frame["outcome"] == "source_entered"))
+    frame.loc[mask, ["se", "ci_low", "ci_high"]] = np.nan
+    frame.loc[mask, "note"] = "boot_refit_failed:12"
+    text = fg.did_annotation(frame, outcome="source_entered", model="M1")
+    assert "nan" not in text.lower()
+    assert "CI unavailable" in text
+    assert "boot_refit_failed:12" in text
+
+
+def test_clipped_ends_uses_inequalities_not_equality():
+    """截断端点用 <=0 / >=1 判定：生产端换一种 clip 写法也不该丢掉箭头"""
+    row = _ci_unavailable_row(ci_low=-1e-18, ci_high=1.0 + 1e-18,
+                              note="pred_ci_clipped_to_unit_interval")
+    assert fg.clipped_ends(row) == ("low", "high")
+    row = _ci_unavailable_row(ci_low=0.02, ci_high=1.0,
+                              note="pred_ci_clipped_to_unit_interval")
+    assert fg.clipped_ends(row) == ("high",)
+
+
+def test_fig1_flags_a_row_without_an_interval(figure_data):
+    """图 1 上出现"有点估计、无区间"的格子时必须留痕，而不是画成零宽区间"""
+    data_dir, fig_dir = figure_data
+    table2 = _table2()
+    mask = ((table2["outcome"] == "source_entered")
+            & (table2["domain"] == "public") & (table2["term"] == "male")
+            & (table2["denominator"] == "all_same_gender_users"))
+    table2.loc[mask, ["ci_low", "ci_high"]] = np.nan
+    table2.loc[mask, "note"] = "wilson_unavailable"
+    table2.to_parquet(os.path.join(data_dir, "table2_raw_gender_gaps.parquet"),
+                      engine="pyarrow", index=False)
+    path = fg.fig1_core_outcomes(year=2020, data_dir=data_dir, fig_dir=fig_dir)
+    assert os.path.getsize(path) > 1000
+
+
+def test_fig2_flags_a_row_without_an_interval(figure_data):
+    data_dir, fig_dir = figure_data
+    share = _models_share(with_nan=False)
+    mask = ((share["model"] == "M2") & (share["outcome"] == "topical_share")
+            & (share["domain"] == "celebrity"))
+    share.loc[mask, ["se", "ci_low", "ci_high"]] = np.nan
+    share.loc[mask, "note"] = "boot_refit_failed:12"
+    share.to_parquet(os.path.join(data_dir, "models_share.parquet"),
+                     engine="pyarrow", index=False)
+    path = fg.fig2_adjusted_effects(year=2020, data_dir=data_dir, fig_dir=fig_dir)
+    assert os.path.getsize(path) > 1000
+
+
+# ---------------------------------------------------------------------------
+# 图 5：多项模型的预测概率（§12.5）
+# ---------------------------------------------------------------------------
+
+def test_predicted_combo_cells_are_eight_per_layer():
+    frame = _combination()
+    cells = fg.predicted_combo_cells(frame, model="M1")
+    assert len(cells) == 8
+    assert set(cells["domain"]) == {"both"}
+
+
+def test_predicted_combo_cells_reproduce_the_ames():
+    """预测概率之差必须等于同一层报告的 AME——图与表是同一次拟合的两种写法"""
+    frame = _combination()
+    cells = fg.predicted_combo_cells(frame, model="M1").set_index("term")
+    for category in fg.COMBO_CATEGORIES:
+        gap = (cells.loc["pred_male_{}".format(category), "estimate"]
+               - cells.loc["pred_female_{}".format(category), "estimate"])
+        ame = fg.select(frame, model="M1",
+                        term="gender_male_ame_{}".format(category)).iloc[0]
+        assert gap == pytest.approx(ame["estimate"])
+
+
+def test_fig5_draws_flagged_predicted_cells_without_dropping_them(figure_data):
+    data_dir, fig_dir = figure_data
+    _combination_with_flagged_cells().to_parquet(
+        os.path.join(data_dir, "combination_multinomial.parquet"),
+        engine="pyarrow", index=False)
+    path = fg.fig5_combinations(year=2020, data_dir=data_dir, fig_dir=fig_dir)
+    assert os.path.getsize(path) > 1000
+
+
+# ---------------------------------------------------------------------------
+# 图 3：观测点与预测点必须是两种不同的记号
+# ---------------------------------------------------------------------------
+
+def test_observed_marker_differs_from_every_predicted_marker():
+    assert fg.OBSERVED_MARKER not in set(fg.GENDER_MARKERS.values())
+
 
 def test_missing_estimate_rows_are_found():
     frame = _models_share()

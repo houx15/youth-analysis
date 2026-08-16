@@ -62,6 +62,10 @@ FEMALE_COLOR = "#ff7333"
 GENDER_COLORS = {"male": MALE_COLOR, "female": FEMALE_COLOR,
                  "m": MALE_COLOR, "f": FEMALE_COLOR}
 GENDER_MARKERS = {"male": "o", "female": "^", "m": "o", "f": "^"}
+# 观测点专用的记号：与任何一个预测点的记号都不同（图 3 里两种点同时出现，
+# 只靠"填充与否"区分，在 6pt 的正文尺寸下会被读错端点）
+OBSERVED_MARKER = "s"
+OBSERVED_COLOR = "#6d6d6d"
 GENDER_LABELS = {"male": "Male", "female": "Female", "m": "Male", "f": "Female"}
 GENDER_ORDER = ("male", "female")
 DIST_GENDER_ORDER = ("m", "f")
@@ -139,6 +143,14 @@ CORE_CELLS = (("source_entered", "public"), ("source_entered", "celebrity"),
 PRIMARY_DENOMINATOR = {
     "source_entered": "all_same_gender_users",
     "topical_share": "users_with_expressive_posts",
+}
+# 图 2 每一行自己写分母：这张图把三个结果变量画在一起，分母各不相同，
+# 写一句"与表 2 相同"只是把说明推给别处
+AME_DENOMINATOR = {
+    "source_entered": "all_same_gender_users",
+    "topical_share": "users_with_expressive_posts",
+    "source_month_share": "users_with_active_months",
+    "source_share": "users_with_retweets",
 }
 DENOMINATOR_LABELS = {
     "all_same_gender_users": "denominator: all users of that gender",
@@ -243,15 +255,27 @@ def did_rows(frame, outcome=None, model=None):
 
 
 def did_annotation(frame, outcome, model=HEADLINE_LAYER):
-    """差中差的标注文字：有估计就写估计与 95% 区间，没有就写缺失原因"""
+    """差中差的标注文字
+
+    三种情形分别写清楚，绝不出现 "95% CI [+nan, +nan]"：拟合失败（无估计）、
+    只有点估计没有区间（bootstrap 分支重拟合全失败时会这样），以及正常的
+    点估计 + 区间。
+    """
     rows = did_rows(frame, outcome=outcome, model=model)
     if rows.empty:
         return "DiD ({}): 结果表里没有这一行".format(model)
     row = rows.iloc[0]
-    if pd.isna(row["estimate"]):
+    status = estimate_status(row)
+    if status == "missing":
         return "DiD ({}): 无估计（{}）".format(model, row["note"] or "note 缺失")
-    return "DiD ({}) = {:+.3f}  95% CI [{:+.3f}, {:+.3f}]".format(
+    if status == "ci_unavailable":
+        return "DiD ({}) = {:+.3f}  95% CI unavailable（{}）".format(
+            model, row["estimate"], row["note"] or "note 缺失")
+    text = "DiD ({}) = {:+.3f}  95% CI [{:+.3f}, {:+.3f}]".format(
         model, row["estimate"], row["ci_low"], row["ci_high"])
+    if status == "clipped":
+        text += "（CI clipped to [0,1]）"
+    return text
 
 
 def predicted_cells(frame, outcome, model=HEADLINE_LAYER):
@@ -273,26 +297,60 @@ def _note_has(row, token):
     return isinstance(note, str) and token in note
 
 
-def cell_status(row):
-    """预测格子的成色：ok / clipped / ci_unavailable / missing
+def estimate_status(row):
+    """任何一行估计的成色：ok / clipped / ci_unavailable / missing
 
     四种状态在图上长得不一样，是因为它们说的是四件不同的事：
       ok              点估计与区间都算出来了；
       clipped         区间是正态近似区间，被显式截回 [0,1]，那一端不是
                       真实的置信界，画成实心端点会骗人；
-      ci_unavailable  协方差不可用，只有点估计——画一个没有区间的点，
-                      并写明区间为什么没有，而不是画一个宽度为 0 的区间；
-      missing         整格没估出来（NaN）——必须在该位置留一个显式的缺口
-                      标记，让读者看见"这里本该有一个格子"。
+      ci_unavailable  只有点估计、没有区间——必须画成一个没有区间的点，
+                      并写明区间为什么没有；
+      missing         整行没估出来（估计值 NaN）——必须在该位置留一个显式的
+                      缺口标记，让读者看见"这里本该有一个估计"。
+
+    `ci_unavailable` 不是假想情形，也不限于图 3 的预测格子：
+    `stats_utils.average_marginal_effect` 在协方差不可用时、
+    `models_interaction.difference_in_differences` 的 bootstrap 分支在重拟合
+    全部失败时，都会**故意**返回"有点估计、区间为 NaN"的一行（AME 的
+    docstring 明确要求下游按"没有区间"处理）。如果画图时把缺失的界当成 0
+    宽度的区间，这一行会变成整张图上看起来最精确的估计——一个没有任何
+    不确定性信息的数字，反而成了最有说服力的那个点。所以判定只看区间在不在，
+    不依赖 note 里有没有写 `pred_ci_unavailable`：note 是解释，不是判据。
     """
     if pd.isna(row["estimate"]):
         return "missing"
-    if _note_has(row, NOTE_PRED_UNAVAILABLE) or pd.isna(row["ci_low"]) \
-            or pd.isna(row["ci_high"]):
+    if pd.isna(row["ci_low"]) or pd.isna(row["ci_high"]) \
+            or _note_has(row, NOTE_PRED_UNAVAILABLE):
         return "ci_unavailable"
+    # 截断只按 note 判定，不按"界是否贴着 0/1"反推：差值类的量（AME、
+    # 性别差）本来就可能取到负值，按边界反推会把一条完全正常的 AME 区间
+    # 误标成被截断。哪一端被截断由 clipped_ends 在画箭头时单独判断。
     if _note_has(row, NOTE_PRED_CLIPPED):
         return "clipped"
     return "ok"
+
+
+def cell_status(row):
+    """预测格子的成色——与任何一行估计同一条规则（见 estimate_status）"""
+    return estimate_status(row)
+
+
+def clipped_ends(row, low_bound=0.0, high_bound=1.0):
+    """区间的哪一端被截回了取值范围，返回 ("low",)/("high",)/两者/空
+
+    用不等式而不是 `bound == 0.0` 判定：生产端目前用 np.clip 得到恰好的
+    0.0/1.0，但换一种写法（例如先截再做一次浮点运算）就可能落在
+    -1e-18 或 1+1e-18 上，等号判定会让箭头静默消失，而这一行仍然被列进
+    flagged cells——图上标注与图下说明互相矛盾是最难查的一类错误。
+    只对概率/比例尺度有意义，其它尺度的调用方不要传。
+    """
+    ends = []
+    if pd.notna(row.get("ci_low")) and float(row["ci_low"]) <= low_bound:
+        ends.append("low")
+    if pd.notna(row.get("ci_high")) and float(row["ci_high"]) >= high_bound:
+        ends.append("high")
+    return tuple(ends)
 
 
 def missing_estimate_rows(frame):
@@ -367,6 +425,18 @@ def flag_unusual_months(values, n_mad=UNUSUAL_MONTH_MAD):
     return flags
 
 
+def _n_range_label(values):
+    """把一组样本量写成 "n=52,111 / 174,222" 或 "n=226,333"
+
+    图 3 的两种点各自来自不同的总体，样本量必须分别写出来；同一类点内部
+    如果各格样本量不同（男女各按自己的分母），就把它们并列写出，而不是
+    只写一个数字让读者以为四个点同源。
+    """
+    if not values:
+        return "n unknown"
+    return "n=" + " / ".join("{:,}".format(v) for v in sorted(values))
+
+
 def _n_label(row):
     """样本量标注：n_obs 与流失原因都写出来"""
     n_obs = row.get("n_obs")
@@ -376,19 +446,130 @@ def _n_label(row):
 
 
 def _errorbar(ax, x, y, low, high, color, marker, label=None, horizontal=True):
-    """画一个点 + 95% 区间；估计值缺失时不画点（缺失另行标注）"""
+    """画一个点 + 95% 区间。两端都必须存在——缺界的行不走这条路径
+
+    这里刻意不再对缺失的界做任何兜底：以前用 0.0 兜底，等价于把"没有区间"
+    画成"区间宽度为 0"，那是图上最自信的一种画法，正好与事实相反。
+    缺界的行由 draw_estimate 分流到 ci_unavailable 分支。
+    """
     if pd.isna(x if horizontal else y):
         return
+    if pd.isna(low) or pd.isna(high):
+        raise ValueError(
+            "_errorbar 收到缺失的区间端点；没有区间的行必须走 draw_estimate 的 "
+            "ci_unavailable 分支，不能画成宽度为 0 的区间"
+        )
     if horizontal:
-        err = [[x - low if pd.notna(low) else 0.0],
-               [high - x if pd.notna(high) else 0.0]]
+        err = [[x - low], [high - x]]
         ax.errorbar([x], [y], xerr=err, fmt=marker, color=color, markersize=6,
                     capsize=3, linewidth=1.2, label=label)
     else:
-        err = [[y - low if pd.notna(low) else 0.0],
-               [high - y if pd.notna(high) else 0.0]]
+        err = [[y - low], [high - y]]
         ax.errorbar([x], [y], yerr=err, fmt=marker, color=color, markersize=6,
                     capsize=3, linewidth=1.2, label=label)
+
+
+def _gender_legend_handles(suffix="", with_observed=False):
+    """用固定的代理句柄拼图例，不从画出来的 artist 里取
+
+    从 artist 取图例有一个安静的坑：如果某一格恰好是 ci_unavailable，
+    那一格画的是空心点，图例键就会变成空心的，与图上其余实心点自相矛盾。
+    代理句柄描述的是"这类点应该长什么样"，与某一格的成色无关。
+    """
+    handles = [
+        Line2D([], [], color=GENDER_COLORS[gender], marker=GENDER_MARKERS[gender],
+               linestyle="none", markersize=6,
+               label=GENDER_LABELS[gender] + suffix)
+        for gender in GENDER_ORDER
+    ]
+    if with_observed:
+        handles.append(Line2D([], [], color=OBSERVED_COLOR,
+                              marker=OBSERVED_MARKER, linestyle="none",
+                              markersize=6, markerfacecolor="none",
+                              label="Observed (raw)"))
+    handles.append(Line2D([], [], color="#555555", marker="o", linestyle="none",
+                          markersize=6, markerfacecolor="none",
+                          markeredgewidth=1.6, label="No CI available"))
+    handles.append(Line2D([], [], color="#b22222", marker="x", linestyle="none",
+                          markersize=7, label="No estimate"))
+    return handles
+
+
+def draw_estimate(ax, row, pos, color, marker, orientation="h", label=None,
+                  flags=None, tag="", annotate_n=False, unit_scale=False,
+                  gap_frac=0.06):
+    """按 estimate_status 画一行估计，返回状态字符串
+
+    这是图 1/2/3/5 唯一的画点入口，存在的理由是四张图必须对"没有区间"和
+    "没有估计"给出同一种、且不骗人的画法：
+
+      ok              实心点 + 区间；
+      clipped         实心点 + 区间，并在被截回 [0,1] 的那一端画箭头端点
+                      （unit_scale=True 时才判断，差值类的量不适用）；
+      ci_unavailable  空心点、**不画区间**，旁注 "CI n/a"，并写进 flags；
+      missing         不画点，在该行/该列的位置画一个红色 ✕ 缺口标记，
+                      并写进 flags——缺口必须看得见，不能让一行凭空消失。
+
+    Args:
+        pos: 类别方向的坐标（orientation="h" 时是 y，"v" 时是 x）
+        orientation: "h" 横向区间（点区间图/森林图），"v" 纵向区间
+        flags: 收集缺陷说明的列表，最后交给 _annotate_missing 印在图上
+        tag: 缺陷说明里用来指认是哪一格的前缀
+        unit_scale: 该量是否落在 [0,1]（概率/比例的水平量），决定要不要
+            判断截断端
+        gap_frac: missing 时缺口标记放在另一坐标轴的哪个位置（axes 分数）
+    """
+    horizontal = orientation == "h"
+    status = estimate_status(row)
+    note = row.get("note") or "no note"
+    if flags is None:
+        flags = []
+
+    if status == "missing":
+        flags.append("{}: no estimate ({})".format(tag or row.get("term"), note))
+        blended = matplotlib.transforms.blended_transform_factory(
+            ax.transAxes if horizontal else ax.transData,
+            ax.transData if horizontal else ax.transAxes)
+        xy = ([gap_frac], [pos]) if horizontal else ([pos], [gap_frac])
+        ax.plot(xy[0], xy[1], marker="x", markersize=9, color="#b22222",
+                linestyle="none", transform=blended, zorder=4)
+        ax.annotate("no estimate", (xy[0][0], xy[1][0]), xycoords=blended,
+                    textcoords="offset points", xytext=(8, 0), fontsize=5.5,
+                    color="#b22222",
+                    va="center", ha="left")
+        return status
+
+    est = float(row["estimate"])
+    x, y = (est, pos) if horizontal else (pos, est)
+
+    if status == "ci_unavailable":
+        flags.append("{}: CI unavailable ({})".format(
+            tag or row.get("term"), note))
+        ax.plot([x], [y], marker=marker, markersize=7, markerfacecolor="none",
+                markeredgecolor=color, markeredgewidth=1.6, linestyle="none",
+                color=color, zorder=3, label=label)
+        ax.annotate("CI n/a", (x, y), textcoords="offset points",
+                    xytext=(6, -8), fontsize=5.5, color="#b22222")
+        return status
+
+    _errorbar(ax, x, y, row["ci_low"], row["ci_high"], color, marker,
+              label=label, horizontal=horizontal)
+    if status == "clipped":
+        ends = clipped_ends(row) if unit_scale else ()
+        flags.append("{}: CI clipped to [0,1] at {} end ({})".format(
+            tag or row.get("term"), "/".join(ends) if ends else "unknown", note))
+        for end in ends:
+            bound = float(row["ci_low"] if end == "low" else row["ci_high"])
+            if horizontal:
+                ax.plot([bound], [pos], marker="<" if end == "low" else ">",
+                        markersize=5, color=color, linestyle="none", zorder=4)
+            else:
+                ax.plot([pos], [bound], marker="v" if end == "low" else "^",
+                        markersize=5, color=color, linestyle="none", zorder=4)
+    if annotate_n:
+        ax.annotate(_n_label(row), (x, y), textcoords="offset points",
+                    xytext=(6, 5), fontsize=6, color="#555555")
+    return status
 
 
 # ---------------------------------------------------------------------------
@@ -415,27 +596,22 @@ def fig1_core_outcomes(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
     for ax, (outcome, _scale) in zip(axes, panels):
         denominator = PRIMARY_DENOMINATOR[outcome]
         rows = select(table2, outcome=outcome, model="raw", denominator=denominator)
-        y_ticks, y_labels, missing = [], [], []
+        y_ticks, y_labels, flags = [], [], []
         for i, domain in enumerate(DOMAIN_ORDER):
             y_ticks.append(i)
             y_labels.append(DOMAIN_LABELS[domain])
-            for j, gender in enumerate(GENDER_ORDER):
+            for gender in GENDER_ORDER:
                 cell = select(rows, domain=domain, term=gender)
-                if cell.empty:
-                    missing.append("{}/{}: row absent".format(domain, gender))
-                    continue
-                row = cell.iloc[0]
                 y = i + (0.14 if gender == "male" else -0.14)
-                if pd.isna(row["estimate"]):
-                    missing.append("{}/{}: {}".format(
-                        domain, gender, row["note"] or "no note"))
+                if cell.empty:
+                    flags.append("{}/{}: row absent".format(domain, gender))
                     continue
-                _errorbar(ax, row["estimate"], y, row["ci_low"], row["ci_high"],
-                          GENDER_COLORS[gender], GENDER_MARKERS[gender],
-                          label=GENDER_LABELS[gender] if i == 0 else None)
-                ax.annotate(_n_label(row), (row["estimate"], y),
-                            textcoords="offset points", xytext=(6, 6), fontsize=6,
-                            color="#555555")
+                draw_estimate(
+                    ax, cell.iloc[0], y, GENDER_COLORS[gender],
+                    GENDER_MARKERS[gender], orientation="h",
+                    label=GENDER_LABELS[gender] if i == 0 else None,
+                    flags=flags, tag="{}/{}".format(domain, gender),
+                    annotate_n=True, unit_scale=True)
         ax.set_yticks(y_ticks)
         ax.set_yticklabels(y_labels)
         ax.set_ylim(-0.6, len(DOMAIN_ORDER) - 0.4)
@@ -443,8 +619,8 @@ def fig1_core_outcomes(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
             OUTCOME_LABELS[outcome], DENOMINATOR_LABELS[denominator]), fontsize=8)
         ax.set_title(OUTCOME_LABELS[outcome], fontsize=9)
         ax.grid(axis="x", alpha=0.25, linewidth=0.5)
-        ax.legend(fontsize=7, loc="lower right")
-        _annotate_missing(ax, missing)
+        ax.legend(handles=_gender_legend_handles(), fontsize=7, loc="lower right")
+        _annotate_missing(ax, flags, prefix="flagged rows")
 
     fig.suptitle("Figure 1. Core participation outcomes by gender, {}".format(year),
                  fontsize=11)
@@ -480,41 +656,45 @@ def fig2_adjusted_effects(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
          + [(persistence, "source_month_share", d) for d in DOMAIN_ORDER]),
     ]
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4.6))
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.8))
     for ax, (_scale, xlabel, specs) in zip(axes, panels):
-        y_ticks, y_labels, missing = [], [], []
+        y_ticks, y_labels, flags = [], [], []
         y = 0
         for frame, outcome, domain in specs:
             rows = select(frame, outcome=outcome, domain=domain, term=TERM_AME)
             y_ticks.append(y)
-            y_labels.append("{}\n{}".format(OUTCOME_LABELS[outcome].split(",")[0],
-                                            DOMAIN_LABELS[domain]))
+            # 每一行自己写出分母：这张图混着三个结果变量，分母各不相同，
+            # 只在横轴上写一句"与表 2 相同"是把分母推给别处，不是说明分母
+            y_labels.append("{}\n{}\n({})".format(
+                OUTCOME_LABELS[outcome].split(",")[0], DOMAIN_LABELS[domain],
+                DENOMINATOR_LABELS[AME_DENOMINATOR[outcome]]))
             for k, layer in enumerate(MODEL_LAYERS):
                 cell = select(rows, model=layer)
                 offset = 0.22 * (1 - k)
                 if cell.empty:
-                    missing.append("{}/{}/{}: row absent".format(
+                    flags.append("{}/{}/{}: row absent".format(
                         outcome, domain, layer))
                     continue
                 row = cell.iloc[0]
-                if pd.isna(row["estimate"]):
-                    missing.append("{}/{}/{}: {}".format(
-                        outcome, domain, layer, row["note"] or "no note"))
-                    continue
-                color = MALE_COLOR if row["estimate"] >= 0 else FEMALE_COLOR
-                _errorbar(ax, row["estimate"], y + offset, row["ci_low"],
-                          row["ci_high"], color, LAYER_MARKERS[layer])
-                ax.annotate(layer, (row["estimate"], y + offset),
-                            textcoords="offset points", xytext=(7, -2),
-                            fontsize=6, color="#555555")
+                # 颜色编码"谁更高"；估计值缺失时按中性灰画缺口标记
+                color = "#777777" if pd.isna(row["estimate"]) else (
+                    MALE_COLOR if row["estimate"] >= 0 else FEMALE_COLOR)
+                draw_estimate(ax, row, y + offset, color, LAYER_MARKERS[layer],
+                              orientation="h", flags=flags,
+                              tag="{}/{}/{}".format(outcome, domain, layer))
+                if pd.notna(row["estimate"]):
+                    ax.annotate(layer, (row["estimate"], y + offset),
+                                textcoords="offset points", xytext=(7, -2),
+                                fontsize=6, color="#555555")
             y += 1
         ax.axvline(0, color="#999999", linestyle="--", linewidth=0.8)
         ax.set_yticks(y_ticks)
-        ax.set_yticklabels(y_labels, fontsize=7)
+        ax.set_yticklabels(y_labels, fontsize=6.5)
         ax.set_ylim(-0.6, len(specs) - 0.4)
-        ax.set_xlabel(xlabel + "\n(95% CI; denominators as in Table 2)", fontsize=8)
+        ax.set_xlabel(xlabel + "\n(95% CI; each row's denominator is printed "
+                               "with its label)", fontsize=8)
         ax.grid(axis="x", alpha=0.25, linewidth=0.5)
-        _annotate_missing(ax, missing)
+        _annotate_missing(ax, flags, prefix="flagged rows")
 
     handles = [Line2D([], [], color="#555555", marker=LAYER_MARKERS[layer],
                       linestyle="none", label=LAYER_LABELS[layer])
@@ -522,13 +702,18 @@ def fig2_adjusted_effects(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
     handles += [Line2D([], [], color=MALE_COLOR, marker="s", linestyle="none",
                        label="Male higher"),
                 Line2D([], [], color=FEMALE_COLOR, marker="s", linestyle="none",
-                       label="Female higher")]
-    fig.legend(handles=handles, fontsize=7, loc="lower center", ncol=5,
+                       label="Female higher"),
+                Line2D([], [], color="#555555", marker="o", linestyle="none",
+                       markerfacecolor="none", markeredgewidth=1.6,
+                       label="No CI available"),
+                Line2D([], [], color="#b22222", marker="x", linestyle="none",
+                       label="No estimate")]
+    fig.legend(handles=handles, fontsize=7, loc="lower center", ncol=4,
                frameon=False)
     fig.suptitle(
         "Figure 2. Gender average marginal effects across model layers, {}".format(
             year), fontsize=11)
-    fig.tight_layout(rect=[0, 0.07, 1, 0.94])
+    fig.tight_layout(rect=[0, 0.10, 1, 0.94])
     return _save_fig(fig, "fig2_adjusted_effects", fig_dir)
 
 
@@ -574,72 +759,41 @@ def fig3_interaction(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
                           denominator=denominator)
         cells = predicted_cells(inter, outcome, model)
         facets = domain_facets(cells) or list(DOMAIN_ORDER)
-        blended = matplotlib.transforms.blended_transform_factory(
-            ax.transData, ax.transAxes)
         flags = []
+        n_predicted, n_observed = set(), set()
         for i, domain in enumerate(facets):
             for gender in GENDER_ORDER:
                 x = i + (0.13 if gender == "male" else -0.13)
                 color = GENDER_COLORS[gender]
 
-                # 观测值：空心灰点，只作对照，不画区间
+                # 观测值：灰色空心方块，与预测点的圆/三角形状完全不同。
+                # 只靠"填充与否"区分两种点，在正文尺寸下会被读错端点，
+                # 而这张图恰恰要求读者把同一个领域内的两端连起来看。
                 obs = select(observed, domain=domain, term=gender)
                 if not obs.empty and pd.notna(obs.iloc[0]["estimate"]):
-                    ax.plot([x], [obs.iloc[0]["estimate"]],
-                            marker=GENDER_MARKERS[gender], markersize=6,
-                            markerfacecolor="none", markeredgecolor="#9e9e9e",
-                            linestyle="none", zorder=2,
-                            label="Observed (raw)" if i == 0 and gender == "male"
-                            else None)
+                    obs_row = obs.iloc[0]
+                    ax.plot([x], [obs_row["estimate"]], marker=OBSERVED_MARKER,
+                            markersize=6, markerfacecolor="none",
+                            markeredgecolor=OBSERVED_COLOR, color=OBSERVED_COLOR,
+                            linestyle="none", zorder=2)
+                    ax.annotate("obs {}".format(_n_label(obs_row)),
+                                (x, obs_row["estimate"]),
+                                textcoords="offset points", xytext=(6, -10),
+                                fontsize=5.5, color=OBSERVED_COLOR)
+                    if pd.notna(obs_row.get("n_obs")):
+                        n_observed.add(int(obs_row["n_obs"]))
 
                 cell = select(cells, domain=domain, term=TERM_PRED[(gender, domain)])
                 if cell.empty:
                     flags.append("{}/{} predicted: row absent".format(domain, gender))
-                    ax.plot([x], [0.06], marker="x", markersize=8, color="#9e9e9e",
-                            linestyle="none", transform=blended, zorder=4)
                     continue
                 row = cell.iloc[0]
-                status = cell_status(row)
-                if status == "missing":
-                    # 缺口必须看得见：在该格的位置画一个灰色 ✕ 并写明原因
-                    flags.append("{}/{} predicted: no estimate ({})".format(
-                        domain, gender, row["note"] or "no note"))
-                    ax.plot([x], [0.06], marker="x", markersize=9, color="#b22222",
-                            linestyle="none", transform=blended, zorder=4)
-                    ax.annotate("no\nestimate", (x, 0.06), xycoords=blended,
-                                textcoords="offset points", xytext=(0, 10),
-                                ha="center", fontsize=5.5, color="#b22222")
-                    continue
-                if status == "ci_unavailable":
-                    flags.append("{}/{} predicted: CI unavailable ({})".format(
-                        domain, gender, row["note"] or "no note"))
-                    ax.plot([x], [row["estimate"]], marker=GENDER_MARKERS[gender],
-                            markersize=7, markerfacecolor="none",
-                            markeredgecolor=color, markeredgewidth=1.6,
-                            linestyle="none", zorder=3,
-                            label=GENDER_LABELS[gender] + " (predicted)"
-                            if i == 0 else None)
-                    ax.annotate("CI n/a", (x, row["estimate"]),
-                                textcoords="offset points", xytext=(6, -8),
-                                fontsize=5.5, color="#b22222")
-                    continue
-
-                _errorbar(ax, x, row["estimate"], row["ci_low"], row["ci_high"],
-                          color, GENDER_MARKERS[gender],
-                          label=GENDER_LABELS[gender] + " (predicted)"
-                          if i == 0 else None, horizontal=False)
-                if status == "clipped":
-                    # 被截回 [0,1] 的那一端不是真实的置信界，用箭头端点标出来
-                    flags.append("{}/{} predicted: CI clipped to [0,1]".format(
-                        domain, gender))
-                    for bound, marker in ((row["ci_low"], "v"),
-                                          (row["ci_high"], "^")):
-                        if pd.notna(bound) and bound in (0.0, 1.0):
-                            ax.plot([x], [bound], marker=marker, markersize=5,
-                                    color=color, linestyle="none", zorder=4)
-                ax.annotate(_n_label(row), (x, row["estimate"]),
-                            textcoords="offset points", xytext=(6, 4), fontsize=6,
-                            color="#555555")
+                if pd.notna(row.get("n_obs")):
+                    n_predicted.add(int(row["n_obs"]))
+                draw_estimate(ax, row, x, color, GENDER_MARKERS[gender],
+                              orientation="v", flags=flags,
+                              tag="{}/{} predicted".format(domain, gender),
+                              annotate_n=True, unit_scale=True)
 
             # 域内的性别差直接读结果表的 gap 行，不在图里自己相减：
             # 恒等式虽然成立，但读表里的那一行才能顺带把区间一起写出来
@@ -689,17 +843,26 @@ def fig3_interaction(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
         ax.set_xticks(range(len(facets)))
         ax.set_xticklabels([DOMAIN_LABELS[d] for d in facets])
         ax.set_xlim(-0.6, len(facets) - 0.4)
+        # 两种点来自两个不同的总体，分母与样本量都必须分别写出来：
+        # 预测点来自交互模型的样本（两域配对完整的用户，长表两行/人），
+        # 观测点来自表 2 的主分母口径（按性别各自的全体）。只写一个分母
+        # 会让读者把 n=226,333 的预测点当成 n=52,111/174,222 的观测点。
         ax.set_ylabel(
-            "{}\nfilled: model-predicted ({}, 95% CI); hollow grey: observed\n"
-            "({})".format(OUTCOME_LABELS[outcome], model,
-                          DENOMINATOR_LABELS[denominator]), fontsize=7)
+            "{}\n● / ▲ model-predicted at {} (interaction sample, complete "
+            "domain pairs; {}); 95% CI\n□ observed (Table 2, {}; {})".format(
+                OUTCOME_LABELS[outcome], model, _n_range_label(n_predicted),
+                DENOMINATOR_LABELS[denominator], _n_range_label(n_observed)),
+            fontsize=6.5)
         ax.set_title(OUTCOME_LABELS[outcome], fontsize=9)
         ax.grid(axis="y", alpha=0.25, linewidth=0.5)
         # 图例与缺陷说明都放到轴下方：面板内部已经被四个格子、连线和差中差
-        # 标注框占满，硬塞进去只会盖住数据
-        ax.legend(fontsize=6.5, loc="upper center", bbox_to_anchor=(0.5, -0.09),
+        # 标注框占满，硬塞进去只会盖住数据。图例用固定代理句柄，不从画出来的
+        # artist 里取——某一格恰好是 ci_unavailable 时，取到的会是一个空心键。
+        ax.legend(handles=_gender_legend_handles(" (predicted)",
+                                                 with_observed=True),
+                  fontsize=6.5, loc="upper center", bbox_to_anchor=(0.5, -0.09),
                   ncol=3, frameon=False)
-        _annotate_missing(ax, flags, prefix="flagged cells", y=-0.28, va="top")
+        _annotate_missing(ax, flags, prefix="flagged cells", y=-0.34, va="top")
 
     fig.suptitle(
         "Figure 3. Model-predicted gender × domain cells with the "
@@ -794,46 +957,61 @@ def fig4_source_content(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
 # 图 5：领域参与组合（§12.5）
 # ---------------------------------------------------------------------------
 
-def fig5_combinations(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
-    """四类来源组合的性别分布 + 多项 logit 的性别边际效应（§12.5）
+def predicted_combo_cells(frame, model=HEADLINE_LAYER):
+    """取出多项 logit 里各性别在四类组合上的模型预测概率（八行）
 
-    左：各性别在四类组合上的观测占比（Wilson 区间），来自导出层的
-    combo_distribution.parquet——表 C 已有的 source_combo 列做一次分组占比。
-    右：多项 logit 各类别的性别平均边际效应（男−女，概率尺度），M0/M1/M2
-    并排。这两半都写在 domain="both" 的行上：来源组合是跨领域的分类，
-    因此这张图里没有按领域分面这回事。
+    这些行由 models_combination 与各类别的性别 AME 在同一次拟合、同一批
+    反事实预测上算出，落行前断言过 pred_male[c] - pred_female[c] == AME[c]
+    （容差 1e-10），所以图 5 左右两半画的是同一次拟合的两种写法。
+    它们的 domain 一律是 "both"：来源组合是跨领域的分类。
+    """
+    rows = select(frame, outcome="source_combo", domain=DOMAIN_BOTH, model=model)
+    terms = ["pred_{}_{}".format(g, c)
+             for g in GENDER_ORDER for c in COMBO_CATEGORIES]
+    return rows[rows["term"].astype("object").isin(terms)]
 
-    结果表里没有"各性别的多项模型预测概率"这一量（models_combination 只
-    写出了两者之差），所以右半边画的是差，不是两条预测曲线——图注必须
-    这样写，不能把左半边的观测占比说成模型预测值。
+
+def fig5_combinations(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
+                      model=HEADLINE_LAYER):
+    """四类来源组合：观测分布 + 多项 logit 预测概率 + 各层性别边际效应（§12.5）
+
+    三个面板，从"数据是什么样"一路走到"控制掉活动量之后还剩多少"：
+
+    1. **观测分布**：各性别在四类组合上的占比（Wilson 区间），来自导出层的
+       combo_distribution.parquet（表 C 已有的 source_combo 列做一次分组占比）。
+    2. **模型预测概率**（§12.5 明确要求的那一半）：多项 logit 在
+       `pred_{male,female}_{类别}` 上的预测概率，默认 M1 层，`model=` 可换层。
+       这些行与右面板的 AME 来自同一次拟合，落行前被断言过
+       pred_male[c] − pred_female[c] == AME[c]，因此中间面板两点之差与右面板
+       同一层的点严格一致——读者可以自己在图上量。
+    3. **性别 AME 的森林图**：四类各自的男−女差在 M0/M1/M2 上怎么移动。
+       保留它是因为"控制活动量之后差异缩水多少"是 §6.5 要读者看的东西，
+       而这在两条预测概率上看不出来（预测概率只画一层）。
+
+    三个面板都写在 domain="both" 的行上——来源组合是跨领域的分类，
+    这张图里没有按领域分面这回事。观测占比与预测概率是两个不同的量，
+    面板标题与横轴标签分别写明，不让读者去猜。
     """
     data_dir = data_dir or figure_data_dir()
     observed = _read(data_dir, COMBO_FILE, RESULT_COLUMNS)
     multinomial = _read(data_dir, "combination_multinomial.parquet", RESULT_COLUMNS)
 
-    fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.4))
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.6))
 
+    # --- 面板 1：观测分布 ---
     ax = axes[0]
-    missing = []
+    flags = []
     for i, category in enumerate(COMBO_CATEGORIES):
         for gender in GENDER_ORDER:
             cell = select(observed, term="{}_{}".format(category, gender))
+            y = i + (0.14 if gender == "male" else -0.14)
             if cell.empty:
-                missing.append("{}/{}: row absent".format(category, gender))
+                flags.append("{}/{}: row absent".format(category, gender))
                 continue
-            row = cell.iloc[0]
-            if pd.isna(row["estimate"]):
-                missing.append("{}/{}: {}".format(
-                    category, gender, row["note"] or "no note"))
-                continue
-            _errorbar(ax, row["estimate"], i + (0.14 if gender == "male" else -0.14),
-                      row["ci_low"], row["ci_high"], GENDER_COLORS[gender],
-                      GENDER_MARKERS[gender],
-                      label=GENDER_LABELS[gender] if i == 0 else None)
-            ax.annotate(_n_label(row),
-                        (row["estimate"], i + (0.14 if gender == "male" else -0.14)),
-                        textcoords="offset points", xytext=(6, 5), fontsize=6,
-                        color="#555555")
+            draw_estimate(ax, cell.iloc[0], y, GENDER_COLORS[gender],
+                          GENDER_MARKERS[gender], orientation="h", flags=flags,
+                          tag="{}/{} observed".format(category, gender),
+                          annotate_n=True, unit_scale=True)
     ax.set_yticks(range(len(COMBO_CATEGORIES)))
     ax.set_yticklabels([COMBO_LABELS[c] for c in COMBO_CATEGORIES])
     ax.set_ylim(-0.6, len(COMBO_CATEGORIES) - 0.4)
@@ -841,11 +1019,43 @@ def fig5_combinations(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
                   "with a known source combination; 95% Wilson CI)", fontsize=7)
     ax.set_title("Observed distribution", fontsize=9)
     ax.grid(axis="x", alpha=0.25, linewidth=0.5)
-    ax.legend(fontsize=7, loc="lower right")
-    _annotate_missing(ax, missing)
+    ax.legend(handles=_gender_legend_handles(), fontsize=6.5, loc="lower right")
+    _annotate_missing(ax, flags, prefix="flagged rows")
 
+    # --- 面板 2：多项 logit 的预测概率 ---
     ax = axes[1]
-    missing = []
+    flags = []
+    cells = predicted_combo_cells(multinomial, model)
+    n_pred = set()
+    for i, category in enumerate(COMBO_CATEGORIES):
+        for gender in GENDER_ORDER:
+            cell = select(cells, term="pred_{}_{}".format(gender, category))
+            y = i + (0.14 if gender == "male" else -0.14)
+            if cell.empty:
+                flags.append("{}/{} predicted: row absent".format(category, gender))
+                continue
+            row = cell.iloc[0]
+            if pd.notna(row.get("n_obs")):
+                n_pred.add(int(row["n_obs"]))
+            draw_estimate(ax, row, y, GENDER_COLORS[gender],
+                          GENDER_MARKERS[gender], orientation="h", flags=flags,
+                          tag="{}/{} predicted".format(category, gender),
+                          unit_scale=True)
+    ax.set_yticks(range(len(COMBO_CATEGORIES)))
+    ax.set_yticklabels([COMBO_LABELS[c] for c in COMBO_CATEGORIES])
+    ax.set_ylim(-0.6, len(COMBO_CATEGORIES) - 0.4)
+    ax.set_xlabel("Multinomial logit predicted probability at {} ({};\n"
+                  "denominator: users with a known source combination; 95% CI)".format(
+                      model, _n_range_label(n_pred)), fontsize=7)
+    ax.set_title("Model-predicted probabilities ({})".format(model), fontsize=9)
+    ax.grid(axis="x", alpha=0.25, linewidth=0.5)
+    ax.legend(handles=_gender_legend_handles(" (predicted)"), fontsize=6.5,
+              loc="lower right")
+    _annotate_missing(ax, flags, prefix="flagged cells")
+
+    # --- 面板 3：各层的性别 AME ---
+    ax = axes[2]
+    flags = []
     combo_rows = select(multinomial, outcome="source_combo", domain=DOMAIN_BOTH)
     for i, category in enumerate(COMBO_CATEGORIES):
         for k, layer in enumerate(MODEL_LAYERS):
@@ -853,38 +1063,42 @@ def fig5_combinations(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
                           term="gender_male_ame_{}".format(category))
             offset = 0.22 * (1 - k)
             if cell.empty:
-                missing.append("{}/{}: row absent".format(category, layer))
+                flags.append("{}/{}: row absent".format(category, layer))
                 continue
             row = cell.iloc[0]
-            if pd.isna(row["estimate"]):
-                missing.append("{}/{}: {}".format(
-                    category, layer, row["note"] or "no note"))
-                continue
-            color = MALE_COLOR if row["estimate"] >= 0 else FEMALE_COLOR
-            _errorbar(ax, row["estimate"], i + offset, row["ci_low"],
-                      row["ci_high"], color, LAYER_MARKERS[layer])
-            ax.annotate(layer, (row["estimate"], i + offset),
-                        textcoords="offset points", xytext=(7, -2), fontsize=6,
-                        color="#555555")
+            color = "#777777" if pd.isna(row["estimate"]) else (
+                MALE_COLOR if row["estimate"] >= 0 else FEMALE_COLOR)
+            draw_estimate(ax, row, i + offset, color, LAYER_MARKERS[layer],
+                          orientation="h", flags=flags,
+                          tag="{}/{} AME".format(category, layer))
+            if pd.notna(row["estimate"]):
+                ax.annotate(layer, (row["estimate"], i + offset),
+                            textcoords="offset points", xytext=(7, -2), fontsize=6,
+                            color="#555555")
     ax.axvline(0, color="#999999", linestyle="--", linewidth=0.8)
     ax.set_yticks(range(len(COMBO_CATEGORIES)))
     ax.set_yticklabels([COMBO_LABELS[c] for c in COMBO_CATEGORIES])
     ax.set_ylim(-0.6, len(COMBO_CATEGORIES) - 0.4)
-    ax.set_xlabel("Multinomial logit gender AME (male − female), probability scale\n"
+    ax.set_xlabel("Gender AME (male − female), probability scale\n"
                   "(denominator: users with a known source combination; 95% CI)",
                   fontsize=7)
-    ax.set_title("Model-adjusted gender difference", fontsize=9)
+    ax.set_title("Gender difference across model layers", fontsize=9)
     ax.grid(axis="x", alpha=0.25, linewidth=0.5)
-    _annotate_missing(ax, missing)
+    _annotate_missing(ax, flags, prefix="flagged rows")
 
     handles = [Line2D([], [], color="#555555", marker=LAYER_MARKERS[layer],
                       linestyle="none", label=LAYER_LABELS[layer])
                for layer in MODEL_LAYERS]
-    fig.legend(handles=handles, fontsize=7, loc="lower center", ncol=3,
+    handles += [Line2D([], [], color="#555555", marker="o", linestyle="none",
+                       markerfacecolor="none", markeredgewidth=1.6,
+                       label="No CI available"),
+                Line2D([], [], color="#b22222", marker="x", linestyle="none",
+                       label="No estimate")]
+    fig.legend(handles=handles, fontsize=7, loc="lower center", ncol=5,
                frameon=False)
     fig.suptitle("Figure 5. Source-combination categories by gender, {}".format(year),
                  fontsize=11)
-    fig.tight_layout(rect=[0, 0.06, 1, 0.93])
+    fig.tight_layout(rect=[0, 0.08, 1, 0.93])
     return _save_fig(fig, "fig5_combinations", fig_dir)
 
 

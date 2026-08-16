@@ -341,6 +341,27 @@ def test_copy_result_tables_reports_missing_files_by_name(analysis_dir):
     assert "models_share.parquet" in str(err.value)
 
 
+def test_oversize_file_is_deleted_before_raising(analysis_dir, monkeypatch):
+    """超限的文件必须连同报错一起消失，不能留在下载目录里"""
+    monkeypatch.setattr(ex, "MAX_FILE_MB", 1e-9)
+    path = os.path.join(str(analysis_dir), "figure_data", "oversize.parquet")
+    with pytest.raises(ValueError) as err:
+        ex._save_parquet(_user_fixture(), path)
+    assert "上限" in str(err.value)
+    assert not os.path.exists(path)
+
+
+def test_build_names_the_distribution_that_came_out_empty(analysis_dir):
+    """空分布要报出是哪一份，而不是抛一个 DIST_FILES[None] 的 KeyError"""
+    users = _user_fixture()
+    users["gender"] = "x"                    # 没有一个已知性别的用户
+    users.to_parquet(str(analysis_dir / "user_domain_2020.parquet"),
+                     engine="pyarrow", index=False)
+    with pytest.raises(ValueError) as err:
+        ex.build(year=2020, max_points=50, seed=42)
+    assert "retweet_count" in str(err.value)
+
+
 def test_build_writes_every_file_and_stays_small(analysis_dir):
     ex.build(year=2020, max_points=500, seed=42)
     out_dir = ex.figure_data_dir()
