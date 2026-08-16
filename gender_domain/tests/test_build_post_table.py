@@ -2,6 +2,7 @@ import json
 import os
 
 import pandas as pd
+import pytest
 
 from gender_domain import build_post_table as bpt
 from gender_domain import config
@@ -46,17 +47,69 @@ def test_process_frame_measures_both_domains_independently():
     assert not out.loc["w3", "public_hit"]
 
 
-def test_process_frame_stores_terms_as_pipe_joined_string():
+def test_process_frame_stores_term_counts_as_pipe_joined_string():
     # 命中词按 Unicode 码点升序排列（而非出现顺序），这样同一命中集合
     # 无论在文本中出现的先后顺序如何，拼接结果都是确定的，便于跨批次
     # 对比同一条命中组合是否一致。
     public, celeb = _matchers()
     out = bpt.process_frame(_frame(), public, celeb).set_index("weibo_id")
-    assert out.loc["w1", "public_terms"] == "疫情|防控"
-    assert out.loc["w2", "public_terms"] == ""
-    # 显式验证排序规则：即使颠倒词表/命中顺序输入，只要命中集合相同，
-    # 结果字符串也必须相同——证明这是排序后的结果，不是偶然的出现顺序。
-    assert out.loc["w1", "public_terms"] == "|".join(sorted(["疫情", "防控"]))
+    assert out.loc["w1", "public_term_counts"] == "疫情:1|防控:1"
+    assert out.loc["w2", "public_term_counts"] == ""
+
+
+def test_process_frame_term_counts_records_repeat_occurrences():
+    # 同一词命中两次必须记为 2，而不是像旧版 {domain}_terms 那样去重成 1，
+    # 否则重新聚合时无法从存量表还原出 n_hits/chars_hit。
+    public, celeb = _matchers()
+    df = _frame()
+    df.loc[0, "weibo_content"] = "疫情疫情防控"
+    out = bpt.process_frame(df, public, celeb).set_index("weibo_id")
+    assert out.loc["w1", "public_term_counts"] == "疫情:2|防控:1"
+
+
+def test_process_frame_term_counts_are_consistent_with_n_hits_and_chars_hit():
+    """{domain}_n_hits/{domain}_chars_hit 必须能由 term_counts 精确还原
+
+    这是重新聚合（§13.3 词表重采样）成立的前提：n_hits 等于所有计数之和，
+    chars_hit 等于每个词的 len(term) * count 之和。
+    """
+    public, celeb = _matchers()
+    df = _frame()
+    df.loc[0, "weibo_content"] = "疫情疫情防控"
+    out = bpt.process_frame(df, public, celeb)
+    for _, row in out.iterrows():
+        for prefix in ("public", "celebrity"):
+            counts = bpt.decode_term_counts(row[f"{prefix}_term_counts"])
+            assert sum(counts.values()) == row[f"{prefix}_n_hits"]
+            assert sum(len(t) * c for t, c in counts.items()) == row[f"{prefix}_chars_hit"]
+
+
+def test_encode_term_counts_sorts_by_term_for_determinism():
+    # 无论 dict 的插入/遍历顺序如何，只要命中集合相同，编码结果必须相同。
+    assert bpt.encode_term_counts({"防控": 1, "疫情": 2}) == "疫情:2|防控:1"
+    assert bpt.encode_term_counts({"疫情": 2, "防控": 1}) == "疫情:2|防控:1"
+
+
+def test_encode_term_counts_empty_dict_is_empty_string():
+    assert bpt.encode_term_counts({}) == ""
+
+
+def test_encode_term_counts_rejects_terms_containing_delimiters():
+    # 一旦词表混入分隔符字符，朴素拼接就会产生无法正确切分的字符串，
+    # 必须在编码时就报错，而不是让 decode_term_counts 悄悄解析错。
+    for bad_term in ("疫|情", "疫:情", "疫：情"):
+        with pytest.raises(ValueError):
+            bpt.encode_term_counts({bad_term: 1})
+
+
+def test_decode_term_counts_round_trips_with_encode():
+    original = {"疫情": 2, "防控": 1}
+    encoded = bpt.encode_term_counts(original)
+    assert bpt.decode_term_counts(encoded) == original
+
+
+def test_decode_term_counts_empty_string_is_empty_dict():
+    assert bpt.decode_term_counts("") == {}
 
 
 def test_process_frame_normalizes_user_id_to_string():

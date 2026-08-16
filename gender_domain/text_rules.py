@@ -17,6 +17,7 @@
 """
 
 import re
+from collections import Counter
 
 # 纯转发的占位文本
 PLAIN_RETWEET_PLACEHOLDERS = {
@@ -176,6 +177,9 @@ def measure_text(text, matcher):
         n_hits: 命中次数（重复出现分别计数）
         n_chars_hit: 命中区间字符数（不重叠）
         terms: 去重后的命中词列表
+        term_counts: {命中词: 出现次数} 的 dict，重复出现的词计数会 > 1；
+            供 build_post_table.py 编码成 {domain}_term_counts 列，让下游
+            13.3 节的词表重采样可以直接对存量表重新聚合，不必重扫原文
         density: n_chars_hit / n_chars
     """
     n_chars = len(text) if text else 0
@@ -186,17 +190,20 @@ def measure_text(text, matcher):
             "n_hits": 0,
             "n_chars_hit": 0,
             "terms": [],
+            "term_counts": {},
             "density": 0.0,
         }
 
     matches = matcher.find(text)
     n_chars_hit = sum(end - start for _, start, end in matches)
-    unique_terms = sorted({term for term, _, _ in matches})
+    term_counts = Counter(term for term, _, _ in matches)
+    unique_terms = sorted(term_counts)
     return {
         "n_chars": n_chars,
         "hit": len(matches) > 0,
         "n_hits": len(matches),
         "n_chars_hit": n_chars_hit,
         "terms": unique_terms,
+        "term_counts": dict(term_counts),
         "density": n_chars_hit / n_chars,
     }

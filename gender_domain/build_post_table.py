@@ -6,6 +6,33 @@
 使用方法:
     python -m gender_domain.build_post_table month 2020 3
     python -m gender_domain.build_post_table all 2020
+
+{domain}_term_counts 列（研究设计 0.4 节 §13.3 词表重采样的存量基础）:
+    每个领域存的不是去重后的命中词集合，而是"词:出现次数"的逐词计数，
+    编码成单个字符串列：`term:count|term:count|...`，按词排序保证确定性，
+    没有命中时为空字符串。见 encode_term_counts / decode_term_counts。
+
+    这样做的原因：13.3 节要求对 200-500 份随机保留 80% 词的重采样词表
+    分别重估所有内容结果。若表 A 只存去重命中词集合（旧版 {domain}_terms
+    列），重采样时唯一能保证正确的办法是重扫一遍全年帖子正文——单进程
+    约 32 分钟一遍，几百次重采样要上百小时。改存逐词计数后，重采样只需
+    对存量表按词表子集重新聚合 {domain}_n_hits / {domain}_chars_hit，
+    是分钟级操作，不必重扫原文。
+
+    编码本身依赖一个数据前提：当前两份词表里没有任何词包含 "|"、":"、
+    "："（已核查：公共事务词表 816 词、明星词表 535 词，无一命中这三个
+    分隔符），所以这种朴素拼接在本项目数据上是无歧义的。encode_term_counts
+    会在遇到含分隔符的词时主动报错，防止未来换词表后编码静默出错。
+
+    重要局限（不在本任务范围内解决，留给 §13.3 实现者）：词表匹配是
+    "最左最长、命中区间不重叠"，所以按词表子集重新聚合存量计数，只有在
+    "被剔除的词都不是被保留词内部嵌套/遮蔽的子串"时才精确。若剔除了一个
+    长词，它内部原本被遮蔽的短词在重扫时会重新命中，但存量计数里没有
+    这条记录——重新聚合会因此低估该短词（以及 hit/chars_hit）。经核查
+    暴露面：公共事务词表 816 词中有 112 个（13.7%）是另一个词的子串；
+    明星词表 535 词中只有 5 个（0.9%）。也就是说重新聚合对明星领域基本
+    是精确的，对公共事务领域有一定但有界的暴露；任何落在决策边界附近
+    的结果，都应该用少量精确重扫来复核，而不是只信重新聚合的数字。
 """
 
 import glob
@@ -45,14 +72,55 @@ OUTPUT_COLUMNS = [
     "public_hit",
     "public_n_hits",
     "public_chars_hit",
-    "public_terms",
+    "public_term_counts",
     "public_density",
     "celebrity_hit",
     "celebrity_n_hits",
     "celebrity_chars_hit",
-    "celebrity_terms",
+    "celebrity_term_counts",
     "celebrity_density",
 ]
+
+# term_counts 列的编码分隔符。经核查（见模块 docstring），当前公共事务/
+# 明星两份词表里没有任何词包含这三个字符，所以拼接是无歧义的；
+# encode_term_counts 会在词命中这三个字符时主动报错，而不是静默产出
+# 一个看似合法、实则无法正确切分的字符串。
+_TERM_COUNT_DELIMITERS = ("|", ":", "：")
+
+
+def encode_term_counts(term_counts):
+    """把 {命中词: 出现次数} 编码成 "term:count|term:count" 格式的确定性字符串
+
+    按词的 Unicode 码点排序后再拼接，保证同一命中集合无论字典本身的
+    遍历顺序如何，编码结果都相同。没有命中时返回空字符串。
+
+    Raises:
+        ValueError: 词表中出现了分隔符 "|"、":"、"：" 之一——此时朴素拼接
+            会产生无法正确切分的字符串，必须在这里就地报错，而不是让
+            下游 decode_term_counts 悄悄解析出错误的词/计数。
+    """
+    for term in term_counts:
+        for delim in _TERM_COUNT_DELIMITERS:
+            if delim in term:
+                raise ValueError(
+                    f"词 {term!r} 包含编码分隔符 {delim!r}，无法安全编码为 term_counts 列"
+                )
+    return "|".join(f"{term}:{term_counts[term]}" for term in sorted(term_counts))
+
+
+def decode_term_counts(encoded):
+    """encode_term_counts 的逆函数，唯一权威的解析实现
+
+    供 §13.3 词表重采样等下游代码复用，避免各处各自重新实现一遍 split
+    逻辑。空字符串解码为空 dict。
+    """
+    if not encoded:
+        return {}
+    result = {}
+    for piece in encoded.split("|"):
+        term, _, count = piece.rpartition(":")
+        result[term] = int(count)
+    return result
 
 
 def _drop_gender_null(df):
@@ -177,7 +245,9 @@ def process_frame(df, public_matcher, celebrity_matcher):
         df[f"{prefix}_hit"] = [m["hit"] for m in measures]
         df[f"{prefix}_n_hits"] = [m["n_hits"] for m in measures]
         df[f"{prefix}_chars_hit"] = [m["n_chars_hit"] for m in measures]
-        df[f"{prefix}_terms"] = ["|".join(m["terms"]) for m in measures]
+        df[f"{prefix}_term_counts"] = [
+            encode_term_counts(m["term_counts"]) for m in measures
+        ]
         df[f"{prefix}_density"] = [m["density"] for m in measures]
 
     df["n_chars"] = [len(t) for t in cleaned]

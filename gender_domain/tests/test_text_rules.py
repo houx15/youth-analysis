@@ -244,3 +244,17 @@ def test_measure_text_deduplicates_term_list_but_not_hit_count():
     result = tr.measure_text("疫情疫情", m)
     assert result["n_hits"] == 2
     assert result["terms"] == ["疫情"]
+
+
+def test_measure_text_term_counts_records_per_term_occurrences():
+    # term_counts 是 build_post_table.py 编码 {domain}_term_counts 列的
+    # 唯一数据来源，重复出现的词必须记为对应的次数，而不是像 terms 那样去重。
+    m = tr.VocabMatcher(["疫情", "防控"])
+    result = tr.measure_text("疫情疫情防控", m)
+    assert result["term_counts"] == {"疫情": 2, "防控": 1}
+
+
+def test_measure_text_term_counts_empty_on_empty_text():
+    m = tr.VocabMatcher(["疫情"])
+    result = tr.measure_text("", m)
+    assert result["term_counts"] == {}
