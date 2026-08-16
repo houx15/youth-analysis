@@ -49,6 +49,21 @@
    如果先判"超长延迟"，这类记录会被记成异常值，读者会以为数据里有几十万
    条脏记录，而真实情况只是"这些人转的是旧帖"。同理 non_positive 排在
    prior_year 之前：延迟为负时"原帖是哪一年的"这个判断本身就不可信。
+   **正因为这个顺序，implausible 只会在同年帖上触发**，它删掉的因此
+   压倒性地是"当年的旧帖被翻出来重新转发"，而不是坏时间戳——这个计数
+   不是数据质量指标，不要当作"脏数据有多少"来读。
+   另外要如实说明 prior_year 的代价：它同时删掉了**真实存在的快速跨年
+   扩散**（例如 2019-12-31 23:50 的帖子在半小时后被转发）。这是刻意的，
+   因为 §10 描述的是"当年的扩散过程"，跨年帖按定义不属于它；但这意味着
+   1 小时内完成的比例在元旦前后是被这条规则动过的，被删掉的量按
+   领域 × 性别 记在 report 里，读者可以自己核对代价。
+
+3b. **每条规则的删除量都要按 领域 × 性别 拆开。**（removed_by_cell）
+   如果清理在男性身上删掉的比例明显高于女性，§10 想做的男女比较就已经
+   被清理本身污染了，而一个全局计数完全看不出这件事。prior_year 尤其
+   重要：如果男性更常转发去年的公共事务旧帖，这条排除就是在被比较的那
+   一组上差异化生效的。report 里同时给出各格的输入行数与幸存行数，
+   流失率可以直接算。
 
 4. **时间戳单位必须先检查再算。**（§10.2 第一条）原始数据的 time_stamp
    单位在本项目里从未被核实过（build_post_table 里同样是防御性推断）。
@@ -64,14 +79,17 @@
    算成上一年。同时把"时间戳换算出的日期"与表 B 的 date 列（来自文件名）
    做一次比对，不一致的比例写进 report——这是对上一条推断的独立体检。
 
-6. **超长延迟阈值取 720 小时（30 天）。** 这是一个裁定，不是一个客观界限，
-   所以它是模块常量、写进 manifest、并且可以从 CLI 覆盖。理由：本研究
-   关心的是来源账号发帖之后的扩散，微博的扩散在小时尺度上完成，超过一个月
-   之后才发生的"转发"已经不是同一个过程（多半是旧帖被重新翻出来，或是
-   时间戳本身有问题）。把阈值定得更宽（例如 365 天）不会改变中位数与
-   P90，只会让 P99 被少数几条极端记录支配；定得更窄（例如 24 小时）则会
-   把真实的慢速扩散一起删掉。720 小时被删掉的行数逐条记在 report 里，
-   读者可以自己判断这条裁定的代价有多大。
+6. **超长延迟阈值取 720 小时（30 天），并且同时跑一个"不设上限"的口径。**
+   这是一个裁定，不是一个客观界限。理由：本研究关心的是来源账号发帖之后的
+   扩散，微博的扩散在小时尺度上完成，超过一个月之后才发生的"转发"已经不是
+   同一个过程（多半是当年的旧帖被重新翻出来）。
+   但"这个裁定不影响结论"不能只写在报告里让人相信——§10.3 因此在
+   DELAY_THRESHOLDS 的**两个口径上各跑一遍**（720 小时与不设上限），
+   作为并列的 model 变体写进同一张结果表（做法与 models_combination 的
+   CONTENT_THRESHOLDS 一致）。审稿人直接把两行放在一起看，就能自己判断
+   中位数/P90 对阈值是否敏感，这比一个需要有人去拧才能看出代价的旋钮有用。
+   阈值仍然可以从 CLI 覆盖（build 的 delay_thresholds 参数，会一路传到
+   clean_delays，并且 manifest 记录的是**实际用到的值**，不是模块常量）。
 
 7. **月份固定效应模型按用户聚类。**（§11.1）用户—月份面板上同一个用户
    贡献最多 12 行，把它们当独立观测会系统性低估标准误；实测在本模块的
@@ -85,6 +103,11 @@
 9. **失败必须留痕，样本量必须自洽。** 沿用 models_core / models_combination
    的约定：任何一层拟合不收敛/退化都产出 estimate=NaN 且 note 写明原因的
    行；n_obs + n_dropped 恒等于该行对应的输入行数，drop_reason 逐条记数。
+   这条规则同样管到"看起来只是缺了个区间"的情形：bootstrap 落进退化重抽样
+   （某一性别一个用户都没抽到）时，行里会出现"有点估计、没有区间"，
+   必须带 NOTE_BOOTSTRAP_DEGENERATE；清理后某个领域一条记录都没有时，
+   整块 NaN 行必须带 NOTE_DOMAIN_ABSENT，与 leave_one_month_out 的
+   month_not_in_panel 是同一件事——"没有数据"和"没被检查过"要分得开。
 
 内存口径（事件表可能很大，写在这里供服务器上排查用）：
     全年事件表按月分片，每片一个 parquet。build 只按需要的列逐片读入
@@ -95,6 +118,9 @@
     去重必须在拼接之后再做一次，这一次的删除量单独记为
     n_duplicate_pairs_cross_shard，不与片内去重混在一起。
     峰值内存因此是"幸存行 × 10 列"，而不是"全年原始事件 × 全部列"。
+    两个阈值口径共用同一次读盘（每片只读一次，在内存里分别清理）：读盘
+    是最贵的一步，不该因为多一个稳健性口径就翻倍。两份幸存集合同时驻留，
+    但"不设上限"是"720 小时"的超集，额外内存只等于这条裁定删掉的那些行。
 
 使用方法:
     python -m gender_domain.models_temporal build --year=2020
@@ -148,13 +174,13 @@ PANEL_LAYERS = (
 )
 
 MODEL_FULL_YEAR = "full_year"
-USER_LEVEL_GAP = "user_level/gap"
 
 REASON_MISSING_GENDER = "missing_gender"
 REASON_OTHER_GENDER = "other_gender"
 REASON_NO_EXPRESSIVE = "no_expressive_posts"
 REASON_EXCLUDED_MONTH = "excluded_month"
 REASON_MONTH_ABSENT = "month_not_in_panel"
+REASON_MISSING_MONTH = "missing_month"
 REASON_MISSING_COVARIATE = "missing_covariate"
 REASON_AGGREGATED = "records_aggregated_to_users"
 
@@ -169,6 +195,11 @@ NOTE_CLUSTER_BOOTSTRAP = "cluster_bootstrap_user"
 NOTE_WILSON = "wilson"
 NOTE_NEWCOMBE = "newcombe"
 NOTE_NORMAL = "normal_approx_one_row_per_user_within_month"
+# 领域在清理后的事件表里一条记录都没有：与 month_not_in_panel 同一思路，
+# "没有数据"和"没有被检查过"必须在结果表上分得开
+NOTE_DOMAIN_ABSENT = "domain_not_in_cleaned_events"
+# bootstrap 有重抽样落进"某一性别一个用户都没抽到"的退化情形，区间不可用
+NOTE_BOOTSTRAP_DEGENERATE = "bootstrap_ci_unavailable_degenerate_replicates"
 
 # ---------------------------------------------------------------------------
 # §10 清理规则
@@ -190,6 +221,12 @@ CLEAN_RULES = (
 
 # 超长延迟阈值：30 天（模块文档第 6 条，是裁定不是客观界限）
 MAX_DELAY_HOURS = 720.0
+# §10.3 的结果在**两个阈值上各跑一遍**，作为并列的 model 变体写进同一张
+# 结果表：720 小时与不设上限（None）。这比"提供一个可调旋钮"更有用——
+# 旋钮要有人去拧才能看出裁定的代价，而并列的两行让审稿人直接读出
+# "换成不设上限，中位数/P90 是否还是这个数"。做法与 models_combination
+# 的 CONTENT_THRESHOLDS 一致：口径进 model 列，全部跑、全部写出来。
+DELAY_THRESHOLDS = (MAX_DELAY_HOURS, None)
 # 时间戳单位判定阈值，与 build_post_table._TIMESTAMP_UNIT_THRESHOLD 一致
 TS_UNIT_THRESHOLD = 1e11
 # 时间戳按 UTC epoch 解释，跨年边界按北京时间判定（模块文档第 5 条）
@@ -205,7 +242,8 @@ _CONFIDENCE = 0.95
 _Z = float(norm.ppf(1 - (1 - _CONFIDENCE) / 2))
 # 记录级分位数的簇 bootstrap 次数。一次重抽样的成本约等于
 # "拼接下标 + 一次 np.percentile"，在千万行量级上约 0.2 秒，
-# 500 次 × 4 个 (性别 × 领域) 格子约 7 分钟，在 4 小时的作业里可以接受。
+# 500 次 × 4 个 (性别 × 领域) 格子 × 2 个阈值口径约 15 分钟，
+# 在 run_results.slurm 的 8 小时墙钟里可以接受。
 _N_BOOT = 500
 _SEED = 20200101
 
@@ -236,16 +274,17 @@ def month_label(month):
 
 
 def fe_label(layer):
-    """月份固定效应模型的 model 标签，形如 "M0/month_fe" """
+    """月份固定效应模型的 model 标签，形如 "M0/month_fixed_effects" """
     return "{}/{}".format(layer, NOTE_MONTH_FE)
 
 
 def lomo_label(layer, month):
     """留一月重估的 model 标签；month 为 None 表示全年参照行
 
-    形如 "M0/month_fe/drop_month=03" 与 "M0/month_fe/full_year"。
-    口径进 model 列而不是 note 列，理由同 models_combination 模块文档
-    第 2b 条：下游按 (outcome, domain, model, term) 取行必须唯一。
+    形如 "M0/month_fixed_effects/drop_month=03" 与
+    "M0/month_fixed_effects/full_year"。口径进 model 列而不是 note 列，
+    理由同 models_combination 模块文档第 2b 条：下游按
+    (outcome, domain, model, term) 取行必须唯一。
     """
     base = fe_label(layer)
     if month is None:
@@ -253,14 +292,32 @@ def lomo_label(layer, month):
     return "{}/drop_month={:02d}".format(base, int(month))
 
 
-def record_label(gender_label):
-    """记录级延迟行的 model 标签，形如 "record_level/male" """
-    return "record_level/{}".format(gender_label)
+def threshold_label(max_delay_hours):
+    """超长延迟阈值的变体标签，形如 "max=720h" / "unbounded"
+
+    阈值进 model 列（而不是只写在 note 里）：同一张 delay_quantiles.parquet
+    里两个阈值的 term 完全相同，只写 note 会让
+    (outcome, domain, model, term) 退化成多对一的键——这正是
+    models_combination 模块文档第 2b 条记录过的那次事故。
+    """
+    if max_delay_hours is None:
+        return "unbounded"
+    return "max={:g}h".format(float(max_delay_hours))
 
 
-def user_label(gender_label):
-    """用户级延迟行的 model 标签，形如 "user_level/male" """
-    return "user_level/{}".format(gender_label)
+def record_label(gender_label, max_delay_hours=MAX_DELAY_HOURS):
+    """记录级延迟行的 model 标签，形如 "record_level/male/max=720h" """
+    return "record_level/{}/{}".format(gender_label, threshold_label(max_delay_hours))
+
+
+def user_label(gender_label, max_delay_hours=MAX_DELAY_HOURS):
+    """用户级延迟行的 model 标签，形如 "user_level/male/max=720h" """
+    return "user_level/{}/{}".format(gender_label, threshold_label(max_delay_hours))
+
+
+def gap_label(max_delay_hours=MAX_DELAY_HOURS):
+    """用户级男女差行的 model 标签，形如 "user_level/gap/max=720h" """
+    return "user_level/gap/{}".format(threshold_label(max_delay_hours))
 
 
 def quantile_term(q):
@@ -450,8 +507,16 @@ def prepare_panel_frame(panel_df):
     log_posts / log_retweets），再把 month 规整成整数：patsy 的 C(month)
     要求它是一个可以稳定分组的列，浮点或可空整数会在不同分片上展开出
     不同的水平集合。
+
+    **月份缺失的行在这里被剔除，而不是让 astype(int) 抛异常。**
+    月份无法解析的用户—月既进不了月份固定效应，也归不进任何一个月，
+    它是一次真实的样本流失，必须像性别缺失一样被记到 drop_reason 里
+    （REASON_MISSING_MONTH，由 panel_prefix_pairs 统一计数）；让整份
+    结果表因为几行坏数据直接崩掉，既不是记账也不是保护。
     """
     frame = mc.prepare_model_frame(panel_df)
+    month = pd.to_numeric(frame["month"], errors="coerce")
+    frame = frame[month.notna()].copy()
     frame["month"] = pd.to_numeric(frame["month"], errors="coerce").astype(int)
     for domain in DOMAINS:
         column = f"{domain}_topical_share"
@@ -460,6 +525,23 @@ def prepare_panel_frame(panel_df):
             # 以取值落在 [0,1] 为前提，越界值会在不报错的情况下把估计推走
             su.check_proportion_range(frame[column], column)
     return frame
+
+
+def panel_prefix_pairs(panel_df):
+    """建模帧相对整张面板的前置流失，逐条记数
+
+    两条原因互不重叠（顺序归因：性别不可用的行不再重复计入月份缺失），
+    相加恰好等于 prepare_panel_frame 剔掉的行数。
+    """
+    gender = panel_df["gender"].astype("object")
+    usable_gender = gender.isin(("m", "f"))
+    n_missing_gender = int((~usable_gender).sum())
+    month = pd.to_numeric(panel_df["month"], errors="coerce")
+    n_missing_month = int((usable_gender & month.isna()).sum())
+    return [
+        (REASON_MISSING_GENDER, n_missing_gender),
+        (REASON_MISSING_MONTH, n_missing_month),
+    ]
 
 
 def _month_terms(sample, terms):
@@ -584,7 +666,7 @@ def fit_month_fixed_effects(panel_df, domain):
     """
     n_input = int(len(panel_df))
     frame = prepare_panel_frame(panel_df)
-    prefix = [(REASON_MISSING_GENDER, n_input - int(len(frame)))]
+    prefix = panel_prefix_pairs(panel_df)
     rows = []
     for layer, covariates in PANEL_LAYERS:
         for kind in ("entry", "share"):
@@ -612,7 +694,7 @@ def leave_one_month_out(panel_df, domain, layer=LAYER_M0):
     """
     n_input = int(len(panel_df))
     frame = prepare_panel_frame(panel_df)
-    n_missing_gender = n_input - int(len(frame))
+    base_prefix = panel_prefix_pairs(panel_df)
     present = set(int(m) for m in frame["month"].unique())
     covariates = dict(PANEL_LAYERS)[layer]
     rows = []
@@ -627,8 +709,7 @@ def leave_one_month_out(panel_df, domain, layer=LAYER_M0):
             ))
             continue
         subset = frame[frame["month"] != month]
-        prefix = [
-            (REASON_MISSING_GENDER, n_missing_gender),
+        prefix = base_prefix + [
             (REASON_EXCLUDED_MONTH, int(len(frame) - len(subset))),
         ]
         rows.extend(_fit_month_model(
@@ -638,7 +719,7 @@ def leave_one_month_out(panel_df, domain, layer=LAYER_M0):
 
     rows.extend(_fit_month_model(
         frame, domain, layer, covariates, n_input, lomo_label(layer, None), "entry",
-        prefix_pairs=[(REASON_MISSING_GENDER, n_missing_gender)],
+        prefix_pairs=base_prefix,
         include_odds=False, extra_note=mc._join_notes(NOTE_LOMO, MODEL_FULL_YEAR),
     ))
     return pd.DataFrame(rows, columns=list(su.RESULT_SCHEMA))
@@ -683,18 +764,54 @@ def dedup_user_source_pairs(df, subset=DUPLICATE_KEYS):
     return deduped, before - int(len(deduped))
 
 
-def clean_delays(event_df, year=config.YEAR, max_delay_hours=MAX_DELAY_HOURS):
-    """§10.2 延迟清理：五条规则顺序归因，逐条记数，绝不静默删除
+def _dedup_with_cells(df, subset=DUPLICATE_KEYS):
+    """dedup_user_source_pairs + 被删行的 领域 × 性别 拆分"""
+    deduped, n_removed = dedup_user_source_pairs(df, subset=subset)
+    if n_removed == 0:
+        return deduped, n_removed, {}
+    dropped = df.loc[df.index.difference(deduped.index)]
+    return deduped, n_removed, cell_counts(dropped)
 
-    规则顺序与理由见模块文档第 3 条。返回 (清理后的帧, report)：
-    清理后的帧在原列之外多一列 delay_hours（小时），report 的每一项都会
-    原样写进 manifest。
+
+def cell_counts(frame, mask=None):
+    """按 领域 × 性别 统计行数：{domain: {"m"/"f"/"other": n}}
+
+    清理的删除量只报一个总数是不够的：如果某条规则在男性身上删掉的比例
+    明显高于女性，§10 想做的男女比较就已经被清理本身污染了，而一个全局
+    计数完全看不出这件事。因此每条规则的删除量都按 领域 × 性别 拆开，
+    连同各格的输入行数与幸存行数一起写进 report 与 manifest，读者可以
+    自己算出每一格的流失率。
+    """
+    sub = frame if mask is None else frame[mask]
+    if not len(sub):
+        return {}
+    gender = sub["gender"].astype("object")
+    gender = gender.where(gender.isin(("m", "f")), "other")
+    grouped = sub.groupby([sub["source_domain"].astype("object"), gender]).size()
+    out = {}
+    for (domain, label), n in grouped.items():
+        out.setdefault(str(domain), {})[str(label)] = int(n)
+    return out
+
+
+def clean_delays(event_df, year=config.YEAR, max_delay_hours=MAX_DELAY_HOURS):
+    """§10.2 延迟清理：五条规则顺序归因，逐条记数（并按性别拆开），绝不静默删除
+
+    规则顺序与理由见模块文档第 3 条。`max_delay_hours=None` 表示不设上限
+    （超长延迟规则不触发，计数为 0）——§10.3 就是在 720 小时与不设上限
+    两个变体上各跑一遍，让阈值这条裁定的代价直接印在结果表上。
+
+    返回 (清理后的帧, report)：清理后的帧在原列之外多一列 delay_hours
+    （小时），report 的每一项都会原样写进 manifest。
 
     report 的字段：
         n_input / n_clean / n_removed        总量
         removed                              {规则: 删除行数}，相加 == n_removed
+        removed_by_cell                      {规则: {领域: {性别: 删除行数}}}
+        n_input_by_cell / n_clean_by_cell    各格的输入与幸存行数（算流失率用）
         timestamp_unit                       "s" / "ms"（模块文档第 4 条）
-        max_delay_hours / year               本次使用的阈值与年份
+        max_delay_hours / year               **本次实际使用**的阈值与年份
+                                             （不设上限时为 None）
         n_delay_valid_false_input            表 B 自己标记的非正/缺失延迟行数，
                                              与本模块前两条规则之和互为核对
         n_source_ts_unparsed                 原帖时间戳无法换算成日期的行数
@@ -714,13 +831,17 @@ def clean_delays(event_df, year=config.YEAR, max_delay_hours=MAX_DELAY_HOURS):
         if "delay_valid" in frame.columns else None
 
     removed = {rule: 0 for rule in CLEAN_RULES}
+    removed_by_cell = {rule: {} for rule in CLEAN_RULES}
+    n_input_by_cell = cell_counts(frame)
 
     missing = frame["delay_hours"].isna()
     removed[RULE_MISSING] = int(missing.sum())
+    removed_by_cell[RULE_MISSING] = cell_counts(frame, missing)
     frame = frame[~missing]
 
     non_positive = frame["delay_hours"] <= 0
     removed[RULE_NON_POSITIVE] = int(non_positive.sum())
+    removed_by_cell[RULE_NON_POSITIVE] = cell_counts(frame, non_positive)
     frame = frame[~non_positive]
 
     source_dt = pd.to_datetime(
@@ -729,16 +850,24 @@ def clean_delays(event_df, year=config.YEAR, max_delay_hours=MAX_DELAY_HOURS):
     n_source_unparsed = int(source_dt.isna().sum())
     prior_year = (source_dt.dt.year < int(year)).fillna(False)
     removed[RULE_PRIOR_YEAR] = int(prior_year.sum())
+    # 跨年转发的构成必须按 领域 × 性别 记下来：如果男性明显更常转发去年的
+    # 公共事务旧帖，那么这条排除规则就是**在被比较的那一组上**差异化生效的
+    removed_by_cell[RULE_PRIOR_YEAR] = cell_counts(frame, prior_year)
     prior_median = float(frame.loc[prior_year, "delay_hours"].median()) \
         if int(prior_year.sum()) else None
     frame = frame[~prior_year]
 
-    implausible = frame["delay_hours"] > float(max_delay_hours)
+    if max_delay_hours is None:
+        implausible = pd.Series(False, index=frame.index)
+    else:
+        implausible = frame["delay_hours"] > float(max_delay_hours)
     removed[RULE_IMPLAUSIBLE] = int(implausible.sum())
+    removed_by_cell[RULE_IMPLAUSIBLE] = cell_counts(frame, implausible)
     frame = frame[~implausible]
 
-    frame, n_duplicate = dedup_user_source_pairs(frame)
+    frame, n_duplicate, duplicate_cells = _dedup_with_cells(frame)
     removed[RULE_DUPLICATE] = int(n_duplicate)
+    removed_by_cell[RULE_DUPLICATE] = duplicate_cells
 
     mismatch_share = None
     if "date" in frame.columns and len(frame):
@@ -762,10 +891,15 @@ def clean_delays(event_df, year=config.YEAR, max_delay_hours=MAX_DELAY_HOURS):
     report = {
         "n_input": n_input,
         "removed": removed,
+        "removed_by_cell": removed_by_cell,
+        "n_input_by_cell": n_input_by_cell,
+        "n_clean_by_cell": cell_counts(frame),
         "n_removed": n_removed,
         "n_clean": int(len(frame)),
         "timestamp_unit": unit,
-        "max_delay_hours": float(max_delay_hours),
+        # 记录**本次实际使用**的阈值，而不是模块常量：两个变体共用同一份
+        # manifest，写常量会让不设上限的那一份也自称 720
+        "max_delay_hours": None if max_delay_hours is None else float(max_delay_hours),
         "year": int(year),
         "n_delay_valid_false_input": delay_valid_false,
         "n_source_ts_unparsed": n_source_unparsed,
@@ -775,14 +909,31 @@ def clean_delays(event_df, year=config.YEAR, max_delay_hours=MAX_DELAY_HOURS):
         if len(frame) else {},
     }
     print(
-        f"延迟清理: 输入 {n_input} 行，时间戳单位 {unit}，"
-        f"删除 {n_removed} 行（{removed}），保留 {len(frame)} 行"
+        f"延迟清理（阈值 {threshold_label(max_delay_hours)}）: 输入 {n_input} 行，"
+        f"时间戳单位 {unit}，删除 {n_removed} 行（{removed}），保留 {len(frame)} 行"
     )
+    for rule in CLEAN_RULES:
+        if removed[rule]:
+            print(f"  {rule} 按 领域×性别 拆分: {removed_by_cell[rule]}")
     return frame, report
+
+
+def _merge_cell_counts(dicts):
+    """把若干个 {领域: {性别: n}} 逐格相加"""
+    out = {}
+    for d in dicts:
+        for domain, by_gender in (d or {}).items():
+            bucket = out.setdefault(domain, {})
+            for label, n in by_gender.items():
+                bucket[label] = bucket.get(label, 0) + int(n)
+    return out
 
 
 def merge_delay_reports(reports):
     """把逐个分片的清理 report 汇总成一份（build 按月分片清理，见模块文档内存口径）
+
+    逐格计数（removed_by_cell / n_input_by_cell / n_clean_by_cell）逐层相加，
+    合并之后仍然能按 领域 × 性别 算出每条规则的流失率。
 
     单位不一致会直接报错：同一年的分片如果一半是秒、一半是毫秒，合并出来的
     分位数没有任何意义，这属于必须有人去查的上游问题，不该被一个"取多数"
@@ -797,15 +948,28 @@ def merge_delay_reports(reports):
             f"各分片推断出的时间戳单位不一致: {sorted(units)}。合并前必须先查清楚"
             "原始时间戳到底是什么单位，否则合并出来的延迟分布没有意义。"
         )
+    thresholds = {r["max_delay_hours"] for r in reports}
+    if len(thresholds) > 1:
+        raise ValueError(
+            f"各分片使用的超长延迟阈值不一致: {sorted(thresholds, key=str)}。"
+            "同一个变体的分片必须用同一个阈值，否则合并出来的分布不属于任何一个口径。"
+        )
     merged = {
         "n_input": int(sum(r["n_input"] for r in reports)),
         "removed": {
             rule: int(sum(r["removed"].get(rule, 0) for r in reports))
             for rule in CLEAN_RULES
         },
+        "removed_by_cell": {
+            rule: _merge_cell_counts([r["removed_by_cell"].get(rule, {})
+                                      for r in reports])
+            for rule in CLEAN_RULES
+        },
+        "n_input_by_cell": _merge_cell_counts([r["n_input_by_cell"] for r in reports]),
+        "n_clean_by_cell": _merge_cell_counts([r["n_clean_by_cell"] for r in reports]),
         "n_clean": int(sum(r["n_clean"] for r in reports)),
         "timestamp_unit": units.pop(),
-        "max_delay_hours": float(reports[0]["max_delay_hours"]),
+        "max_delay_hours": thresholds.pop(),
         "year": int(reports[0]["year"]),
         "n_delay_valid_false_input": int(sum(
             r["n_delay_valid_false_input"] or 0 for r in reports
@@ -910,24 +1074,55 @@ def _median_gap(frame):
     return float(np.median(male) - np.median(female))
 
 
+def _bootstrap_with_note(values, statistic, n_boot, seed, cluster):
+    """su.bootstrap_ci 外面套一层退化留痕
+
+    退化情形（本模块真实遇到过）：用户级男女差的统计量在"某次重抽样里
+    一个性别一个用户都没抽到"时返回 NaN，百分位区间随之变成 NaN，而点估计
+    仍然是有限的——结果表上就出现"有估计、没区间、没有任何说明"的行，
+    违反模块文档第 9 条（失败必须留痕）。这里显式检查并返回一个 note。
+
+    Returns:
+        (est, low, high, note)；note 为 None 表示区间正常
+    """
+    est, low, high = su.bootstrap_ci(
+        values, statistic, n_boot=n_boot, seed=seed, cluster=cluster
+    )
+    if np.isfinite(est) and not (np.isfinite(low) and np.isfinite(high)):
+        print(
+            "警告: cluster bootstrap 有重抽样落进退化情形（某一性别没有被抽到），"
+            "百分位区间不可用。该行保留点估计，区间记为 NaN 并在 note 里点名，"
+            "不允许它以'有估计、无区间、无说明'的形式进入结果表。"
+        )
+        return est, low, high, NOTE_BOOTSTRAP_DEGENERATE
+    return est, low, high, None
+
+
 def delay_quantiles(clean_df, n_boot=_N_BOOT, seed=_SEED,
-                    quantiles=QUANTILES, within_hours=WITHIN_HOURS):
+                    quantiles=QUANTILES, within_hours=WITHIN_HOURS,
+                    max_delay_hours=MAX_DELAY_HOURS):
     """§10.3 延迟分位数、N 小时内完成比例、用户级中位数与男女差
 
-    每个领域产出三组行：
-      - model="record_level/{性别}"：P25/P50/P75/P90/P95/P99（小时）、
+    每个领域产出三组行（`{变体}` = threshold_label(max_delay_hours)）：
+      - model="record_level/{性别}/{变体}"：P25/P50/P75/P90/P95/P99（小时）、
         1/6/24 小时内完成的比例（概率），以及一行均值——均值带
         NOTE_SECONDARY_MEAN 标签，是次要行，不作为头条（模块文档第 1 条）。
         区间一律用按用户整簇重抽样的 bootstrap，因为同一用户会贡献多条记录。
-      - model="user_level/{性别}"：每名用户先算自己的中位延迟，再取中位数。
-      - model="user_level/gap"：男女用户级中位数之差，区间同样按用户整簇
-        重抽样（模块文档第 2 条）。
+      - model="user_level/{性别}/{变体}"：每名用户先算自己的中位延迟，再取中位数。
+      - model="user_level/gap/{变体}"：男女用户级中位数之差，区间同样按用户
+        整簇重抽样（模块文档第 2 条）。
+
+    `max_delay_hours` 只用来生成变体标签与 note——**过滤动作发生在
+    clean_delays 里**，这里不再筛任何行。build 会把同一份事件表在
+    720 小时与不设上限两个阈值下各清理一遍，再各调用本函数一次，两批行
+    并列写进同一张结果表，读者可以直接比较头条分位数对阈值是否敏感。
 
     输入必须是 clean_delays 的输出（含 delay_hours 列）：1/6/24 小时内完成
     的比例算在**清理后**的集合上，把非正延迟、跨年旧帖、重复记录留在分母里
     会同时改变分子和分母，得到一个既不是"扩散速度"也不是"数据质量"的数字。
     """
     frame = clean_df.copy()
+    variant_note = "delay_threshold=" + threshold_label(max_delay_hours)
     # 成本提示：簇 bootstrap 的开销是"格子数 × n_boot × 一次分位数计算"，
     # 全量事件表上一次约 0.2 秒，跑不动时用 CLI 的 --n_boot 调低（区间会变粗，
     # 但仍然是按用户整簇重抽样的区间，不会变成一个错误的窄区间）
@@ -940,6 +1135,10 @@ def delay_quantiles(clean_df, n_boot=_N_BOOT, seed=_SEED,
         n_missing_gender, masks = _gender_counts(sub)
         gender_code = {TERM_MALE: "m", TERM_FEMALE: "f"}
         user_frames = []
+        # 清理后这个域一条记录都没有：与 leave_one_month_out 的
+        # month_not_in_panel 同一思路——"没有数据"必须在结果表上写明，
+        # 否则一整块 NaN 会被读成"这个域没有被检查过"
+        absent_note = NOTE_DOMAIN_ABSENT if n_input == 0 else None
 
         for label, mask in masks.items():
             cell = sub[mask]
@@ -959,11 +1158,13 @@ def delay_quantiles(clean_df, n_boot=_N_BOOT, seed=_SEED,
                 stat = stats[term]
                 is_share = term.startswith("within_")
                 note = mc._join_notes(
-                    NOTE_REALIZED_ONLY, NOTE_CLUSTER_BOOTSTRAP,
+                    NOTE_REALIZED_ONLY, NOTE_CLUSTER_BOOTSTRAP, variant_note,
                     NOTE_SECONDARY_MEAN if term == TERM_MEAN else None,
+                    absent_note,
                 )
                 rows.append(su.tidy_result(
-                    outcome=OUTCOME_DELAY, domain=domain, model=record_label(label),
+                    outcome=OUTCOME_DELAY, domain=domain,
+                    model=record_label(label, max_delay_hours),
                     term=term, estimate=stat["estimate"], se=np.nan,
                     ci_low=stat["ci_low"], ci_high=stat["ci_high"],
                     scale="probability" if is_share else "hours",
@@ -976,20 +1177,22 @@ def delay_quantiles(clean_df, n_boot=_N_BOOT, seed=_SEED,
             n_users = int(len(medians))
             pairs = prefix + [(REASON_AGGREGATED, n_obs - n_users)]
             if n_users:
-                est, low, high = su.bootstrap_ci(
+                est, low, high, boot_note = _bootstrap_with_note(
                     medians["user_median"].to_numpy(dtype=float),
-                    lambda v: float(np.median(v)), n_boot=n_boot, seed=seed,
-                    cluster=medians[USER_COLUMN].to_numpy(),
+                    lambda v: float(np.median(v)), n_boot, seed,
+                    medians[USER_COLUMN].to_numpy(),
                 )
             else:
-                est, low, high = np.nan, np.nan, np.nan
+                est, low, high, boot_note = np.nan, np.nan, np.nan, None
             rows.append(su.tidy_result(
-                outcome=OUTCOME_DELAY, domain=domain, model=user_label(label),
+                outcome=OUTCOME_DELAY, domain=domain,
+                model=user_label(label, max_delay_hours),
                 term=TERM_USER_MEDIAN, estimate=est, se=np.nan,
                 ci_low=low, ci_high=high, scale="hours",
                 n_obs=n_users, n_dropped=n_input - n_users,
                 drop_reason=_drop_reason(pairs, n_input, n_users),
-                note=mc._join_notes(NOTE_REALIZED_ONLY, NOTE_CLUSTER_BOOTSTRAP),
+                note=mc._join_notes(NOTE_REALIZED_ONLY, NOTE_CLUSTER_BOOTSTRAP,
+                                    variant_note, boot_note, absent_note),
             ))
             medians["gender"] = gender_code[label]
             user_frames.append(medians)
@@ -998,23 +1201,24 @@ def delay_quantiles(clean_df, n_boot=_N_BOOT, seed=_SEED,
             else pd.DataFrame(columns=[USER_COLUMN, "user_median", "gender"])
         n_users = int(len(combined))
         if n_users:
-            est, low, high = su.bootstrap_ci(
-                combined, _median_gap, n_boot=n_boot, seed=seed,
-                cluster=combined[USER_COLUMN].to_numpy(),
+            est, low, high, boot_note = _bootstrap_with_note(
+                combined, _median_gap, n_boot, seed,
+                combined[USER_COLUMN].to_numpy(),
             )
         else:
-            est, low, high = np.nan, np.nan, np.nan
+            est, low, high, boot_note = np.nan, np.nan, np.nan, None
         pairs = [
             (REASON_MISSING_GENDER, n_missing_gender),
             (REASON_AGGREGATED, n_input - n_missing_gender - n_users),
         ]
         rows.append(su.tidy_result(
-            outcome=OUTCOME_DELAY, domain=domain, model=USER_LEVEL_GAP,
+            outcome=OUTCOME_DELAY, domain=domain, model=gap_label(max_delay_hours),
             term=TERM_GENDER, estimate=est, se=np.nan, ci_low=low, ci_high=high,
             scale="hours", n_obs=n_users, n_dropped=n_input - n_users,
             drop_reason=_drop_reason(pairs, n_input, n_users),
             note=mc._join_notes(NOTE_REALIZED_ONLY, NOTE_CLUSTER_BOOTSTRAP,
-                                "male_minus_female"),
+                                variant_note, "male_minus_female", boot_note,
+                                absent_note),
         ))
     return pd.DataFrame(rows, columns=list(su.RESULT_SCHEMA))
 
@@ -1037,47 +1241,92 @@ def _event_shards(year):
     return sorted(glob.glob(pattern))
 
 
-def load_clean_events(year, max_delay_hours=MAX_DELAY_HOURS):
-    """逐片读入事件表、逐片清理，再做一次跨片去重
+def normalise_thresholds(value):
+    """把 CLI/调用方给的阈值参数规整成一个元组
+
+    接受：None（用 DELAY_THRESHOLDS 的默认两个变体）、单个数字、
+    "none"/"unbounded"/""（不设上限）、或它们组成的序列。
+    """
+    if value is None:
+        return tuple(DELAY_THRESHOLDS)
+    if isinstance(value, (int, float, str)):
+        value = (value,)
+    out = []
+    for item in value:
+        if item is None or (isinstance(item, str)
+                            and item.strip().lower() in ("none", "unbounded", "")):
+            out.append(None)
+        else:
+            out.append(float(item))
+    if not out:
+        raise ValueError("delay_thresholds 不能是空序列：至少要有一个口径")
+    return tuple(out)
+
+
+def load_clean_events(year, thresholds=None):
+    """逐片读入事件表，在每个阈值口径下各清理一遍，再各做一次跨片去重
 
     见模块文档的内存口径：四条行级规则逐片做与整表做完全等价，因此每片
     只把幸存行留在内存里；只有"同一用户 × 同一原帖"的重复可能跨片出现
     （表 B 的去重只在片内做过），所以拼接之后再去一次重，这一次的删除量
     单独记为 n_duplicate_pairs_cross_shard，不与片内的混在一起。
+
+    每个分片只**读一次**，随后在内存里按各个阈值分别清理：读盘是最贵的
+    一步，不应该因为多一个稳健性口径就翻倍。不设上限的幸存集合是 720 小时
+    集合的超集，两份一起驻留的额外内存约等于"两者之差"，也就是这条裁定
+    本身删掉的那些行。
+
+    Returns:
+        (frames, reports, files)：frames / reports 都按 threshold_label 的
+        标签索引，例如 {"max=720h": ..., "unbounded": ...}
     """
+    thresholds = normalise_thresholds(thresholds)
     files = _event_shards(year)
     if not files:
         raise FileNotFoundError(
             f"未找到 {year} 年的转发事件表分片（"
             f"{os.path.join(config.OUTPUT_DIR, f'retweet_domain_events_{year}')}）"
         )
-    parts, reports = [], []
+    parts = {threshold_label(t): [] for t in thresholds}
+    reports = {threshold_label(t): [] for t in thresholds}
     for path in files:
         shard = pd.read_parquet(path, columns=EVENT_COLUMNS)
-        clean, report = clean_delays(shard, year=year, max_delay_hours=max_delay_hours)
-        parts.append(clean)
-        reports.append(report)
-    frame = pd.concat(parts, ignore_index=True)
-    frame, n_cross = dedup_user_source_pairs(frame)
-    frame = frame.reset_index(drop=True)
+        for threshold in thresholds:
+            label = threshold_label(threshold)
+            clean, report = clean_delays(shard, year=year, max_delay_hours=threshold)
+            parts[label].append(clean)
+            reports[label].append(report)
 
-    merged = merge_delay_reports(reports)
-    merged["removed"][RULE_DUPLICATE] += int(n_cross)
-    merged["n_removed"] += int(n_cross)
-    merged["n_clean"] -= int(n_cross)
-    merged["n_duplicate_pairs_cross_shard"] = int(n_cross)
-    if merged["n_clean"] != int(len(frame)):
-        raise ValueError(
-            f"跨分片清理记账不自洽: report 记 {merged['n_clean']} 行，"
-            f"实际 {len(frame)} 行"
+    frames, merged_reports = {}, {}
+    for threshold in thresholds:
+        label = threshold_label(threshold)
+        frame = pd.concat(parts[label], ignore_index=True)
+        frame, n_cross, cross_cells = _dedup_with_cells(frame)
+        frames[label] = frame.reset_index(drop=True)
+
+        merged = merge_delay_reports(reports[label])
+        merged["removed"][RULE_DUPLICATE] += int(n_cross)
+        merged["removed_by_cell"][RULE_DUPLICATE] = _merge_cell_counts(
+            [merged["removed_by_cell"][RULE_DUPLICATE], cross_cells]
         )
-    print(f"事件表清理完成: {len(files)} 个分片，跨片重复 {n_cross} 行，"
-          f"保留 {len(frame):,} 行")
-    return frame, merged, files
+        merged["n_removed"] += int(n_cross)
+        merged["n_clean"] -= int(n_cross)
+        merged["n_clean_by_cell"] = cell_counts(frames[label])
+        merged["n_duplicate_pairs_cross_shard"] = int(n_cross)
+        merged["n_duplicate_pairs_cross_shard_by_cell"] = cross_cells
+        if merged["n_clean"] != int(len(frames[label])):
+            raise ValueError(
+                f"跨分片清理记账不自洽（{label}）: report 记 {merged['n_clean']} 行，"
+                f"实际 {len(frames[label])} 行"
+            )
+        merged_reports[label] = merged
+        print(f"事件表清理完成（{label}）: {len(files)} 个分片，"
+              f"跨片重复 {n_cross} 行，保留 {len(frames[label]):,} 行")
+    return frames, merged_reports, files
 
 
 def _write_partial(frames, path, out_dir, inputs, year, counts, completed,
-                   n_boot, delay_report=None):
+                   n_boot, thresholds=DELAY_THRESHOLDS, delay_report=None):
     """把当前已完成的阶段落盘，并同步更新 manifest（与 models_combination 同一约定）
 
     增量落盘不是优化，是防丢：延迟阶段的簇 bootstrap 在全量事件表上要跑
@@ -1100,7 +1349,11 @@ def _write_partial(frames, path, out_dir, inputs, year, counts, completed,
             "confidence": _CONFIDENCE,
             "n_boot": n_boot,
             "seed": _SEED,
-            "max_delay_hours": MAX_DELAY_HOURS,
+            # 记录**本次实际跑的**阈值口径，而不是模块常量：默认是
+            # [720, null] 两个并列变体，被 CLI 覆盖时这里要跟着变，
+            # 否则 manifest 会声称跑了一个其实没跑的口径
+            "delay_thresholds": [None if t is None else float(t) for t in thresholds],
+            "delay_threshold_default": MAX_DELAY_HOURS,
             "quantiles": [float(q) for q in QUANTILES],
             "within_hours": [float(h) for h in WITHIN_HOURS],
             "clean_rules": list(CLEAN_RULES),
@@ -1116,14 +1369,24 @@ def _write_partial(frames, path, out_dir, inputs, year, counts, completed,
     return frame
 
 
-def build(year=config.YEAR, n_boot=None):
+def build(year=config.YEAR, n_boot=None, delay_thresholds=None):
     """跑完 §9 与 §10 并写出三张结果表 + manifest
 
     顺序：分月描述 -> 月份固定效应 -> 留一月重估 -> 延迟清理与分位数。
     延迟阶段放在最后，是因为它要读整年的事件表（最贵的一步），前面的
     §9 结果先落盘，作业被杀时不至于全部重来。
+
+    Args:
+        delay_thresholds: 超长延迟阈值口径，默认 DELAY_THRESHOLDS
+            （720 小时 + 不设上限两个并列变体，都会跑、都会写进
+            delay_quantiles.parquet 的不同 model 变体里）。可以从 CLI 覆盖：
+                python -m gender_domain.models_temporal build --delay_thresholds=720
+                python -m gender_domain.models_temporal build --delay_thresholds='[168,720,none]'
+            实际用到的口径写进 manifest 的 params.delay_thresholds，
+            以及每个变体自己的 counts.delay_cleaning[label].max_delay_hours。
     """
     n_boot = _N_BOOT if n_boot is None else int(n_boot)
+    thresholds = normalise_thresholds(delay_thresholds)
     panel, panel_path = _load_panel(year)
     out_dir = os.path.join(config.OUTPUT_DIR, "results")
     os.makedirs(out_dir, exist_ok=True)
@@ -1141,14 +1404,14 @@ def build(year=config.YEAR, n_boot=None):
     frames.append(monthly_rates(panel))
     completed.append("monthly_rates")
     _write_partial(frames, monthly_path, out_dir, inputs, year, counts, completed,
-                   n_boot)
+                   n_boot, thresholds=thresholds)
 
     for domain in DOMAINS:
         print(f"§9.2 月份固定效应: {domain}")
         frames.append(fit_month_fixed_effects(panel, domain))
         completed.append(f"month_fixed_effects/{domain}")
         _write_partial(frames, monthly_path, out_dir, inputs, year, counts,
-                       completed, n_boot)
+                       completed, n_boot, thresholds=thresholds)
 
     lomo_path = os.path.join(out_dir, LOMO_FILE)
     lomo_frames = []
@@ -1157,19 +1420,30 @@ def build(year=config.YEAR, n_boot=None):
         lomo_frames.append(leave_one_month_out(panel, domain))
         completed.append(f"leave_one_month_out/{domain}")
         _write_partial(lomo_frames, lomo_path, out_dir, inputs, year, counts,
-                       completed, n_boot)
+                       completed, n_boot, thresholds=thresholds)
 
-    print("§10.2 转发延迟清理")
-    events, delay_report, event_files = load_clean_events(year)
+    print("§10.2 转发延迟清理（每个阈值口径各清理一遍）")
+    event_frames, delay_reports, event_files = load_clean_events(
+        year, thresholds=thresholds
+    )
     inputs = inputs + [os.path.relpath(p, config.OUTPUT_DIR) for p in event_files]
-    counts["n_delay_records"] = int(len(events))
+    counts["n_delay_records"] = {
+        label: int(len(f)) for label, f in event_frames.items()
+    }
 
     delay_path = os.path.join(out_dir, DELAY_FILE)
-    print("§10.3 延迟分位数与用户级中位数")
-    delay_frames = [delay_quantiles(events, n_boot=n_boot, seed=_SEED)]
-    completed.append("delay_quantiles")
-    _write_partial(delay_frames, delay_path, out_dir, inputs, year, counts,
-                   completed, n_boot, delay_report=delay_report)
+    delay_frames = []
+    for threshold in thresholds:
+        label = threshold_label(threshold)
+        print(f"§10.3 延迟分位数与用户级中位数（{label}）")
+        delay_frames.append(delay_quantiles(
+            event_frames[label], n_boot=n_boot, seed=_SEED,
+            max_delay_hours=threshold,
+        ))
+        completed.append(f"delay_quantiles/{label}")
+        _write_partial(delay_frames, delay_path, out_dir, inputs, year, counts,
+                       completed, n_boot, thresholds=thresholds,
+                       delay_report=delay_reports)
 
     return [monthly_path, lomo_path, delay_path]
 

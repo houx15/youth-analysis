@@ -42,7 +42,9 @@
 # 面板上拟合、外加按用户聚类的标准误，再加上事件表上的簇 bootstrap。墙钟
 # 因此从 4 小时提到 8 小时；它同样按阶段增量落盘，被杀时已算完的阶段仍在盘上。
 # 延迟阶段的 bootstrap 次数可以用 --n_boot 调低（区间会变粗，但仍然是按用户
-# 整簇重抽样的区间）。
+# 整簇重抽样的区间）。延迟结果默认在两个超长延迟阈值口径上各跑一遍
+# （720 小时与不设上限），并列写进 delay_quantiles.parquet 的不同 model 变体，
+# 让阈值这条裁定的代价直接可读；口径可用 --delay_thresholds 覆盖。
 #
 # Usage:
 #   sbatch slurm/run_results.slurm

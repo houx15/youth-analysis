@@ -307,6 +307,22 @@ def test_month_fixed_effects_uses_user_clustered_standard_errors():
     assert clustered > se_naive * 1.5
 
 
+def test_missing_month_is_counted_as_a_drop_not_an_exception():
+    """月份无法解析的用户—月是一次真实的样本流失，不是让整表崩掉的理由"""
+    panel = _panel(n_users=100, months=(1, 2, 3), seed=21)
+    panel.loc[panel.index[:5], "month"] = np.nan
+    out = mt.fit_month_fixed_effects(panel, "public")
+    entry = out[(out["outcome"] == mt.OUTCOME_ENTRY)
+                & (out["model"] == mt.fe_label(mt.LAYER_M0))
+                & (out["term"] == mt.TERM_GENDER)].iloc[0]
+    assert entry["n_obs"] == len(panel) - 5
+    assert f"{mt.REASON_MISSING_MONTH}=5" in entry["drop_reason"]
+    assert entry["n_obs"] + entry["n_dropped"] == len(panel)
+    # 留一月重估同样要能跑，且记账仍然自洽
+    lomo = mt.leave_one_month_out(panel, "public")
+    assert ((lomo["n_obs"] + lomo["n_dropped"]) == len(panel)).all()
+
+
 def test_month_fixed_effects_reports_share_on_the_proportion_scale_only():
     """占比模型不给发生比：分数 logit 的指数化系数不是可解释的发生比
 
@@ -444,6 +460,42 @@ def test_clean_delays_detects_millisecond_timestamps():
     assert clean["delay_hours"].iloc[0] == pytest.approx(2.0)
 
 
+def test_clean_delays_unbounded_keeps_the_fifty_thousand_hour_record():
+    """不设上限的口径下，超长延迟规则不触发，那条记录必须活下来
+
+    §10.3 在 720 小时与不设上限两个口径上各跑一遍，读者据此自己判断
+    阈值这条裁定有没有推动结论——前提是"不设上限"真的没有在删东西。
+    """
+    clean, report = mt.clean_delays(_cleaning_fixture(), year=2020,
+                                    max_delay_hours=None)
+    assert report["removed"][mt.RULE_IMPLAUSIBLE] == 0
+    assert report["max_delay_hours"] is None
+    assert report["n_clean"] == 2
+    assert 50000.0 in set(clean["delay_hours"])
+
+
+def test_clean_delays_reports_removals_by_gender_and_domain():
+    """每条规则的删除量必须按 领域 × 性别 拆开
+
+    清理如果在某一性别上删得更狠，§10 想做的男女比较就已经被清理本身
+    污染了，而一个全局计数完全看不出这件事。fixture 里跨年那条是
+    男性 × 明星域，超长那条是女性 × 公共事务域。
+    """
+    _, report = mt.clean_delays(_cleaning_fixture(), year=2020)
+    by_cell = report["removed_by_cell"]
+    assert by_cell[mt.RULE_PRIOR_YEAR] == {"celebrity": {"m": 1}}
+    assert by_cell[mt.RULE_IMPLAUSIBLE] == {"public": {"f": 1}}
+    assert by_cell[mt.RULE_NON_POSITIVE] == {"public": {"f": 1}}
+    assert by_cell[mt.RULE_DUPLICATE] == {"public": {"m": 1}}
+    # 各格的输入与幸存行数也在，流失率可以直接算
+    assert report["n_input_by_cell"]["public"]["m"] == 2
+    assert report["n_clean_by_cell"] == {"public": {"m": 1}}
+    # 逐格计数相加必须等于该规则的总数
+    for rule, cells in by_cell.items():
+        total = sum(n for by_gender in cells.values() for n in by_gender.values())
+        assert total == report["removed"][rule]
+
+
 def test_clean_delays_report_is_json_serialisable_for_the_manifest():
     _, report = mt.clean_delays(_cleaning_fixture(), year=2020)
     json.dumps(report, ensure_ascii=False)
@@ -456,6 +508,18 @@ def test_merge_delay_reports_sums_every_rule():
     assert merged["n_input"] == 12
     assert merged["removed"][mt.RULE_NON_POSITIVE] == 2
     assert merged["n_clean"] + merged["n_removed"] == merged["n_input"]
+    # 逐格计数也要逐层相加，合并之后仍然能按 领域 × 性别 算流失率
+    assert merged["removed_by_cell"][mt.RULE_PRIOR_YEAR] == {"celebrity": {"m": 2}}
+    assert merged["n_input_by_cell"]["public"]["m"] == 4
+
+
+def test_merge_delay_reports_refuses_to_mix_thresholds():
+    """不同阈值的分片不能合并：合出来的分布不属于任何一个口径"""
+    _, bounded = mt.clean_delays(_cleaning_fixture(), year=2020)
+    _, unbounded = mt.clean_delays(_cleaning_fixture(), year=2020,
+                                   max_delay_hours=None)
+    with pytest.raises(ValueError, match="阈值不一致"):
+        mt.merge_delay_reports([bounded, unbounded])
 
 
 def test_dedup_user_source_pairs_works_across_shards():
@@ -540,7 +604,7 @@ def test_user_level_median_difference_is_not_dominated_by_one_heavy_user():
     public = out[out["domain"] == "public"]
     record_median = public[(public["model"] == mt.record_label("male"))
                            & (public["term"] == mt.quantile_term(0.50))]["estimate"].iloc[0]
-    user_gap = public[(public["model"] == mt.USER_LEVEL_GAP)
+    user_gap = public[(public["model"] == mt.gap_label())
                       & (public["term"] == mt.TERM_GENDER)]["estimate"].iloc[0]
     assert record_median == pytest.approx(100.0)
     assert user_gap == pytest.approx(0.0)
@@ -551,7 +615,7 @@ def test_user_level_gap_carries_a_user_clustered_bootstrap_interval():
     records += [(f"f{i}", "f", "public", 3.0 + i * 0.5) for i in range(30)]
     out = mt.delay_quantiles(_clean_frame(records), n_boot=100, seed=3)
     gap = out[(out["domain"] == "public")
-              & (out["model"] == mt.USER_LEVEL_GAP)
+              & (out["model"] == mt.gap_label())
               & (out["term"] == mt.TERM_GENDER)]
     assert len(gap) == 1
     assert np.isfinite(gap["ci_low"].iloc[0])
@@ -591,6 +655,48 @@ def test_mean_row_is_labelled_secondary_and_no_t_test_appears():
     ).lower()
     for banned in ("ttest", "t_test", "t-test", "pvalue", "p_value"):
         assert banned not in text
+
+
+def test_degenerate_bootstrap_leaves_a_note_instead_of_a_silent_missing_interval():
+    """某次重抽样只抽到一个性别时，区间是 NaN——这必须在 note 里留痕
+
+    2 男 2 女的格子上，簇重抽样很容易抽出"四个都是男性"的样本，
+    _median_gap 于是返回 NaN，百分位区间跟着变成 NaN，而点估计仍然有限。
+    "有估计、没区间、没说明"正是模块文档第 9 条禁止的那种行。
+    """
+    records = [("m1", "m", "public", 1.0), ("m2", "m", "public", 2.0),
+               ("f1", "f", "public", 3.0), ("f2", "f", "public", 4.0)]
+    out = mt.delay_quantiles(_clean_frame(records), n_boot=50, seed=0)
+    gap = out[(out["domain"] == "public")
+              & (out["model"] == mt.gap_label())
+              & (out["term"] == mt.TERM_GENDER)].iloc[0]
+    # 这份 fixture + seed=0 会稳定命中退化情形（实测），断言因此是无条件的：
+    # 写成"如果恰好命中才检查"的形式，将来退化不再发生时这条测试会静默失效
+    assert np.isfinite(gap["estimate"])
+    assert pd.isna(gap["ci_low"]) and pd.isna(gap["ci_high"])
+    assert mt.NOTE_BOOTSTRAP_DEGENERATE in str(gap["note"])
+
+
+def test_absent_domain_rows_say_so_instead_of_being_a_silent_block_of_nan():
+    """清理后某个域一条记录都没有时，NaN 行必须写明"没有数据" """
+    out = mt.delay_quantiles(_quantile_fixture(), n_boot=20, seed=1)
+    celebrity = out[out["domain"] == "celebrity"]
+    assert len(celebrity) > 0
+    assert celebrity["estimate"].isna().all()
+    assert celebrity["note"].astype(str).str.contains(mt.NOTE_DOMAIN_ABSENT).all()
+
+
+def test_delay_quantiles_labels_carry_the_threshold_variant():
+    """阈值进 model 列，两个口径的行才能并排放进同一张结果表"""
+    frame = _quantile_fixture()
+    bounded = mt.delay_quantiles(frame, n_boot=20, seed=1)
+    unbounded = mt.delay_quantiles(frame, n_boot=20, seed=1, max_delay_hours=None)
+    assert mt.record_label("male") in set(bounded["model"])
+    assert mt.record_label("male", None) in set(unbounded["model"])
+    both = pd.concat([bounded, unbounded], ignore_index=True)
+    _assert_unique_keys(both)
+    notes = " ".join(str(n) for n in unbounded["note"].dropna())
+    assert "delay_threshold=unbounded" in notes
 
 
 def test_delay_quantiles_keys_are_unique_and_accounting_holds():
@@ -649,10 +755,68 @@ def test_build_writes_three_tables_a_manifest_and_unique_keys(tmp_path, monkeypa
     assert manifest_path.exists()
     with open(manifest_path, encoding="utf-8") as f:
         manifest = json.load(f)
-    removed = manifest["counts"]["delay_cleaning"]["removed"]
-    for rule in mt.CLEAN_RULES:
-        assert rule in removed
-    assert manifest["params"]["max_delay_hours"] == mt.MAX_DELAY_HOURS
+    cleaning = manifest["counts"]["delay_cleaning"]
+    # 两个阈值口径各有一份自己的清理记账
+    assert set(cleaning) == {mt.threshold_label(t) for t in mt.DELAY_THRESHOLDS}
+    for label, report in cleaning.items():
+        for rule in mt.CLEAN_RULES:
+            assert rule in report["removed"]
+            assert rule in report["removed_by_cell"]
+    # manifest 记的是本次实际用到的口径，且各口径记的是自己的阈值
+    assert manifest["params"]["delay_thresholds"] == [720.0, None]
+    assert cleaning[mt.threshold_label(720.0)]["max_delay_hours"] == 720.0
+    assert cleaning[mt.threshold_label(None)]["max_delay_hours"] is None
+
+
+def test_build_emits_both_threshold_variants_side_by_side(tmp_path, monkeypatch):
+    """两个阈值口径并列写进 delay_quantiles.parquet，阈值敏感性直接可读"""
+    monkeypatch.setattr(mt.config, "OUTPUT_DIR", str(tmp_path))
+    _write_inputs(tmp_path, _panel(n_users=40, months=(1, 2), seed=14),
+                  _build_events(seed=3))
+
+    mt.build(year=2020, n_boot=20)
+    delay = pd.read_parquet(tmp_path / "results" / mt.DELAY_FILE,
+                            columns=list(su.RESULT_SCHEMA))
+    models = set(delay["model"])
+    assert mt.record_label("male") in models
+    assert mt.record_label("male", None) in models
+    assert mt.gap_label() in models and mt.gap_label(None) in models
+    _assert_unique_keys(delay)
+
+
+def test_build_threshold_override_reaches_the_cleaning_and_the_manifest(
+        tmp_path, monkeypatch):
+    """--delay_thresholds 必须真的一路传到 clean_delays，并被 manifest 如实记录"""
+    monkeypatch.setattr(mt.config, "OUTPUT_DIR", str(tmp_path))
+    _write_inputs(tmp_path, _panel(n_users=30, months=(1,), seed=15),
+                  _build_events(n_users=20, seed=4))
+
+    mt.build(year=2020, n_boot=20, delay_thresholds=[1.0])
+    with open(tmp_path / "results" / "manifest_temporal" / "manifest.json",
+              encoding="utf-8") as f:
+        manifest = json.load(f)
+    assert manifest["params"]["delay_thresholds"] == [1.0]
+    cleaning = manifest["counts"]["delay_cleaning"]
+    assert set(cleaning) == {mt.threshold_label(1.0)}
+    report = cleaning[mt.threshold_label(1.0)]
+    assert report["max_delay_hours"] == 1.0
+    # 1 小时的阈值必然砍掉大量记录，证明参数确实生效了
+    assert report["removed"][mt.RULE_IMPLAUSIBLE] > 0
+    delay = pd.read_parquet(tmp_path / "results" / mt.DELAY_FILE,
+                            columns=list(su.RESULT_SCHEMA))
+    assert set(delay["model"]) == {
+        label for gender in ("male", "female")
+        for label in (mt.record_label(gender, 1.0), mt.user_label(gender, 1.0))
+    } | {mt.gap_label(1.0)}
+
+
+def test_normalise_thresholds_accepts_scalars_and_unbounded_spellings():
+    assert mt.normalise_thresholds(None) == tuple(mt.DELAY_THRESHOLDS)
+    assert mt.normalise_thresholds(720) == (720.0,)
+    assert mt.normalise_thresholds("none") == (None,)
+    assert mt.normalise_thresholds([168, "unbounded"]) == (168.0, None)
+    with pytest.raises(ValueError):
+        mt.normalise_thresholds([])
 
 
 def test_build_writes_incrementally_so_a_killed_job_keeps_finished_stages(
