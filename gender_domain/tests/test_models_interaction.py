@@ -29,6 +29,8 @@ gender_domain.models_interaction 的单元测试（§6.6 Gender × Domain 交互
    cov_params() 抛 NotImplementedError 的代理对象把这条路径逼出来。
 """
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -236,6 +238,69 @@ def test_headline_is_not_the_interaction_coefficient():
     assert -1.0 <= did["estimate"] <= 1.0
 
 
+def _simulate_zero_coefficient(n_per_cell=6000, seed=41):
+    """logit 交互系数恰好为 0、但概率尺度 DiD 明显不为 0 的数据
+
+    两域的性别 log-odds 差相同（都是 log(1.5)），交互系数因此真值为 0；
+    但两域的基线概率相差很远（0.50 vs 0.10），同一个 log-odds 差在概率
+    尺度上就变成 0.100 与 0.042857，DiD 真值 = 0.057143。
+
+    这是比 "|coef| > 3*|did|" 强得多的判别性设计：
+    - "直接报交互系数"的实现给出 ~0；
+    - 经典错法"系数 / 4"同样给出 ~0；
+    只有真正做四格反事实预测的实现才能给出一个区间不含 0 的正数。
+    """
+    rng = np.random.default_rng(seed)
+    cells = {
+        ("m", "public"): 0.60, ("f", "public"): 0.50,
+        ("m", "celebrity"): 1.0 / 7.0, ("f", "celebrity"): 0.10,
+    }
+    n = 2 * n_per_cell
+    gender = np.array(["m"] * n_per_cell + ["f"] * n_per_cell)
+    df = pd.DataFrame({
+        "user_id": [str(i) for i in range(n)],
+        "gender": gender,
+        "n_posts": rng.integers(1, 200, n),
+        "n_retweets": rng.integers(1, 100, n),
+        "n_expressive_posts": rng.integers(1, 80, n),
+        "n_active_days": rng.integers(1, 300, n),
+        "n_active_months": rng.integers(1, 13, n),
+        "n_active_months_panel": rng.integers(1, 13, n),
+        "region": rng.choice(["north", "south"], n),
+        "verified_flag": rng.integers(0, 2, n).astype(float),
+        "log_fans": rng.normal(5, 1, n),
+        "log_friends": rng.normal(4, 1, n),
+        "profile_complete": np.ones(n, dtype=bool),
+    })
+    for domain in ("public", "celebrity"):
+        p = np.where(gender == "m", cells[("m", domain)], cells[("f", domain)])
+        df[f"{domain}_source_entered"] = rng.random(n) < p
+        df[f"{domain}_topical_share"] = np.clip(p, 0.001, 0.999)
+    return df
+
+
+def test_headline_survives_a_zero_interaction_coefficient():
+    """交互系数真值为 0、概率尺度 DiD 真值 0.0571 的判别性设计
+
+    "报系数"和"报系数/4"两种错法在这里都会给出一个区间含 0 的估计，
+    而正确实现给出的 DiD 区间必须把 0 排除在外。
+    """
+    wide = _simulate_zero_coefficient()
+    long_df = mi.to_long_format(wide, "source_entry")
+    frame = mi.fit_interaction(long_df, "M0")
+    did = _row(frame, "M0", mi.TERM_DID)
+    coef = _row(frame, "M0", mi.TERM_COEF)
+
+    truth = (0.60 - 0.50) - (1.0 / 7.0 - 0.10)
+    assert did["estimate"] == pytest.approx(truth, abs=0.03)
+    assert did["ci_low"] > 0.0, "概率尺度的 DiD 区间必须排除 0"
+    # 交互系数本身的真值是 0，它的区间应当含 0——"报系数"的实现会因此
+    # 得出"没有交互"的结论，与头条正相反
+    assert coef["ci_low"] < 0.0 < coef["ci_high"]
+    # "系数 / 4" 这种经典错法给出的数也落在 0 附近，同样过不了上面那条
+    assert abs(coef["estimate"] / 4.0) < did["estimate"] / 2.0
+
+
 # ---------------------------------------------------------------------------
 # 单域缺失：整个用户剔除
 # ---------------------------------------------------------------------------
@@ -262,6 +327,36 @@ def test_user_missing_both_domains_is_counted_under_its_own_reason():
     # 两种流失必须分开记，否则读者无法判断配对规则本身丢了多少人
     assert mi.REASON_INCOMPLETE_PAIR not in (row["drop_reason"] or "")
     assert "no_expressive_posts" in row["drop_reason"]
+
+
+def test_drop_reason_carries_a_per_reason_user_count():
+    """逐条剔除必须带上用户数，且各条相加恰好等于 n_dropped
+
+    只写原因名（"missing_gender+no_expressive_posts+incomplete_domain_pair"）
+    加一个合计 n_dropped=3，读者无法判断配对规则本身丢了多少人——而那正是
+    本模块第 4 条裁定要求可核对的量。
+    """
+    wide = _simulate_wide(n_male=200, n_female=200, seed=28)
+    wide.loc[0, "gender"] = "unknown"
+    wide.loc[[1, 2], ["public_topical_share", "celebrity_topical_share"]] = np.nan
+    wide.loc[[3, 4, 5], "public_topical_share"] = np.nan
+    long_df = mi.to_long_format(wide, "topical_share")
+    row = _row(mi.fit_interaction(long_df, "M0"), "M0", mi.TERM_DID)
+
+    parts = dict(
+        (piece.split("=")[0], int(piece.split("=")[1]))
+        for piece in row["drop_reason"].split("+")
+    )
+    assert parts["missing_gender"] == 1
+    assert parts["no_expressive_posts"] == 2
+    assert parts[mi.REASON_INCOMPLETE_PAIR] == 3
+    assert sum(parts.values()) == row["n_dropped"] == 6
+    assert row["n_obs"] == len(wide) - 6
+
+
+def test_format_drop_reason_is_none_when_nothing_was_dropped():
+    assert mi.format_drop_reason([]) is None
+    assert mi.format_drop_reason([("missing_gender", 2)]) == "missing_gender=2"
 
 
 def test_sample_accounting_always_adds_up():
@@ -386,7 +481,7 @@ def test_bootstrap_path_used_when_cov_params_unavailable():
     wide = _simulate_wide(n_male=120, n_female=120, seed=21)
     long_df = mi.to_long_format(wide, "source_entry")
     sample, *_ = mi._select_sample(long_df, "M0")
-    formula, _ = mi._build_formula(sample, "M0")
+    formula, _, _ = mi._build_formula(sample, "M0")
     fit = mi._fit_gee(sample, formula, "source_entry")
     result = mi.difference_in_differences(
         _NoCovParams(fit), sample,
@@ -403,7 +498,7 @@ def test_delta_method_is_the_default_when_cov_params_exists():
     wide = _simulate_wide(n_male=120, n_female=120, seed=22)
     long_df = mi.to_long_format(wide, "source_entry")
     sample, *_ = mi._select_sample(long_df, "M0")
-    formula, _ = mi._build_formula(sample, "M0")
+    formula, _, _ = mi._build_formula(sample, "M0")
     fit = mi._fit_gee(sample, formula, "source_entry")
     result = mi.difference_in_differences(fit, sample)
     assert result["method"] == mi.METHOD_DELTA
@@ -417,7 +512,7 @@ def test_delta_and_bootstrap_intervals_agree():
     wide = _simulate_wide(n_male=200, n_female=200, seed=31)
     long_df = mi.to_long_format(wide, "source_entry")
     sample, *_ = mi._select_sample(long_df, "M0")
-    formula, _ = mi._build_formula(sample, "M0")
+    formula, _, _ = mi._build_formula(sample, "M0")
     fit = mi._fit_gee(sample, formula, "source_entry")
 
     delta = mi.difference_in_differences(fit, sample)
@@ -433,11 +528,41 @@ def test_delta_and_bootstrap_intervals_agree():
     assert boot["ci_low"] == pytest.approx(delta["ci_low"], abs=0.4 * width_delta)
 
 
+def test_auto_refuses_to_enter_an_unaffordable_bootstrap(monkeypatch):
+    """auto 不允许自己走进一条跑不完的重拟合 bootstrap
+
+    delta method 失效在全样本上会让 500 次重拟合变成约 10 小时的作业，
+    必然撞上批处理墙钟；把上限调到 10 个用户来模拟"样本超限"这一情形。
+    """
+    wide = _simulate_wide(n_male=80, n_female=80, seed=29)
+    long_df = mi.to_long_format(wide, "source_entry")
+    sample, *_ = mi._select_sample(long_df, "M0")
+    formula, _, _ = mi._build_formula(sample, "M0")
+    fit = mi._fit_gee(sample, formula, "source_entry")
+
+    monkeypatch.setattr(mi, "AUTO_BOOTSTRAP_MAX_USERS", 10)
+    with pytest.raises(ValueError, match="AUTO|上限|auto"):
+        mi.difference_in_differences(
+            _NoCovParams(fit), sample,
+            fit_fn=lambda frame: mi._fit_gee(frame, formula, "source_entry"),
+            method="auto", n_boot=5,
+        )
+    # 但操作者显式选择 bootstrap 时不受这道闸门限制——上限管的是"自动
+    # 走进去"，不是"不许用"
+    result = mi.difference_in_differences(
+        _NoCovParams(fit), sample,
+        fit_fn=lambda frame: mi._fit_gee(frame, formula, "source_entry"),
+        method=mi.METHOD_BOOTSTRAP, n_boot=15, seed=2,
+    )
+    assert result["method"] == mi.METHOD_BOOTSTRAP
+    assert np.isfinite(result["ci_low"])
+
+
 def test_difference_in_differences_refuses_nan_interval_without_a_refit_hook():
     wide = _simulate_wide(n_male=80, n_female=80, seed=23)
     long_df = mi.to_long_format(wide, "source_entry")
     sample, *_ = mi._select_sample(long_df, "M0")
-    formula, _ = mi._build_formula(sample, "M0")
+    formula, _, _ = mi._build_formula(sample, "M0")
     fit = mi._fit_gee(sample, formula, "source_entry")
     with pytest.raises(ValueError):
         mi.difference_in_differences(_NoCovParams(fit), sample, fit_fn=None)
@@ -482,8 +607,79 @@ def test_interaction_table_covers_both_outcomes_and_three_layers():
 
 
 # ---------------------------------------------------------------------------
+# 占比越界必须报错，不能悄悄改变头条数字
+# ---------------------------------------------------------------------------
+
+def test_out_of_range_share_raises_instead_of_shifting_the_headline():
+    """占比 > 1 只可能是上游算错分子分母，必须炸掉而不是照常出数
+
+    二项族拟似然以 [0,1] 为前提。注入几个 1.7 之后 GEE 照样收敛、note 照样
+    干净、drop_reason 照样是 None，只有头条数字被悄悄推走——这种"不报错的
+    错误"必须在进模型之前被拦下。
+    """
+    wide = _simulate_wide(n_male=100, n_female=100, seed=30)
+    wide.loc[wide.index[:5], "public_topical_share"] = 1.7
+    with pytest.raises(ValueError, match="public_topical_share"):
+        mi.to_long_format(wide, "topical_share")
+
+
+def test_negative_share_also_raises():
+    wide = _simulate_wide(n_male=50, n_female=50, seed=31)
+    wide.loc[0, "celebrity_topical_share"] = -0.2
+    with pytest.raises(ValueError, match="celebrity_topical_share"):
+        mi.to_long_format(wide, "topical_share")
+
+
+def test_nan_share_is_still_allowed():
+    # NaN 是合法的"该用户此项无定义"，不能被范围校验误伤
+    wide = _simulate_wide(n_male=20, n_female=20, seed=32)
+    wide.loc[0, "public_topical_share"] = np.nan
+    long_df = mi.to_long_format(wide, "topical_share")
+    assert long_df[mi.OUTCOME_COLUMN].isna().sum() == 1
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+def test_build_writes_incrementally_so_a_killed_job_keeps_finished_layers(
+        tmp_path, monkeypatch):
+    """每完成一层就落盘：中途失败时已经算完的层必须还在磁盘上
+
+    让第 3 层拟合抛异常，然后断言 parquet 已经存在、只含前两层，
+    且 manifest 的 completed_layers 如实说明这份文件被截断到哪里。
+    """
+    wide = _simulate_wide(n_male=100, n_female=100, seed=33)
+    monkeypatch.setattr(mi.config, "OUTPUT_DIR", str(tmp_path))
+    wide.to_parquet(tmp_path / "user_domain_2020_with_profile.parquet",
+                    engine="pyarrow", index=False)
+
+    real_fit = mi.fit_interaction
+    calls = {"n": 0}
+
+    def _explode(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise RuntimeError("模拟第三层拟合失败")
+        return real_fit(*args, **kwargs)
+
+    monkeypatch.setattr(mi, "fit_interaction", _explode)
+    with pytest.raises(RuntimeError):
+        mi.build(year=2020)
+
+    path = tmp_path / "results" / "interaction_gender_domain.parquet"
+    assert path.exists(), "中途失败时已经算完的层必须已经落盘"
+    frame = pd.read_parquet(path, columns=list(su.RESULT_SCHEMA))
+    assert sorted(frame["model"].unique()) == ["M0", "M1"]
+
+    with open(tmp_path / "results" / "manifest_interaction" / "manifest.json",
+              encoding="utf-8") as f:
+        manifest = json.load(f)
+    assert manifest["counts"]["n_completed_layers"] == 2
+    assert manifest["counts"]["completed_layers"] == [
+        "source_entry/M0", "source_entry/M1"
+    ]
+
 
 def test_build_writes_the_interaction_table(tmp_path, monkeypatch):
     wide = _simulate_wide(n_male=150, n_female=150, seed=27)

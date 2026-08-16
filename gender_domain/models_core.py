@@ -731,6 +731,9 @@ def fit_share_models(user_df, domain, outcome):
     outcome_col = f"{domain}_{outcome}"
     n_input = len(user_df)
     frame = prepare_model_frame(user_df)
+    # 分数 logit 以"取值落在 [0,1] 内"为前提（见模块文档第 5 条）。越界值
+    # 不会让拟合报错，只会悄悄把估计推走，所以在拟合之前先硬校验一次。
+    su.check_proportion_range(frame[outcome_col], outcome_col)
     defined = frame[outcome_col].notna()
 
     rows = []
@@ -799,6 +802,7 @@ def fit_persistence_models(user_df, domain):
     outcome_col = f"{domain}_source_month_share"
     n_input = len(user_df)
     frame = prepare_model_frame(user_df)
+    su.check_proportion_range(frame[outcome_col], outcome_col)
     months_col = active_months_column(frame)
     defined = frame[outcome_col].notna() & (frame[months_col].astype(float) > 0)
 

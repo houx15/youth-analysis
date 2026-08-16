@@ -42,7 +42,11 @@ without_an_interaction 就是这种数据）根本不构成交互。因此这里
    - 缺失机制与域相关（结果变量的分母就是用户自己的行为量），保留单行
      等于让缺失机制直接决定各域的样本构成。
    代价是样本更小，这个代价被如实写进 n_dropped / drop_reason
-   （REASON_INCOMPLETE_PAIR）。
+   （REASON_INCOMPLETE_PAIR）。**drop_reason 逐条带上用户数**
+   （形如 "missing_gender=1+incomplete_domain_pair=2"）：只列原因名、
+   给一个合计的 n_dropped，读者没法知道配对规则本身到底丢了多少人，
+   而那正是本条裁定要求可核对的量。各条按顺序归因、互不重叠，相加恰好
+   等于 n_dropped（见 _select_sample）。
    顺带说明：按目前表 C 的定义，两个域的 topical_share 共用同一个分母
    （n_expressive_posts），source_entered 又永远非缺失，所以这条规则在
    当前数据上命中数为 0。它仍然被实现并被测试覆盖，是为了将来有人改动
@@ -61,6 +65,12 @@ without_an_interaction 就是这种数据）根本不构成交互。因此这里
    丢掉再用剩下的算百分位：能收敛的重抽样是参数空间里被挑选过的一部分，
    丢掉失败的那些会让区间偏窄。失败次数如实计入 note，区间随之变成 NaN，
    这是一个必须被人看到的信号。
+   还有一条同样重要：**auto 绝不自动走进一条跑不完的路**。delta method
+   失效（协方差不可用、或方差非有限/为负）在全样本上会把 500 次重拟合
+   变成约 10 小时的作业，必然撞墙钟。因此样本超过
+   AUTO_BOOTSTRAP_MAX_USERS 时 auto 直接报错，把"要不要花这个时间、用
+   多大的 n_boot"交回给操作者显式决定；配合 build() 的增量落盘，报错时
+   已经算完的层仍然留在磁盘上。
 
 6. **占比型结果变量用 GEE + Binomial family（准二项 / 分数 logit）。**
    GEE 本身就是拟似然估计，配上默认的稳健三明治协方差，这与
@@ -144,6 +154,15 @@ _CONFIDENCE = 0.95
 _Z = float(norm.ppf(1 - (1 - _CONFIDENCE) / 2))
 _N_BOOT = 500
 _SEED = 20200101
+
+# 重拟合 cluster bootstrap 的成本标尺：实测 M2/占比、31 个 region 水平下
+# 单次拟合约 3.8 秒 @ 1 万用户、7.6 秒 @ 2.5 万用户，取约 3 秒/万用户。
+_BOOTSTRAP_SECONDS_PER_10K_USERS = 3.0
+# method="auto" 允许自动进入重拟合 bootstrap 的样本上限（用户数）。
+# 2 万用户 × 500 次重拟合约 50 分钟，还能在 4 小时的作业里跑完；
+# 全样本 22.6 万则约 10 小时，必然被墙钟杀掉，所以 auto 在那之上直接报错，
+# 由操作者显式决定是否 / 以多大的 n_boot 重跑（见 difference_in_differences）。
+AUTO_BOOTSTRAP_MAX_USERS = 20000
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +250,11 @@ def to_long_format(user_df, outcome_kind):
         block[OUTCOME_COLUMN] = pd.to_numeric(
             block[column].astype("object"), errors="coerce"
         ).astype(float)
+        # 二项族拟似然以取值落在 [0,1] 内为前提（模块文档第 6 条）。越界值
+        # 不会让 GEE 报错，只会把头条数字悄悄推走（实测注入 5 个 1.7 的占比
+        # 就能让 DiD 从 0.1994 变成 0.1796，而结果表上没有任何痕迹），
+        # 所以在长表构造阶段就硬校验，用上游列名报错方便直接回去查。
+        su.check_proportion_range(block[OUTCOME_COLUMN], column)
         block[OUTCOME_KIND_COLUMN] = outcome_kind
         blocks.append(block)
 
@@ -252,10 +276,26 @@ def to_long_format(user_df, outcome_kind):
 # 样本选择与记账（单位一律是用户，不是行）
 # ---------------------------------------------------------------------------
 
-def _select_sample(long_df, layer, outcome_kind=None):
-    """按层构造估计样本，并以用户为单位记账
+def format_drop_reason(counts):
+    """把 [(原因, 用户数), ...] 拼成 "reason=count+reason=count" 形式
 
-    剔除顺序与原因：
+    只写原因名而不写数量是不够的：读者看到
+    "missing_gender+no_expressive_posts+incomplete_domain_pair" 和一个
+    合计 n_dropped=3，无法知道配对规则本身到底丢了多少人——而"配对规则
+    的代价有多大"恰恰是本模块第 4 条裁定必须让读者能自己核对的东西。
+    因此这里逐条记数量，且各条数量按定义互不重叠、相加恰好等于 n_dropped
+    （见 _select_sample 的顺序归因）。
+    """
+    if not counts:
+        return None
+    return "+".join("{}={}".format(reason, n) for reason, n in counts)
+
+
+def _select_sample(long_df, layer, outcome_kind=None):
+    """按层构造估计样本，并以用户为单位逐条记账
+
+    剔除顺序与原因（**顺序归因**：一个用户只算进它命中的第一条规则，
+    因此各条计数互不重叠、相加恰好等于 n_dropped，读者可以直接核对）：
         1) 性别无法使用（male 为 NaN）-> missing_gender
         2) 两个域的结果变量都缺 -> 该结果变量自己的缺失原因
         3) 只缺一个域的结果变量 -> REASON_INCOMPLETE_PAIR（整个用户剔除，
@@ -264,27 +304,31 @@ def _select_sample(long_df, layer, outcome_kind=None):
            -> incomplete_profile，与 models_core._layer_sample 同一口径
 
     Returns:
-        (sample, n_input, n_obs, n_dropped, drop_reason)，其中 n_input /
-        n_obs / n_dropped 都是**用户数**
+        (sample, n_input, n_obs, n_dropped, drop_reason, drop_counts)，
+        其中 n_input / n_obs / n_dropped 与 drop_counts 里的数量都是**用户数**
     """
     if outcome_kind is None:
         outcome_kind = str(long_df[OUTCOME_KIND_COLUMN].iloc[0])
     spec = OUTCOME_KINDS[outcome_kind]
 
     n_input = int(long_df[USER_COLUMN].nunique())
-    reasons = []
+    counts = []
+    keep = pd.Series(True, index=long_df.index)
 
-    keep = long_df[FOCAL_COLUMN].notna()
-    if int((~keep).sum()) > 0:
-        reasons.append("missing_gender")
+    def _exclude(bad, reason):
+        """把命中 bad 且此前仍保留的用户剔除，并记下这一条规则的用户数"""
+        newly = keep & bad
+        n_users = int(long_df.loc[newly, USER_COLUMN].nunique())
+        if n_users:
+            counts.append((reason, n_users))
+        return keep & ~bad
+
+    keep = _exclude(long_df[FOCAL_COLUMN].isna(), "missing_gender")
 
     valid = long_df[OUTCOME_COLUMN].notna()
     n_valid = valid.groupby(long_df[USER_COLUMN]).transform("sum")
-    if int(((n_valid == 0) & keep).sum()) > 0:
-        reasons.append(spec["missing_reason"])
-    if int(((n_valid == 1) & keep).sum()) > 0:
-        reasons.append(REASON_INCOMPLETE_PAIR)
-    keep &= (n_valid == 2)
+    keep = _exclude(n_valid == 0, spec["missing_reason"])
+    keep = _exclude(n_valid == 1, REASON_INCOMPLETE_PAIR)
 
     if layer == "M2":
         complete = (
@@ -293,19 +337,21 @@ def _select_sample(long_df, layer, outcome_kind=None):
         )
         if "region" in long_df.columns:
             complete = complete & long_df["region"].notna()
-        before = int(keep.sum())
-        keep &= complete.astype(bool)
-        if int(keep.sum()) < before:
-            reasons.append("incomplete_profile")
+        keep = _exclude(~complete.astype(bool), "incomplete_profile")
 
     sample = long_df[keep].reset_index(drop=True)
     n_obs = int(sample[USER_COLUMN].nunique())
     n_dropped = n_input - n_obs
-    drop_reason = "+".join(reasons) if reasons else None
-    return sample, n_input, n_obs, n_dropped, drop_reason
+    if sum(n for _, n in counts) != n_dropped:
+        raise ValueError(
+            f"逐条剔除计数 {counts} 相加不等于 n_dropped={n_dropped}："
+            "顺序归因本应给出一个互不重叠的划分，出现这种情况说明某条规则"
+            "重复计数或漏计，结果表的样本流失记账不可信。"
+        )
+    return sample, n_input, n_obs, n_dropped, format_drop_reason(counts), counts
 
 
-def _reconcile_users(result, n_input, n_obs, n_dropped, drop_reason):
+def _reconcile_users(result, n_input, n_obs, n_dropped, drop_counts):
     """用真正进入拟合的用户数覆盖 n_obs，并守住样本量恒等式
 
     与 models_core._reconcile_nobs 同一职责，但那边的 result.nobs 就是
@@ -322,10 +368,9 @@ def _reconcile_users(result, n_input, n_obs, n_dropped, drop_reason):
             "必须先查清是哪一列，而不是让一个半配对的样本产出论文头条数字。"
         )
     fitted_users = n_rows // 2
+    counts = list(drop_counts)
     if fitted_users != n_obs:
-        parts = [drop_reason] if drop_reason else []
-        parts.append("missing_covariate")
-        drop_reason = "+".join(parts)
+        counts.append(("missing_covariate", n_obs - fitted_users))
         n_obs = fitted_users
         n_dropped = n_input - fitted_users
     if n_obs + n_dropped != n_input:
@@ -333,7 +378,7 @@ def _reconcile_users(result, n_input, n_obs, n_dropped, drop_reason):
             f"样本量记账不自洽: n_obs={n_obs} + n_dropped={n_dropped} "
             f"!= 输入用户数 {n_input}"
         )
-    return n_obs, n_dropped, drop_reason
+    return n_obs, n_dropped, format_drop_reason(counts), counts
 
 
 # ---------------------------------------------------------------------------
@@ -341,18 +386,45 @@ def _reconcile_users(result, n_input, n_obs, n_dropped, drop_reason):
 # ---------------------------------------------------------------------------
 
 def _build_formula(sample, layer):
-    """构造 GEE 公式，返回 (formula, dropped)
+    """构造 GEE 公式，返回 (formula, dropped, others)
 
     右侧固定以 "male * is_public" 开头（patsy 展开成 male + is_public +
     male:is_public，交互项因此永远在模型里），其余协变量沿用
     models_core._formula_terms 的翻译规则与"本样本内取值唯一就剔除"的
     处理，保证两个模块对同一层协变量的理解不会分叉。
+
+    `others`（除 male 之外的 patsy 项）一并返回，供调用方估算设计矩阵宽度
+    时复用——mc._formula_terms 会遍历整个样本统计各协变量的取值个数，在
+    45 万行上不便宜，同一层没有必要算两遍。
     """
     covariates = dict(mc.MODEL_LAYERS)[layer]
     terms, dropped = mc._formula_terms(covariates, sample)
     others = [t for t in terms if t != FOCAL_COLUMN]
     rhs = " + ".join(["{} * {}".format(FOCAL_COLUMN, DOMAIN_INDICATOR)] + others)
-    return "{} ~ {}".format(OUTCOME_COLUMN, rhs), dropped
+    return "{} ~ {}".format(OUTCOME_COLUMN, rhs), dropped, others
+
+
+def _blocked_note_users(sample, others, n_users):
+    """拟合之前就能判定"这层没法估"的情形，按**用户数**判断观测是否够
+
+    规则与 models_core._blocked_note 完全一致，只有一处必须不同：
+    那边的 len(sample) 就是用户数，这里的 len(sample) 是行数（每用户两行），
+    直接套用会让 insufficient_observations 这道闸门在用户单位上宽松一倍
+    ——一个只有 20 个用户、设计矩阵 35 列的 M2 层会因为"40 行 > 35 列"被
+    放行，而真实的信息量只有 20 个独立簇。设计矩阵宽度仍复用
+    mc._design_width（它会把 C(region) 展开成各水平数）。
+
+    传入的 others 是除 male 之外的 patsy 项；male / is_public / 交互项这
+    三列单独补上——把 "male * is_public" 整个交给 _design_width 只会算 1 列。
+    """
+    if len(sample) == 0:
+        return "empty_sample"
+    if sample[FOCAL_COLUMN].nunique() < 2:
+        return "no_gender_variation"
+    width_terms = [FOCAL_COLUMN, DOMAIN_INDICATOR, "male_x_is_public"] + list(others)
+    if n_users <= mc._design_width(width_terms, sample):
+        return "insufficient_observations"
+    return None
 
 
 def _family(outcome_kind):
@@ -603,7 +675,7 @@ def difference_in_differences(fit, long_df, fit_fn=None, method="auto",
     if method == METHOD_DELTA:
         raise ValueError(
             "method='delta' 但 cov_params() 不可用或方差无效：这个模型拿不到"
-            "delta method 区间，请改用 method='bootstrap' 并提供 fit_fn。"
+            "delta method 区间，请改用 method=METHOD_BOOTSTRAP 并提供 fit_fn。"
         )
     if fit_fn is None:
         raise ValueError(
@@ -611,6 +683,23 @@ def difference_in_differences(fit, long_df, fit_fn=None, method="auto",
             " fit_fn，无法做重拟合的 cluster bootstrap。论文的中心数字不接受"
             "一个没有置信区间的点估计——请提供 fit_fn（接收重抽样长表、返回"
             "重新拟合的结果对象）。"
+        )
+    n_users = out["n_users"]
+    if method == "auto" and n_users > AUTO_BOOTSTRAP_MAX_USERS:
+        # auto 绝不能自己走进一条跑不完的路：delta method 失效是个小概率
+        # 分支（协方差不可用 / 方差非有限或为负），一旦在全样本上触发，
+        # 500 次重拟合在 22.6 万用户上约 10 小时，远超批处理作业的墙钟，
+        # 作业被杀之后连已经算完的层一起丢掉。这里让它停下来，把"要不要
+        # 花这个时间、花多少"交给操作者显式决定。
+        raise ValueError(
+            f"delta method 在本层不可用，而样本有 {n_users} 个用户，超过 auto 允许"
+            f"自动进入重拟合 cluster bootstrap 的上限 {AUTO_BOOTSTRAP_MAX_USERS}"
+            f"（实测每次重拟合约 {_BOOTSTRAP_SECONDS_PER_10K_USERS} 秒/万用户，"
+            f"n_boot={n_boot} 时在这个样本上约需 "
+            f"{n_users / 10000 * _BOOTSTRAP_SECONDS_PER_10K_USERS * n_boot / 3600:.1f} 小时）。"
+            "请先查清 cov_params() 为什么不可用；确实需要 bootstrap 区间时，"
+            "显式以 did_method=METHOD_BOOTSTRAP 并给一个能在作业墙钟内跑完的 "
+            "n_boot 重跑本模块。"
         )
 
     def _statistic(frame):
@@ -674,21 +763,15 @@ def fit_interaction(long_df, model_layer, outcome_kind=None, did_method="auto",
     spec = OUTCOME_KINDS[outcome_kind]
     outcome, scale = spec["outcome"], spec["scale"]
 
-    sample, n_input, n_obs, n_dropped, drop_reason = _select_sample(
+    sample, n_input, n_obs, n_dropped, drop_reason, drop_counts = _select_sample(
         long_df, model_layer, outcome_kind=outcome_kind
     )
-    formula, dropped = _build_formula(sample, model_layer)
+    formula, dropped, others = _build_formula(sample, model_layer)
     base_note = mc._join_notes(
         NOTE_GEE, "dropped_constant:" + ",".join(dropped) if dropped else None
     )
 
-    # 设计矩阵宽度按展开后的三项（male / is_public / 交互）计，
-    # 直接把 "male * is_public" 交给 _design_width 会少算两列
-    width_terms = [FOCAL_COLUMN, DOMAIN_INDICATOR, "male_x_is_public"] + [
-        t for t in mc._formula_terms(dict(mc.MODEL_LAYERS)[model_layer], sample)[0]
-        if t != FOCAL_COLUMN
-    ]
-    blocked = mc._blocked_note(sample, width_terms)
+    blocked = _blocked_note_users(sample, others, n_obs)
     if blocked is None and sample[DOMAIN_INDICATOR].nunique() < 2:
         blocked = "no_domain_variation"
     if blocked is None and spec["binary"] and sample[OUTCOME_COLUMN].nunique() < 2:
@@ -709,8 +792,8 @@ def fit_interaction(long_df, model_layer, outcome_kind=None, did_method="auto",
             columns=list(su.RESULT_SCHEMA),
         )
 
-    n_obs, n_dropped, drop_reason = _reconcile_users(
-        fit, n_input, n_obs, n_dropped, drop_reason
+    n_obs, n_dropped, drop_reason, drop_counts = _reconcile_users(
+        fit, n_input, n_obs, n_dropped, drop_counts
     )
     # 准分离检查沿用 models_core 的那道事后检查：GEE 与 GLM 一样会在
     # （准）完全分离时给出自称收敛、系数却荒谬大的结果，命中就在 note 里
@@ -763,8 +846,16 @@ def fit_interaction(long_df, model_layer, outcome_kind=None, did_method="auto",
     return pd.DataFrame(rows, columns=list(su.RESULT_SCHEMA))
 
 
-def interaction_table(user_df, did_method="auto", n_boot=_N_BOOT, seed=_SEED):
-    """两个结果变量 × 三层协变量的完整交互结果表"""
+def interaction_table(user_df, did_method="auto", n_boot=_N_BOOT, seed=_SEED,
+                      on_layer=None):
+    """两个结果变量 × 三层协变量的完整交互结果表
+
+    Args:
+        on_layer: 可选回调，每拟合完一层就以 (outcome_kind, layer, 累计结果表)
+            调用一次。build() 用它做增量落盘：六次拟合在全样本上要跑几分钟，
+            某一层出错或作业被墙钟杀掉时，已经算完的层不应该跟着一起丢
+            （这条路径本身就是 auto 分支报错时最可能发生的情形）。
+    """
     frames = []
     for outcome_kind in OUTCOME_KINDS:
         long_df = to_long_format(user_df, outcome_kind)
@@ -774,6 +865,8 @@ def interaction_table(user_df, did_method="auto", n_boot=_N_BOOT, seed=_SEED):
                 long_df, layer, outcome_kind=outcome_kind,
                 did_method=did_method, n_boot=n_boot, seed=seed,
             ))
+            if on_layer is not None:
+                on_layer(outcome_kind, layer, pd.concat(frames, ignore_index=True))
     return pd.concat(frames, ignore_index=True)
 
 
@@ -781,19 +874,21 @@ def interaction_table(user_df, did_method="auto", n_boot=_N_BOOT, seed=_SEED):
 # CLI
 # ---------------------------------------------------------------------------
 
-def build(year=config.YEAR):
-    """跑完 §6.6 交互模型并写出 interaction_gender_domain.parquet + manifest"""
-    user_df, source_path = describe._load_user_table(year)
-    frame = interaction_table(user_df)
+def _write_partial(frame, out_dir, path, source_path, year, n_users, completed):
+    """把当前已完成的层落盘，并同步更新 manifest
 
-    out_dir = os.path.join(config.OUTPUT_DIR, "results")
-    os.makedirs(out_dir, exist_ok=True)
-    path = os.path.join(out_dir, "interaction_gender_domain.parquet")
+    **增量落盘不是优化，是防丢。** 六层拟合在全样本上要跑几分钟到几十分钟，
+    中途任何一层报错（例如 auto 分支拒绝进入跑不完的 bootstrap）或者作业
+    撞上墙钟被杀，如果只在全部跑完之后才写文件，已经算好的层会一起消失，
+    重跑一次又是同样的代价。这里每完成一层就覆盖写一次：结果表本身只有
+    几十行，写入成本可以忽略。manifest 的 completed_layers 记录这份文件
+    到底包含哪几层，避免读者把一份被截断的结果当成完整结果。
+    """
     frame.to_parquet(path, engine="pyarrow", index=False)
     n_failed = int(frame["estimate"].isna().sum())
-    print(f"已保存: {path}（{len(frame)} 行，其中 {n_failed} 行为拟合失败留痕）")
+    print(f"已保存（增量，{len(completed)}/6 层）: {path}"
+          f"（{len(frame)} 行，其中 {n_failed} 行为拟合失败留痕）")
 
-    did_rows = frame[frame["term"] == TERM_DID]
     manifest = config.build_manifest(
         step=f"models_interaction_{year}",
         inputs=[os.path.relpath(source_path, config.OUTPUT_DIR)],
@@ -804,17 +899,47 @@ def build(year=config.YEAR):
             "headline": TERM_DID,
             "confidence": _CONFIDENCE,
             "n_boot": _N_BOOT,
+            "auto_bootstrap_max_users": AUTO_BOOTSTRAP_MAX_USERS,
         },
         counts={
-            "n_users": int(len(user_df)),
+            "n_users": n_users,
             "rows": int(len(frame)),
             "failed_rows": n_failed,
+            # 这份文件到底包含哪几层：作业被杀时它是判断"结果是否完整"的
+            # 唯一依据，不能靠数行数猜
+            "completed_layers": list(completed),
+            "n_completed_layers": len(completed),
             # 头条那几行的区间是 delta method 还是重拟合 bootstrap 算的，
             # 必须写进 manifest：这决定了读者怎么理解那个区间
-            "did_ci_method": did_rows["note"].dropna().tolist(),
+            "did_ci_method": frame.loc[frame["term"] == TERM_DID, "note"]
+            .dropna().tolist(),
+            # 每层的逐条样本流失（reason=用户数），与结果表里的 drop_reason 一致
+            "drop_reason": frame.loc[frame["term"] == TERM_DID, "drop_reason"]
+            .fillna("none").tolist(),
         },
     )
     config.write_manifest(manifest, os.path.join(out_dir, "manifest_interaction"))
+
+
+def build(year=config.YEAR):
+    """跑完 §6.6 交互模型并写出 interaction_gender_domain.parquet + manifest
+
+    每完成一层就落盘一次（见 _write_partial）：中途失败或作业被墙钟杀掉时，
+    已经算完的层仍然留在磁盘上，manifest 的 completed_layers 说明这份文件
+    包含哪几层。
+    """
+    user_df, source_path = describe._load_user_table(year)
+    out_dir = os.path.join(config.OUTPUT_DIR, "results")
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, "interaction_gender_domain.parquet")
+    n_users = int(len(user_df))
+    completed = []
+
+    def _on_layer(outcome_kind, layer, frame_so_far):
+        completed.append(f"{outcome_kind}/{layer}")
+        _write_partial(frame_so_far, out_dir, path, source_path, year, n_users, completed)
+
+    interaction_table(user_df, on_layer=_on_layer)
     return path
 
 

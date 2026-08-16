@@ -109,6 +109,36 @@ def test_risk_ratio_ci_denominator_zero_numerator_positive_returns_nan_not_inf()
 
 
 # ---------------------------------------------------------------------------
+# check_proportion_range
+# ---------------------------------------------------------------------------
+
+def test_check_proportion_range_accepts_valid_values_and_counts_them():
+    n_valid = su.check_proportion_range([0.0, 0.5, 1.0, np.nan], "some_share")
+    # NaN 是合法的"该用户此项无定义"，不参与校验也不计入有效观测
+    assert n_valid == 3
+
+
+def test_check_proportion_range_rejects_values_above_one():
+    # 占比 > 1 只可能是上游分子/分母口径算错。二项族拟似然照样能收敛，
+    # 只会把估计悄悄推走，所以这里必须抛异常而不是 clip
+    with pytest.raises(ValueError, match="public_topical_share"):
+        su.check_proportion_range([0.2, 0.4, 1.7], "public_topical_share")
+
+
+def test_check_proportion_range_rejects_negative_values():
+    with pytest.raises(ValueError, match="share_col"):
+        su.check_proportion_range([-0.01, 0.5], "share_col")
+
+
+def test_check_proportion_range_message_names_the_offenders():
+    with pytest.raises(ValueError) as exc:
+        su.check_proportion_range([0.1, 1.4, 2.5], "bad_col")
+    message = str(exc.value)
+    assert "2 个观测" in message      # 越界个数
+    assert "1.4" in message and "2.5" in message
+
+
+# ---------------------------------------------------------------------------
 # bootstrap_ci
 # ---------------------------------------------------------------------------
 

@@ -91,7 +91,12 @@ def _simulate_users(n_male=3000, n_female=3000, p_male=0.60, p_female=0.30,
             df[f"{d}_source_entered"] = other
             df[f"{d}_source_count"] = np.where(other, rng.integers(1, 10, n), 0)
             df[f"{d}_source_months"] = np.where(other, 1, 0)
-        df[f"{d}_source_share"] = df[f"{d}_source_count"] / df["n_retweets"]
+        # 与 build_user_tables.combine_user_table 一致：占比上限截到 1。
+        # 不截的话模拟数据会造出 >1 的占比，而分数 logit 的前提就是 [0,1]
+        # （stats_utils.check_proportion_range 现在会直接报错）
+        df[f"{d}_source_share"] = (
+            df[f"{d}_source_count"] / df["n_retweets"]
+        ).clip(upper=1.0)
         df[f"{d}_topical_share"] = rng.random(n) * 0.5
         df[f"{d}_source_month_share"] = (
             df[f"{d}_source_months"] / df["n_active_months_panel"]
@@ -399,7 +404,12 @@ def test_ztnb_recovers_a_known_incidence_rate_ratio():
         df[f"{d}_source_count"] = c.astype(int)
         df[f"{d}_source_entered"] = c > 0
         df[f"{d}_source_months"] = np.minimum(c, df["n_active_months"])
-        df[f"{d}_source_share"] = df[f"{d}_source_count"] / df["n_retweets"]
+        # 与 build_user_tables.combine_user_table 一致：占比上限截到 1。
+        # 不截的话模拟数据会造出 >1 的占比，而分数 logit 的前提就是 [0,1]
+        # （stats_utils.check_proportion_range 现在会直接报错）
+        df[f"{d}_source_share"] = (
+            df[f"{d}_source_count"] / df["n_retweets"]
+        ).clip(upper=1.0)
         df[f"{d}_topical_share"] = rng.random(n) * 0.4
         df[f"{d}_source_month_share"] = (
             df[f"{d}_source_months"] / df["n_active_months_panel"]
@@ -519,7 +529,12 @@ def test_persistence_ame_averages_over_users_not_over_months():
         df[f"{d}_source_months"] = np.minimum(
             np.round(share * months).astype(int), months
         )
-        df[f"{d}_source_share"] = df[f"{d}_source_count"] / df["n_retweets"]
+        # 与 build_user_tables.combine_user_table 一致：占比上限截到 1。
+        # 不截的话模拟数据会造出 >1 的占比，而分数 logit 的前提就是 [0,1]
+        # （stats_utils.check_proportion_range 现在会直接报错）
+        df[f"{d}_source_share"] = (
+            df[f"{d}_source_count"] / df["n_retweets"]
+        ).clip(upper=1.0)
         df[f"{d}_topical_share"] = rng.random(n) * 0.4
         df[f"{d}_source_month_share"] = share
 
@@ -580,6 +595,26 @@ def test_every_successful_estimate_carries_a_finite_interval():
         # 落到那个分支（落到了就必须改用重拟合的 cluster bootstrap）
         assert ame_rows["se"].notna().all(), ame_rows[ame_rows["se"].isna()]
         assert np.isfinite(ame_rows["se"].astype(float)).all()
+
+
+def test_share_model_rejects_an_out_of_range_proportion():
+    """占比 > 1 必须炸掉，而不是照常拟合出一个被推走的估计
+
+    分数 logit 以取值落在 [0,1] 内为前提（模块文档第 5 条）。越界值不会
+    让 GLM 报错，只会悄悄改变估计——这属于上游分子/分母口径算错，必须有人
+    去修，所以 stats_utils.check_proportion_range 直接抛异常。
+    """
+    df = _simulate_users(n_male=200, n_female=200, seed=31)
+    df.loc[df.index[:5], "public_topical_share"] = 1.7
+    with pytest.raises(ValueError, match="public_topical_share"):
+        mc.fit_share_models(df, "public", "topical_share")
+
+
+def test_persistence_model_rejects_an_out_of_range_proportion():
+    df = _simulate_users(n_male=200, n_female=200, seed=32)
+    df.loc[0, "public_source_month_share"] = 1.5
+    with pytest.raises(ValueError, match="public_source_month_share"):
+        mc.fit_persistence_models(df, "public")
 
 
 # ---------------------------------------------------------------------------

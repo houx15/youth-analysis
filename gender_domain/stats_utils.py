@@ -189,6 +189,51 @@ def risk_ratio_ci(s1, n1, s2, n2, confidence=_DEFAULT_CONFIDENCE):
 
 
 # ---------------------------------------------------------------------------
+# 输入校验
+# ---------------------------------------------------------------------------
+
+def check_proportion_range(values, label, lower=0.0, upper=1.0, max_examples=5):
+    """校验占比型变量确实落在 [0,1] 内，越界立即报错
+
+    本项目所有占比型结果变量都用二项族的拟似然（分数 logit / 准二项，
+    见 models_core 模块文档第 5 条与 models_interaction 第 6 条）来估计，
+    而"取值落在 [0,1] 内"是这个族适用的前提，不是一句客套话：越界的值
+    照样能让 IRLS 收敛、照样给出一个干净的 note 和一个看起来正常的估计，
+    只是把结果悄悄推走——实测在 22.5 万用户里注入 5 个 1.7 的占比，
+    交互项的头条数字就从 0.1994 变成 0.1796，而结果表上没有任何痕迹。
+
+    占比越界只可能是上游算错了分子分母（例如分母用了表达帖、分子却数了
+    全部帖子），属于必须有人去修的 bug，因此这里抛异常而不是 clip、也不是
+    记一行 note：clip 会把一个上游 bug 变成一个永远不会被发现的小偏差。
+
+    NaN 是合法的（"该用户此项无定义"，见项目全局约定 NaN is not zero），
+    不参与校验。
+
+    Args:
+        values: 待校验的数值序列
+        label: 出错信息里用来指认这一列的名字（用列名，方便直接去查上游）
+        lower / upper: 合法闭区间，默认 [0, 1]
+        max_examples: 报错信息里最多列出几个越界样例
+
+    Returns:
+        校验通过时返回有效（非 NaN）观测数，方便调用方顺手记账
+    """
+    arr = np.asarray(pd.Series(values).astype(float))
+    valid = arr[~np.isnan(arr)]
+    bad = valid[(valid < lower) | (valid > upper)]
+    if bad.size:
+        examples = ", ".join("{:.6g}".format(v) for v in bad[:max_examples])
+        raise ValueError(
+            f"占比型变量 {label} 有 {bad.size} 个观测落在 [{lower}, {upper}] 之外"
+            f"（最小 {valid.min():.6g}，最大 {valid.max():.6g}，例如 {examples}）。"
+            "二项族拟似然（分数 logit / 准二项）以取值落在该区间为前提，越界值"
+            "会在不报错的情况下把估计值推走。这只可能是上游分子/分母口径算错了，"
+            "请回到构表环节修正，不要在这里 clip 或忽略。"
+        )
+    return int(valid.size)
+
+
+# ---------------------------------------------------------------------------
 # Bootstrap
 # ---------------------------------------------------------------------------
 
