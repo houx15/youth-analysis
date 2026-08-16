@@ -152,6 +152,47 @@ Output: `analysis_data/{post_domain_measures,retweet_domain_events}_2020/month=N
 
 Every production run should record: input files, code version, vocabulary version, account-list version, parameters, and step-by-step sample counts.
 
+## The results layer
+
+On top of the four tables, `gender_domain/` also computes the paper's results and figures (design doc §6–12). 438 tests, all runnable locally.
+
+| Module | Produces |
+|---|---|
+| `profile_join.py` | Province + M2 profile controls on table C, with per-gender sample-loss accounting |
+| `stats_utils.py` | Wilson/Newcombe intervals, cluster bootstrap, average marginal effects, the shared result schema |
+| `describe.py` | 表 1 sample activity, 表 2 raw gender gaps |
+| `models_core.py` | §6.2–6.5 entry, intensity, share, persistence across M0/M1/M2 |
+| `models_interaction.py` | §6.6 `Gender × Domain` difference-in-differences — the paper's central claim |
+| `models_combination.py` | §7 source/content decomposition, §8 participation combinations |
+| `models_temporal.py` | §9 monthly persistence and leave-one-month-out, §10 delay quantiles |
+| `export_figure_data.py` / `figures.py` | Small downloadable export, then figures drawn locally |
+
+```bash
+sbatch slurm/run_results.slurm          # profile join -> describe -> models -> temporal
+sbatch slurm/export_figure_data.slurm   # only after run_results succeeds
+# download analysis_data/figure_data/ and analysis_data/results/, then locally:
+python3 -m gender_domain.figures all --year=2020
+```
+
+### Reporting rules this layer enforces
+
+- **Marginal effects on the probability/proportion scale are the reported quantity**, never odds ratios alone — ORs are not comparable across the nested M0/M1/M2 layers the paper shows side by side.
+- **Every estimate carries a 95% CI.** At n=225,339 significance is uninformative, so effect sizes lead. A missing interval is publishable; an under-covering one is not — helpers return NaN with a note rather than a narrow interval they cannot justify.
+- **NaN is never zero.** A user with no expressive posts is excluded from that outcome with a recorded reason, not counted as 0%.
+- **Every ratio names its denominator**, in a column or the `model` label.
+- **Failures leave a trace**: a model that does not converge emits a NaN row with a note, never a missing row — a missing row reads as a hypothesis nobody tested.
+- SEs are robust for user-level models and clustered by user wherever a user contributes multiple rows.
+- **No single news-vs-entertainment preference score** (§8.3) — enforced by tests that scan outputs and module source.
+
+### Operational notes
+
+- **`run_results.slurm` stamps a run id into every result file and the export verifies they match.** A stale table from an earlier run is refused by name rather than silently copied into the figures. Both SLURM scripts use `set -euo pipefail`; do not remove it — without it a crashed stage still reports success and later stages publish the previous run's numbers.
+- `(outcome, domain, model, term)` is unique across every result file; variants live inside `model` (`M1/share_ge_0.1`, delay-threshold variants). Use `figures.select_one()`, which raises on a multi-row match.
+- `domain="both"` marks the difference-in-differences row. A `groupby`/`dropna` on domain would silently swallow the headline.
+- `models_temporal` aligns cluster groups via `model.data.row_labels`; passing the group column name fails with `cov_type="cluster"` in statsmodels 0.14.2 (verified — the column-name form is GEE-only).
+- Measured: results layer runs in well under an hour; the delay stage dominates. `models_core` at full scale is 7–10 min, 1.6 GB.
+- Known open decisions, none affecting a published number: `models_intensity` re-embeds entry rows (self-contained, but double-counts if the four core tables are concatenated); `ts_date_mismatch_share` is computed post-cleaning while described as an independent health check; delay rows switch from record to user units.
+
 ## Code style
 
 `AGENTS.md` holds the existing conventions (fire CLI pattern, import grouping, naming, memory/chunking rules) and still applies — consult it before changing code instead of duplicating it here. Note that existing code comments, docstrings, and `print` logging are in Chinese; keep new code consistent with the surrounding file. Documentation written for the user is in English; `docs/` (authored by a colleague) stays in Chinese.
