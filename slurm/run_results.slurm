@@ -11,11 +11,19 @@
 
 # Server-side results layer, run in dependency order: profile join first
 # (Table C -> user_domain_2020_with_profile.parquet), then the descriptive
-# tables (表 1/表 2). Extend this script in place as later tasks (models,
-# temporal analysis) land, appending their build steps after describe.
+# tables (表 1/表 2), then the core models (§6.2–6.5). Extend this script in
+# place as later tasks (interaction, temporal analysis) land, appending their
+# build steps after models_core.
 # Output: analysis_data/user_domain_2020_with_profile.parquet,
 #         analysis_data/results/table1_sample_activity.parquet,
-#         analysis_data/results/table2_raw_gender_gaps.parquet
+#         analysis_data/results/table2_raw_gender_gaps.parquet,
+#         analysis_data/results/models_entry.parquet,
+#         analysis_data/results/models_intensity.parquet,
+#         analysis_data/results/models_share.parquet,
+#         analysis_data/results/models_persistence.parquet
+#
+# models_core depends on profile_join: M2 只在 profile_complete 的用户上拟合，
+# 没有跑过 profile_join 就没有这一列，M2 会整层退化成失败留痕行。
 #
 # Usage:
 #   sbatch slurm/run_results.slurm
@@ -25,3 +33,4 @@ conda activate opinion
 
 python -m gender_domain.profile_join build --year=2020
 python -m gender_domain.describe build --year=2020
+python -m gender_domain.models_core build --year=2020
