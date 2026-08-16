@@ -1,0 +1,418 @@
+"""
+共享统计工具：置信区间、bootstrap、边际效应、结果表统一 schema。
+
+纯函数模块，不做文件 IO、不读 parquet、不联网，与 text_rules.py /
+id_rules.py 同一思路，方便脱离服务器环境单测。后续所有 results 层模块
+（describe.py、models_core.py 等）都直接调用本模块，不得各自重新实现
+同一类估计逻辑——这是本模块存在的唯一理由。
+
+统计口径背景（研究负责人裁定，写在这里方便下游模块的作者理解"为什么
+这样写"而不是照抄语法）：
+1. 样本量约 22.5 万，在这个量级上任何微小差异都会"统计显著"，因此论文
+   以效应量 + 置信区间为主，p 值退居次要。本模块里每一个函数存在的目的
+   都是产出一个区间，而不是一个"是否显著"的结论。
+2. 比例的置信区间一律用 Wilson score interval，而不是正态近似区间：
+   本研究里若干结果的比例非常接近 0 或 1（例如某些来源参与率），正态
+   近似区间在这种情况下会越过 [0,1] 边界，这种明显错误的区间一旦印到
+   论文表格里是灾难性的。
+3. bootstrap 的 cluster 参数是本模块最容易被以为写对、实则写错的一处：
+   后续模型建立在长表数据上，每个用户贡献两行（公共事务域 + 娱乐域各
+   一行）。如果按行重抽样，会把同一用户两行之间的相关性直接当作独立
+   信息，系统性低估标准误。正确做法是整簇（用户）连同其名下所有行一起
+   放回抽样，再把抽中的簇拼起来算统计量——不是"抽簇内的行"，也不是
+   "只抽簇标签、不带走对应的行"。
+4. 边际效应一律报告在概率/比例尺度上，而不是发生比（odds ratio）：
+   论文要把 M0/M1/M2 三层协变量集合的模型并排比较，发生比在协变量集合
+   不同的模型之间不可比，概率尺度的平均边际效应（AME）才可比。
+"""
+
+import numpy as np
+import pandas as pd
+import patsy
+from scipy.stats import norm
+
+# 共享结果表 schema：所有 models_*.parquet 都必须恰好是这些列，
+# 这样一套绘图函数就能服务所有结果表。列的含义见方案文档
+# docs/superpowers/plans/2026-08-16-domain-participation-results.md
+# 的 "Shared result schema" 一节。
+RESULT_SCHEMA = (
+    "outcome",
+    "domain",
+    "model",
+    "term",
+    "estimate",
+    "se",
+    "ci_low",
+    "ci_high",
+    "scale",
+    "n_obs",
+    "n_dropped",
+    "drop_reason",
+    "note",
+)
+
+_DEFAULT_CONFIDENCE = 0.95
+
+
+def _z_value(confidence):
+    """双侧置信区间对应的正态分位数"""
+    return norm.ppf(1 - (1 - confidence) / 2)
+
+
+# ---------------------------------------------------------------------------
+# 比例的置信区间
+# ---------------------------------------------------------------------------
+
+def proportion_ci(successes, n, method="wilson", confidence=_DEFAULT_CONFIDENCE):
+    """单个比例的置信区间，默认 Wilson score interval
+
+    Wilson 区间闭式解（Wilson, 1927）：
+        z = 置信水平对应的正态分位数
+        p_hat = successes / n
+        center = (p_hat + z^2/(2n)) / (1 + z^2/n)
+        margin = z * sqrt(p_hat(1-p_hat)/n + z^2/(4n^2)) / (1 + z^2/n)
+        区间 = [center - margin, center + margin]
+    该公式天然落在 [0,1] 内（是对二项分布似然的一个二次方程求根得到的），
+    但仍显式 clip 一次防御浮点误差，保证"绝不越界"这个承诺不依赖运气。
+
+    Args:
+        successes: 成功次数（可以是数组，逐元素计算）
+        n: 试验次数
+        method: 目前只实现 "wilson"，预留参数是为了未来可能加正态近似区间
+            用于对比，但不应该被下游当作默认选项使用
+        confidence: 置信水平，默认 0.95
+
+    Returns:
+        (low, high)，与输入同形状
+    """
+    if method != "wilson":
+        raise ValueError(f"未实现的区间方法: {method!r}，目前只支持 'wilson'")
+    successes = np.asarray(successes, dtype=float)
+    n = np.asarray(n, dtype=float)
+    z = _z_value(confidence)
+    p_hat = successes / n
+    denom = 1 + z ** 2 / n
+    center = (p_hat + z ** 2 / (2 * n)) / denom
+    margin = z * np.sqrt(p_hat * (1 - p_hat) / n + z ** 2 / (4 * n ** 2)) / denom
+    low = np.clip(center - margin, 0.0, 1.0)
+    high = np.clip(center + margin, 0.0, 1.0)
+    if low.ndim == 0:
+        return float(low), float(high)
+    return low, high
+
+
+def proportion_diff_ci(s1, n1, s2, n2, confidence=_DEFAULT_CONFIDENCE):
+    """两个独立比例之差的置信区间：Newcombe（1998）方法 10
+
+    做法是把两条 Wilson 区间"拼"成一条差值区间，而不是用正态近似的
+    合并标准误——这样在 p 接近 0/1 时依然稳健。设 p_i = s_i/n_i，
+    [l_i, u_i] 为各自的 Wilson 区间，则：
+        diff = p1 - p2
+        low  = diff - sqrt((p1-l1)^2 + (u2-p2)^2)
+        high = diff + sqrt((u1-p1)^2 + (p2-l2)^2)
+
+    交换 (s1,n1) 与 (s2,n2) 时，diff 变号，low/high 互换后各自取反
+    （low' = -high, high' = -low）——区间宽度不变，只是围绕新的差值
+    对称地重新定位，这是 Newcombe 方法本身的代数性质，不是巧合。
+
+    Returns:
+        (diff, low, high)
+    """
+    p1, p2 = s1 / n1, s2 / n2
+    l1, u1 = proportion_ci(s1, n1, confidence=confidence)
+    l2, u2 = proportion_ci(s2, n2, confidence=confidence)
+    diff = p1 - p2
+    low = diff - np.sqrt((p1 - l1) ** 2 + (u2 - p2) ** 2)
+    high = diff + np.sqrt((u1 - p1) ** 2 + (p2 - l2) ** 2)
+    return diff, low, high
+
+
+def risk_ratio_ci(s1, n1, s2, n2, confidence=_DEFAULT_CONFIDENCE):
+    """两个独立比例之比（risk ratio）的对数尺度置信区间
+
+    标准做法：在 log(rr) 尺度上做正态近似再指数变换回来，因为 rr 本身
+    是右偏的，对数尺度的正态近似远比原始尺度准确：
+        rr = (s1/n1) / (s2/n2)
+        SE[log(rr)] = sqrt(1/s1 - 1/n1 + 1/s2 - 1/n2)
+        区间 = exp(log(rr) ± z * SE)
+
+    rr 用交叉相乘 (s1*n2)/(n1*s2) 计算，避免两次浮点除法各自舍入后
+    相除引入误差（例如 20/100 和 10/100 各自算出的浮点数相除不一定
+    恰好等于 2.0，交叉相乘可以保证整数输入时得到精确值）。
+
+    任一分子为 0 时，log(rr) 未定义（0 或除以 0），区间没有意义；
+    这里返回 NaN 边界而不是抛异常——描述性表格里出现"某组这项行为
+    从未发生"是完全正常的数据事实，不该让整张表的计算因此中断。
+
+    Returns:
+        (rr, low, high)；分子为 0 时 rr 仍尽量给出（0 或 NaN），
+        但 low/high 恒为 NaN。
+    """
+    if n1 == 0 or n2 == 0:
+        return np.nan, np.nan, np.nan
+    if s2 == 0:
+        rr = np.nan if s1 == 0 else np.inf
+    else:
+        rr = (s1 * n2) / (n1 * s2)
+    if s1 == 0 or s2 == 0:
+        return rr, np.nan, np.nan
+    log_rr = np.log(rr)
+    se = np.sqrt(1 / s1 - 1 / n1 + 1 / s2 - 1 / n2)
+    z = _z_value(confidence)
+    low = np.exp(log_rr - z * se)
+    high = np.exp(log_rr + z * se)
+    return rr, low, high
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap
+# ---------------------------------------------------------------------------
+
+def _take_rows(values, idx):
+    """按整数下标数组取行，兼容 ndarray / pandas Series / DataFrame"""
+    if isinstance(values, (pd.Series, pd.DataFrame)):
+        return values.iloc[idx].reset_index(drop=True)
+    return np.asarray(values)[idx]
+
+
+def bootstrap_ci(values, statistic, n_boot=1000, seed=0, cluster=None,
+                  confidence=_DEFAULT_CONFIDENCE):
+    """百分位 bootstrap 置信区间
+
+    Args:
+        values: 观测值，ndarray / pandas Series / DataFrame 均可，
+            长度为样本量；`statistic` 直接消费重抽样后的同类型对象
+        statistic: 可调用对象，接收与 `values` 同类型的重抽样结果，
+            返回一个标量
+        n_boot: 重抽样次数
+        seed: 随机种子，固定后两次调用结果完全一致（内部每次调用都用
+            这个种子重新构造一个 `numpy.random.default_rng`，不依赖
+            任何外部随机状态）
+        cluster: 可选，长度与 `values` 相同的簇标签数组。给定时按簇
+            整体重抽样（见下），而不是按行重抽样——这是本函数最容易
+            被写错的地方，务必读完下面的说明再改动这段逻辑。
+        confidence: 置信水平
+
+    簇重抽样的正确做法：
+        1) 先按簇标签把行分组，得到 {簇标签: 该簇所有行的下标数组}；
+        2) 每次重抽样，从"簇标签的全集"里有放回抽出与簇数相同个数的
+           标签（同一个簇可能被抽中 0 次、1 次或多次）；
+        3) 把抽中的每个簇标签对应的**全部原始行**依次拼接起来，作为
+           这一次重抽样的样本，再对这份样本调用 `statistic`。
+    这与两种似是而非的错误实现的区别：
+        - 错误 A："按簇重抽样标签，但每个簇只取一行/取簇的汇总值"——
+          丢失了簇内的行级信息，且没有真正"连同该簇的所有行"重抽样；
+        - 错误 B："在每个簇内部对行做独立重抽样"——簇与簇之间倒是没
+          抽错，但簇内那几行的组合被打散了，等价于放大了自由度，
+          还是会低估真实的组间方差。
+        本实现每次重抽样时，一个被抽中的簇，其名下的行永远整体出现，
+        顺序和组合与原始数据完全一致，不会被打散，也不会被替换成汇总量。
+
+    Returns:
+        (est, low, high)；est 是在原始（未重抽样）样本上算出的点估计
+    """
+    n = len(values)
+    est = statistic(values)
+    rng = np.random.default_rng(seed)
+    boot_stats = np.empty(n_boot)
+
+    if cluster is None:
+        for b in range(n_boot):
+            idx = rng.integers(0, n, size=n)
+            boot_stats[b] = statistic(_take_rows(values, idx))
+    else:
+        cluster_arr = np.asarray(cluster)
+        if len(cluster_arr) != n:
+            raise ValueError("cluster 长度必须与 values 一致")
+        unique_clusters = np.unique(cluster_arr)
+        n_clusters = len(unique_clusters)
+        # 预先建好 簇标签 -> 行下标数组 的映射，重抽样时直接拼接，
+        # 保证每个被抽中的簇，其全部行整体出现、内部顺序不变
+        cluster_to_rows = {
+            c: np.where(cluster_arr == c)[0] for c in unique_clusters
+        }
+        for b in range(n_boot):
+            sampled_clusters = rng.choice(unique_clusters, size=n_clusters, replace=True)
+            idx = np.concatenate([cluster_to_rows[c] for c in sampled_clusters])
+            boot_stats[b] = statistic(_take_rows(values, idx))
+
+    alpha = 1 - confidence
+    low, high = np.percentile(boot_stats, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+    return float(est), float(low), float(high)
+
+
+# ---------------------------------------------------------------------------
+# Top share（§6.1 头部集中度）
+# ---------------------------------------------------------------------------
+
+def top_share(values, q):
+    """按用户排序后，贡献量最大的前 q 比例用户占总量的份额
+
+    Args:
+        values: 每个用户的非负数量（例如转发条数），可含 NaN——NaN
+            视为"该用户此项未定义"，不计入用户数也不计入总量，而不是
+            当作 0（§项目全局约定：NaN is not zero）
+        q: 头部用户占比，取值 (0, 1]
+
+    头部用户数 k 取 ceil(q * n) 并至少为 1（"前 0 个用户的份额"没有
+    意义，因此即便 q 很小也至少纳入贡献最大的 1 人）；q=1 时 k 被
+    min 到 n，份额恒为 1.0。
+
+    Returns:
+        float，份额；若没有任何有效观测或总量为 0，返回 NaN
+    """
+    values = np.asarray(values, dtype=float)
+    values = values[~np.isnan(values)]
+    n = len(values)
+    if n == 0:
+        return np.nan
+    total = values.sum()
+    if total == 0:
+        return np.nan
+    k = int(np.ceil(q * n))
+    k = min(max(k, 1), n)
+    sorted_vals = np.sort(values)[::-1]
+    return float(sorted_vals[:k].sum() / total)
+
+
+# ---------------------------------------------------------------------------
+# 共享结果表 schema
+# ---------------------------------------------------------------------------
+
+def tidy_result(**kwargs):
+    """构造共享结果 schema 的一行，缺省的可选字段一律填 None
+
+    这样无论调用方传了哪些字段，返回的 dict 的 key 集合永远恰好等于
+    `RESULT_SCHEMA`，后续所有 models_*.parquet 才能共用同一套绘图和
+    汇总代码。传入 schema 之外的字段视为调用方的笔误，直接报错，而不是
+    静默忽略——静默丢弃一个字段，比报错更容易让人以为它已经写进结果表了。
+    """
+    unknown = set(kwargs) - set(RESULT_SCHEMA)
+    if unknown:
+        raise ValueError(
+            f"tidy_result 收到未知字段 {sorted(unknown)}，"
+            f"超出共享结果 schema {RESULT_SCHEMA} 的范围"
+        )
+    return {col: kwargs.get(col) for col in RESULT_SCHEMA}
+
+
+# ---------------------------------------------------------------------------
+# 平均边际效应（AME）
+# ---------------------------------------------------------------------------
+
+def _design_matrices(model_result, focal_var, data):
+    """构造 focal_var 恒为 1 / 恒为 0 两份反事实设计矩阵
+
+    优先复用模型拟合时（patsy 公式接口）保存下来的 design_info 重新
+    生成设计矩阵，保证列顺序、哑变量编码方式与原模型完全一致；如果
+    模型不是用公式接口拟合的（没有 design_info），退化为直接从 `data`
+    里按 `model_result.model.exog_names` 取列——这种情况下调用方必须
+    保证 `data` 已经是与拟合时同结构的设计矩阵（含常数项列）。
+    """
+    data1 = data.copy()
+    data1[focal_var] = 1
+    data0 = data.copy()
+    data0[focal_var] = 0
+
+    design_info = getattr(model_result.model.data, "design_info", None)
+    if design_info is not None:
+        exog1 = patsy.dmatrix(design_info, data1, return_type="dataframe").values
+        exog0 = patsy.dmatrix(design_info, data0, return_type="dataframe").values
+    else:
+        cols = list(model_result.model.exog_names)
+        exog1 = data1[cols].values
+        exog0 = data0[cols].values
+    return exog1, exog0
+
+
+def _ame_at_params(model_result, params, exog1, exog0):
+    """给定一组参数，反事实预测两侧结果并取均值之差"""
+    pred1 = model_result.model.predict(params, exog1)
+    pred0 = model_result.model.predict(params, exog0)
+    return float(np.mean(pred1 - pred0))
+
+
+def average_marginal_effect(model_result, focal_var, data, confidence=_DEFAULT_CONFIDENCE,
+                             n_boot=1000, seed=0, cluster=None, delta_eps=1e-6):
+    """二值 focal 变量的平均边际效应（AME），反事实预测法
+
+    做法（必须是这三步，不能替换成读系数或替换成在协变量均值处求边际
+    效应——三者数值不同，本研究只报告下面这一种）：
+        1) 把 `data` 的 focal_var 全部设为 1，对每一行预测结果；
+        2) 把 `data` 的 focal_var 全部设为 0，对每一行预测结果；
+        3) 两份预测逐行相减，取平均。
+    这就是 AME 的定义：对样本里每个个体分别问"如果 ta 是 1 组/0 组，
+    模型预测的结果会是多少"，再把差值平均——而不是先对协变量取平均、
+    只算一个"代表性个体"的边际效应（那是 MEM，在非线性模型里与 AME
+    不是同一个数），也不是直接读回归系数（系数是 log-odds 尺度，本研究
+    一律报告概率/比例尺度，两者不可以互相替代）。
+
+    标准误优先用 delta method：把 AME 看作模型参数 beta 的函数
+    g(beta)，在 `model_result.params` 处用中心差分数值求梯度
+    （对每个参数分量单独扰动 ±delta_eps*max(1,|beta_j|)），再用
+    Var(AME) = grad' * cov_params() * grad 得到方差。之所以用数值梯度
+    而不是针对某一种 link function 手写解析梯度，是因为本模块要同时
+    服务 logit/probit/分数 logit 等多种模型，数值梯度对 link function
+    不敏感，换模型不用重写这段代码。
+
+    如果 `model_result.cov_params()` 不可用（少数拟合方式不提供协方差
+    矩阵），退化为对 `data` 的行（或给定 `cluster` 时对簇）做 bootstrap，
+    每次重抽样后用**同一组已拟合参数**重新计算 AME 并汇总成百分位区间。
+    这个退化路径不重新拟合模型，因此不能反映参数估计本身的不确定性，
+    只是在没有协方差矩阵可用时的一个保底选项；只要模型来自标准的
+    statsmodels 拟合（GLM/Logit/GEE 等都提供 cov_params()），实际上
+    走不到这条退化路径。
+
+    Args:
+        model_result: 已拟合的 statsmodels 结果对象（或提供同样接口的
+            对象：`.params`、`.model.predict(params, exog)`、可选的
+            `.cov_params()`）
+        focal_var: `data` 中代表 focal 变量的列名，取值应为 0/1
+        data: 用于反事实预测的协变量数据（不要求是拟合时用的那份数据，
+            但列必须能通过模型的 design_info 或 exog_names 对齐）
+
+    Returns:
+        (ame, se, low, high)；退化到 bootstrap 时 se 由百分位区间
+        近似换算（(high-low)/(2z)），仅供参考，区间本身以百分位为准
+    """
+    exog1, exog0 = _design_matrices(model_result, focal_var, data)
+    params = np.asarray(model_result.params, dtype=float)
+    ame = _ame_at_params(model_result, params, exog1, exog0)
+
+    try:
+        cov = np.asarray(model_result.cov_params())
+        grad = np.zeros_like(params)
+        for j in range(len(params)):
+            step = delta_eps * max(1.0, abs(params[j]))
+            p_plus = params.copy()
+            p_plus[j] += step
+            p_minus = params.copy()
+            p_minus[j] -= step
+            grad[j] = (
+                _ame_at_params(model_result, p_plus, exog1, exog0)
+                - _ame_at_params(model_result, p_minus, exog1, exog0)
+            ) / (2 * step)
+        var = float(grad @ cov @ grad)
+        if not np.isfinite(var) or var < 0:
+            raise ValueError("delta method 方差计算结果无效")
+        se = float(np.sqrt(var))
+        z = _z_value(confidence)
+        low, high = ame - z * se, ame + z * se
+        return ame, se, low, high
+    except Exception:
+        # 退化路径：cov_params 不可用时，对 data 的行/簇做 bootstrap，
+        # 用同一组已拟合参数重新计算 AME（见函数文档的说明与限制）
+        idx_all = np.arange(len(data))
+
+        def statistic(idx):
+            sub = _take_rows(data, np.asarray(idx))
+            sub_exog1, sub_exog0 = _design_matrices(model_result, focal_var, sub)
+            return _ame_at_params(model_result, params, sub_exog1, sub_exog0)
+
+        _, low, high = bootstrap_ci(
+            idx_all, statistic, n_boot=n_boot, seed=seed, cluster=cluster,
+            confidence=confidence,
+        )
+        z = _z_value(confidence)
+        se = (high - low) / (2 * z) if np.isfinite(high - low) else np.nan
+        return ame, se, low, high
