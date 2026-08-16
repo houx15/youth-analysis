@@ -244,10 +244,17 @@ def test_subset_reconstruction_matches_a_true_rescan_when_no_shadowing_is_involv
         merged["public_topical_share"].astype("float64"),
         check_names=False,
     )
-    # 这个子集确实改变了结果（否则上面的相等断言毫无信息量）
-    assert (merged["public_topical_posts"] != merged["topical_posts"]).sum() == 0
-    full = inc.topical_by_user(incidence, PUBLIC_VOCAB, incidence.posts)
-    assert not full["topical_posts"].equals(result["topical_posts"])
+    # 这个子集确实是一次真实的干预：重扫真值与全词表的表 C 至少有一个
+    # 用户不同（否则上面两条相等断言在"什么都没变"的表上也会通过，
+    # 毫无信息量）
+    table_c = synthetic_tables["table_c"]
+    versus_full = table_c[["user_id", "public_topical_posts"]].merge(
+        truth[["user_id", "public_topical_posts"]], on="user_id", suffixes=("_full", "_reduced")
+    )
+    assert (
+        versus_full["public_topical_posts_full"]
+        != versus_full["public_topical_posts_reduced"]
+    ).any()
 
 
 def test_denominator_comes_from_all_posts_not_only_hitting_posts(synthetic_tables):
@@ -335,6 +342,101 @@ def test_term_subset_may_contain_terms_that_never_occurred(synthetic_tables):
     pd.testing.assert_frame_equal(with_unused, without_unused)
 
 
+def test_unrecognized_subset_terms_are_reported_instead_of_silently_ignored(
+    synthetic_tables, capsys
+):
+    """认不出来的词必须能被调用方点名核对，不能只是悄悄少算
+
+    "全年没出现过"和"词拼错了/没归一化"在结果上长得一模一样，而后者会让
+    每个 replicate 朝同一个方向少算命中——正是本模块要防的那类失败。
+    """
+    incidence = inc.build_post_term_incidence(YEAR, "public")
+    # "封城" 是合法的从未出现词；"疫情防控措施" 是词表里根本没有的词
+    assert inc.unrecognized_terms(incidence, ["疫情", "封城", "疫情防控措施"]) == [
+        "封城", "疫情防控措施",
+    ]
+    assert inc.unrecognized_terms(incidence, ["疫情", "复工"]) == []
+
+    inc.term_subset_vector(incidence, ["疫情", "封城"])
+    assert "不在矩阵词轴上" in capsys.readouterr().out
+
+
+def test_term_subset_is_normalized_before_lookup(synthetic_tables):
+    """带首尾空白的词必须被归一化后命中，而不是被当成"从未出现过"丢掉"""
+    incidence = inc.build_post_term_incidence(YEAR, "public")
+    assert inc.unrecognized_terms(incidence, ["  疫情防控  "]) == []
+    padded = inc.topical_by_user(incidence, ["  疫情防控  "], incidence.posts)
+    clean = inc.topical_by_user(incidence, ["疫情防控"], incidence.posts)
+    pd.testing.assert_frame_equal(padded, clean)
+    assert padded["topical_posts"].sum() == 2  # p1, p10
+
+
+@pytest.mark.parametrize("domain,vocab", [
+    ("public", PUBLIC_VOCAB),
+    ("celebrity", CELEBRITY_VOCAB),
+])
+def test_char_measures_reproduce_table_c_on_the_full_vocabulary(
+    synthetic_tables, domain, vocab
+):
+    """字符口径（char_density / hits_per_1k）的全词表重建也必须等于表 C"""
+    table_c = synthetic_tables["table_c"]
+    incidence = inc.build_post_term_incidence(YEAR, domain)
+    result = inc.char_measures_by_user(incidence, vocab, incidence.posts)
+
+    merged = table_c[["user_id", f"{domain}_char_density", f"{domain}_hits_per_1k"]].merge(
+        result, on="user_id", how="left"
+    )
+    pd.testing.assert_series_equal(
+        merged["char_density"].astype("float64"),
+        merged[f"{domain}_char_density"].astype("float64"),
+        check_names=False,
+    )
+    pd.testing.assert_series_equal(
+        merged["hits_per_1k"].astype("float64"),
+        merged[f"{domain}_hits_per_1k"].astype("float64"),
+        check_names=False,
+    )
+
+
+def test_char_measures_under_a_subset_match_a_true_rescan(synthetic_tables):
+    """字符口径在词表子集下也与真正重扫原文相等（不涉及嵌套的子集）"""
+    reduced_public = [t for t in PUBLIC_VOCAB if t != "复工"]
+    rescanned = bpt.process_frame(
+        _raw_posts(), tr.VocabMatcher(reduced_public), tr.VocabMatcher(CELEBRITY_VOCAB)
+    )
+    truth = but.aggregate_posts(rescanned[but.POST_SHARD_COLUMNS])
+
+    incidence = inc.build_post_term_incidence(YEAR, "public")
+    result = inc.char_measures_by_user(incidence, reduced_public, incidence.posts)
+    merged = truth[["user_id", "public_char_density", "public_hits_per_1k"]].merge(
+        result, on="user_id", how="left"
+    )
+    pd.testing.assert_series_equal(
+        merged["char_density"].astype("float64"),
+        merged["public_char_density"].astype("float64"),
+        check_names=False,
+    )
+    pd.testing.assert_series_equal(
+        merged["hits_per_1k"].astype("float64"),
+        merged["public_hits_per_1k"].astype("float64"),
+        check_names=False,
+    )
+
+
+def test_posts_frame_uses_compact_dtypes(synthetic_tables):
+    """posts 帧要在整个作业生命周期里驻留，逐列 dtype 是内存的主要杠杆"""
+    posts = inc.build_post_term_incidence(YEAR, "public").posts
+    # pandas 2.x 的 str(dtype) 只打印 "string"，storage 才区分 python/pyarrow
+    assert isinstance(posts["weibo_id"].dtype, pd.StringDtype)
+    assert posts["weibo_id"].dtype.storage == "pyarrow"
+    assert str(posts["user_id"].dtype) == "category"
+    assert str(posts["post_type"].dtype) == "category"
+    assert posts["month"].dtype == np.int8
+    assert posts["n_chars"].dtype == np.int32
+    assert posts["matrix_row"].dtype == np.int32
+    assert posts["is_expressive"].dtype == bool
+
+
 def test_matrix_is_restricted_to_hitting_posts_and_rows_are_continuous_across_shards(
     synthetic_tables,
 ):
@@ -411,6 +513,51 @@ def test_nested_terms_on_the_real_vocabularies_matches_the_documented_exposure()
     celebrity = config.load_celebrity_vocabulary(YEAR)
     assert len(inc.nested_terms(public)) == 112
     assert len(inc.nested_terms(celebrity)) == 5
+
+
+def test_shadowed_terms_reports_the_retained_terms_a_replicate_will_undercount(
+    synthetic_tables,
+):
+    """shadowed_terms 给出"被本次剔除的词遮蔽住的保留词"，无遮蔽时为空集"""
+    # 剔除 "疫情防控" 会遮蔽保留下来的 "疫情"
+    assert inc.shadowed_terms(PUBLIC_VOCAB, ["疫情", "复工", "转发", "封城"]) == {"疫情"}
+    # 剔除 "疫情"（短词）不会遮蔽任何保留词——方向是单向的
+    assert inc.shadowed_terms(PUBLIC_VOCAB, ["疫情防控", "复工", "转发", "封城"]) == set()
+    # 保留全部词 => 没有被剔除的词 => 没有遮蔽
+    assert inc.shadowed_terms(PUBLIC_VOCAB, PUBLIC_VOCAB) == set()
+    assert inc.shadowing_dropped_terms(PUBLIC_VOCAB, ["疫情", "复工"]) == {"疫情防控"}
+
+
+def test_shadowing_exposure_counts_the_posts_a_replicate_may_undercount(synthetic_tables):
+    """shadowing_exposure 给出这次重采样受影响的帖子数与可能丢失的表达帖数
+
+    剔除 "疫情防控"、保留 "疫情" 后：p1（u1）与 p10（u5）的存量计数里只有
+    "疫情防控"，在本子集下判定为不命中，但重扫原文会命中 "疫情"——这两条
+    就是本次 replicate 可能丢失的表达帖，也是低估的上界。
+    """
+    incidence = inc.build_post_term_incidence(YEAR, "public")
+    subset = ["疫情", "复工", "转发", "封城"]
+    exposure = inc.shadowing_exposure(incidence, subset, PUBLIC_VOCAB)
+    assert exposure["shadowed_terms"] == {"疫情"}
+    assert exposure["n_shadowed_terms"] == 1
+    assert exposure["n_shadowing_dropped_terms"] == 1
+    assert exposure["n_posts_with_shadowing_term"] == 2      # p1, p10
+    assert exposure["n_expressive_posts_possibly_lost"] == 2
+
+    # 与 topical_by_user 的实际损失对得上：全词表 vs 本子集，命中表达帖
+    # 恰好少了这 2 条
+    full = inc.topical_by_user(incidence, PUBLIC_VOCAB, incidence.posts)
+    reduced = inc.topical_by_user(incidence, subset, incidence.posts)
+    lost = int(full["topical_posts"].sum() - reduced["topical_posts"].sum())
+    assert lost == exposure["n_expressive_posts_possibly_lost"]
+
+    # 没有遮蔽的子集：暴露面必须是干净的 0，不能永远报一个非零数
+    clean = inc.shadowing_exposure(
+        incidence, [t for t in PUBLIC_VOCAB if t != "复工"], PUBLIC_VOCAB
+    )
+    assert clean["n_shadowed_terms"] == 0
+    assert clean["n_posts_with_shadowing_term"] == 0
+    assert clean["n_expressive_posts_possibly_lost"] == 0
 
 
 def test_dropping_a_shadowing_term_undercounts_the_retained_shorter_term(synthetic_tables):

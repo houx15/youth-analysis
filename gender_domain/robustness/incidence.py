@@ -51,12 +51,33 @@ replicate 都回去重扫全年正文（单进程约 32 分钟一遍）或重新
     若某个 replicate 剔除了 "疫情防控"、保留了 "疫情"，重扫原文会命中
     "疫情"，而按存量重新聚合会判定这条帖子不命中 —— 偏差方向恒为低估。
 
-暴露面（在真实词表上实测，见 nested_terms 的测试）：公共事务词表 816 词
-中有 112 个（13.7%）是另一个词的子串；明星词表 535 词中只有 5 个（0.9%）。
-也就是说明星领域基本精确，公共事务领域有一定但有界的暴露。`nested_terms`
-把这批词显式暴露出来，供 §13.3 的 vocabulary.py 逐 replicate 报告"有多少
-被保留的词被这次剔除的词遮蔽过"——那个数字就是该 replicate 重聚合误差的
-上界，数字大的 replicate 应当被更谨慎地对待，必要时用少量精确重扫复核。
+**发生率**（在真实词表上实测，见 nested_terms 的测试）：公共事务词表
+816 词中有 112 个（13.7%）是另一个词的子串；明星词表 535 词中只有 5 个
+（0.9%）。
+
+**但发生率本身严重低估了这件事的严重性，真正要看的是效应量**（复核时
+实测，公共事务真实词表、6000 帖语料、10 次保留 80% 的重采样）：
+
+    每个 replicate 被遮蔽的保留词        19-39 个（约占保留词的 4.2%；
+                                          明星领域同口径只有 0.79 个）
+    重聚合相对真实重扫丢失的命中帖比例   2.3% - 5.4%（10 次全部为丢失）
+    逐用户 topical_share 平均偏差        -0.013 至 -0.032
+    最差用户                             -0.27
+    偏差方向                             10 次全部是低估，一次高估也没有
+
+那份语料每帖只放一个词，所以上面的数字接近上界；但它与 §13.3 本身想要
+检验的效应是同一个数量级——也就是说，**一个未经校正的重聚合偏差完全可能
+被误读成一条稳健性结论**。因此：
+
+- `nested_terms(vocab)` 给出词表层面的风险词；
+- `shadowed_terms(vocab, term_subset)` 给出某一次重采样里"被剔除词遮蔽
+  住的保留词"集合；
+- `shadowing_exposure(incidence, term_subset, vocab)` 进一步给出这次
+  重采样受影响的帖子数与可能因此丢失的表达帖数——那是该 replicate
+  重聚合误差的上界。
+
+§13.3 必须逐 replicate 记录这些数字，并对其中一个子样本用精确重扫做校准，
+不能只信重聚合的数字。
 
 使用方法（本模块不提供 CLI，由 vocabulary.py / accounts.py 等调用）：
     from gender_domain.robustness import incidence as inc
@@ -135,14 +156,102 @@ def nested_terms(vocab):
 
     这些词就是存量重聚合的全部风险来源：只有当某个 replicate 剔除了包含
     它们的长词、又保留了它们本身时，重新聚合才会与重扫原文不一致（且方向
-    恒为低估，见模块文档）。§13.3 逐 replicate 报告的"被遮蔽的保留词数"
-    就是从这里派生的。
+    恒为低估，见模块文档）。这是**词表层面的发生率**，不是效应量——效应量
+    见模块文档里实测的那张表，以及 shadowing_exposure。
 
     实现是朴素的两两包含判断（O(n^2) 次子串检查）：真实词表 816 / 535 词，
     量级完全够用，不值得为它引入后缀自动机之类的复杂度。
     """
     cleaned = normalize_vocabulary(vocab)
     return {a for a in cleaned for b in cleaned if a != b and a in b}
+
+
+def shadowed_terms(vocab, term_subset):
+    """某一次重采样里，被"剔除的词"遮蔽住的保留词集合
+
+    定义：保留词 t，存在一个被剔除的词 d（d != t）满足 t 是 d 的子串。
+    这批词就是这次重聚合会低估的那些词——原文里出现 d 的地方，存量计数
+    记的是 d，剔除 d 之后重聚合看不到里面的 t，而真正重扫会看到。
+
+    纯词表运算，不需要矩阵，Task 3 可以在抽词的当场就算出来。要连"影响
+    了多少条帖子"一起知道，用 shadowing_exposure。
+    """
+    retained = set(normalize_vocabulary(term_subset))
+    dropped = set(normalize_vocabulary(vocab)) - retained
+    return {t for t in retained for d in dropped if t != d and t in d}
+
+
+def shadowing_dropped_terms(vocab, term_subset):
+    """反向的一半：这次剔除的词里，哪些真的遮蔽住了某个保留词
+
+    shadowed_terms 回答"哪些保留词会被低估"，这里回答"低估是由哪些被剔除
+    的词造成的"。后者才是能落到帖子上的那一侧——一条帖子受不受影响，取决于
+    它的存量计数里有没有这些词。
+    """
+    retained = set(normalize_vocabulary(term_subset))
+    dropped = set(normalize_vocabulary(vocab)) - retained
+    return {d for d in dropped for t in retained if t != d and t in d}
+
+
+def shadowing_exposure(incidence, term_subset, vocab):
+    """这次重采样的遮蔽暴露面：受影响的词数与帖子数（重聚合误差的上界）
+
+    Args:
+        incidence: build_post_term_incidence 的返回值
+        term_subset: 这次保留的词
+        vocab: 完整词表（用来确定"被剔除的词"是哪些）
+
+    Returns:
+        dict：
+        - shadowed_terms: 被剔除词遮蔽住的保留词集合（词表层面）
+        - n_shadowed_terms / shadowed_share_of_retained: 上一项的规模
+        - n_posts_with_shadowing_term: 存量计数里含有"遮蔽性剔除词"的帖子数
+        - n_expressive_posts_possibly_lost: 其中"在本子集下判定为不命中、
+          且是表达帖"的帖子数——这些帖子在真正重扫时**可能**重新命中，
+          因此它就是本次 replicate 命中帖数（进而 topical_share）被低估的
+          **上界**。之所以是上界而不是准确值：被遮蔽的短词未必真的落在那条
+          帖子里的那个位置（例如剔除的是 "复工复产"、保留的是 "复工"，
+          那一定会重新命中；但剔除 "北京冬奥"、保留 "冬奥" 时也一样——真正
+          的判定要重扫原文才知道，这正是 §13.3 要对子样本做精确重扫校准的
+          原因）。
+
+    实测量级见模块文档：真实公共事务词表下，每个 replicate 大约有 4.2% 的
+    保留词被遮蔽，重聚合因此丢掉 2.3%-5.4% 的命中帖，方向恒为低估。
+    """
+    shadowed = shadowed_terms(vocab, term_subset)
+    shadowing_dropped = shadowing_dropped_terms(vocab, term_subset)
+    retained = normalize_vocabulary(term_subset)
+
+    shadow_vec = np.zeros(incidence.matrix.shape[1], dtype=np.int32)
+    for term in shadowing_dropped:
+        col = incidence.term_index.get(term)
+        if col is not None:
+            shadow_vec[col] = 1
+
+    keep = term_subset_vector(incidence, term_subset, warn_unrecognized=False)
+    if incidence.matrix.shape[1] == 0:
+        row_shadow = np.zeros(incidence.matrix.shape[0], dtype=bool)
+        row_hit = np.zeros(incidence.matrix.shape[0], dtype=bool)
+    else:
+        row_shadow = incidence.matrix.dot(shadow_vec) > 0
+        row_hit = incidence.matrix.dot(keep) > 0
+
+    posts = incidence.posts
+    post_shadow = _rows_to_posts(posts, row_shadow)
+    post_hit = _rows_to_posts(posts, row_hit)
+    expressive = posts["is_expressive"].to_numpy(dtype=bool)
+    possibly_lost = post_shadow & (~post_hit) & expressive
+
+    return {
+        "shadowed_terms": shadowed,
+        "n_shadowed_terms": len(shadowed),
+        "shadowed_share_of_retained": (
+            len(shadowed) / len(retained) if retained else 0.0
+        ),
+        "n_shadowing_dropped_terms": len(shadowing_dropped),
+        "n_posts_with_shadowing_term": int(post_shadow.sum()),
+        "n_expressive_posts_possibly_lost": int(possibly_lost.sum()),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -253,9 +362,12 @@ def build_post_term_incidence(year=config.YEAR, domain="public"):
     for path in files:
         frame = pd.read_parquet(path, columns=columns)
         frame["user_id"] = ir.normalize_id_series(frame["user_id"])
-        # is_expressive 的口径只认表 A 那一列；旧分片缺列时由
-        # build_user_tables 用同一个 text_rules 定义现场补（并打印警告），
-        # 本模块绝不自己按 post_type 再推一遍
+        # is_expressive 的口径只认表 A 那一列，本模块绝不自己按 post_type
+        # 再推一遍。注意：没有这一列的**旧版分片在这里根本走不到**——上面
+        # 那句 read_parquet 显式点名了 is_expressive，缺列会直接抛
+        # ArrowInvalid。这正是想要的行为（旧分片的表达帖口径不可信，宁可
+        # 硬失败），_ensure_is_expressive 在这里起的作用只剩下"这一列有
+        # 缺失值就拒绝继续"那一条，它的旧分片兜底分支在本模块是死路。
         frame = but._ensure_is_expressive(frame)
 
         encoded = frame[f"{domain}_term_counts"].fillna("").to_numpy()
@@ -283,6 +395,11 @@ def build_post_term_incidence(year=config.YEAR, domain="public"):
     # 2^31）。真实规模下这几处合起来能省掉数百 MB，而 posts 帧要在整个
     # array task 的生命周期里一直驻留。
     posts["user_id"] = posts["user_id"].astype("category")
+    # weibo_id 逐帖唯一，categorical 只会更差（码表和值一样长）；但它没有
+    # 理由留在 object dtype 上——每个值都是一个独立的 Python 字符串对象。
+    # string[pyarrow] 把同一列压到约 1/2.7，真实规模下省 1.2-1.7 GB。
+    # 这一列不能删：§13.4 的抽样与精确重扫复核都要靠它回溯到原帖。
+    posts["weibo_id"] = posts["weibo_id"].astype("string[pyarrow]")
     posts["n_chars"] = posts["n_chars"].astype(np.int32)
     posts["is_expressive"] = posts["is_expressive"].astype(bool)
     posts["post_type"] = posts["post_type"].astype("category")
@@ -333,14 +450,66 @@ def _sort_term_columns(matrix, term_index):
     return permuted, {terms[old]: int(old_to_new[old]) for old in range(len(terms))}
 
 
-def term_subset_vector(incidence, term_subset):
-    """把词表子集转成矩阵列上的 0/1 指示向量（子集里没出现过的词自动忽略）"""
+def unrecognized_terms(incidence, term_subset):
+    """子集里在矩阵词轴上找不到的词（按 normalize_vocabulary 归一化之后）
+
+    这些词分两类，而本模块**分不出来**，只能把它们报给调用方：
+    1. 合法的"全年一次都没出现过的词"——真实词表里确实存在这样的词；
+    2. 拼写错误、没归一化、或者根本传错了词表的词。
+
+    第二类是本模块存在的意义所反对的那种失败：它不会报错，只会让每个
+    replicate 都少算一批命中，方向完全一致——正是最难被发现、也最容易被
+    误读成"稳健性结论"的偏差。所以 §13.3 应当把这个列表与"已知从未出现
+    的词"集合对拍，多出来一个就是配置出了问题。
+    """
+    return sorted(
+        term for term in normalize_vocabulary(term_subset)
+        if term not in incidence.term_index
+    )
+
+
+def term_subset_vector(incidence, term_subset, warn_unrecognized=True):
+    """把词表子集转成矩阵列上的 0/1 指示向量
+
+    子集先过 normalize_vocabulary（与 VocabMatcher 建词表时同一套清洗：
+    去首尾空白、去空词、去重）——否则一个带空格的 " 疫情" 会被静默当成
+    "从未出现过的词"丢掉，而它本该命中。认不出来的词数会打印出来
+    （warn_unrecognized=False 时不打印，供内部反复调用时避免刷屏），
+    具体是哪些词用 unrecognized_terms 取。
+    """
     keep = np.zeros(incidence.matrix.shape[1], dtype=np.int32)
-    for term in term_subset:
+    n_unknown = 0
+    for term in normalize_vocabulary(term_subset):
         col = incidence.term_index.get(term)
-        if col is not None:
-            keep[col] = 1
+        if col is None:
+            n_unknown += 1
+            continue
+        keep[col] = 1
+    if warn_unrecognized and n_unknown:
+        print(
+            f"提示: 词表子集里有 {n_unknown} 个词不在矩阵词轴上（全年未出现）。"
+            "若这个数字超出'已知从未出现的词'的规模，说明传进来的词没有归一化"
+            "或根本传错了词表——那会让每个 replicate 朝同一个方向少算命中，"
+            "请用 unrecognized_terms 取出具体词核对。"
+        )
     return keep
+
+
+def term_length_vector(incidence):
+    """矩阵词轴上每个词的字符长度，用于把逐词计数换算成命中字符数"""
+    lengths = np.zeros(incidence.matrix.shape[1], dtype=np.int32)
+    for term, col in incidence.term_index.items():
+        lengths[col] = len(term)
+    return lengths
+
+
+def _rows_to_posts(posts, row_values):
+    """把"逐矩阵行"的布尔量摊回"逐帖"（未进矩阵的帖子恒为 False）"""
+    matrix_row = posts["matrix_row"].to_numpy()
+    in_matrix = matrix_row >= 0
+    out = np.zeros(len(posts), dtype=bool)
+    out[in_matrix] = row_values[matrix_row[in_matrix]]
+    return out
 
 
 def topical_by_user(incidence, term_subset, posts):
@@ -369,11 +538,7 @@ def topical_by_user(incidence, term_subset, posts):
     else:
         row_hit_counts = incidence.matrix.dot(keep)
 
-    matrix_row = posts["matrix_row"].to_numpy()
-    in_matrix = matrix_row >= 0
-    post_hit = np.zeros(len(posts), dtype=bool)
-    post_hit[in_matrix] = row_hit_counts[matrix_row[in_matrix]] > 0
-
+    post_hit = _rows_to_posts(posts, row_hit_counts > 0)
     expressive = posts["is_expressive"].to_numpy(dtype=bool)
     work = pd.DataFrame({
         # 用 .array 保留 categorical：三千多万行的用户 ID 若在这里被摊成
@@ -399,6 +564,64 @@ def topical_by_user(incidence, term_subset, posts):
     out["topical_share"] = but._safe_divide(
         out["topical_posts"], out["n_expressive_posts"]
     ).to_numpy(dtype=np.float64)
+    return out.reset_index(drop=True)
+
+
+def char_measures_by_user(incidence, term_subset, posts):
+    """给定词表子集，重算字符口径的三个指标（§13.1 分母稳健性要用）
+
+    与 build_user_tables.aggregate_posts 的字符口径逐条对齐，全部只在表达帖
+    上聚合：
+        chars        = 表达帖字符数之和
+        chars_hit    = 表达帖命中字符数之和
+        n_hits       = 表达帖命中次数之和
+        char_density = chars_hit / chars
+        hits_per_1k  = n_hits / chars * 1000
+
+    逐帖的两个量都是矩阵的一次向量乘法：命中次数是 `matrix.dot(keep)`；
+    命中字符数是 `matrix.dot(keep * 词长)`——因为词表匹配保证命中区间
+    不重叠，一条帖子的命中字符数就等于 Σ(该词出现次数 × 该词长度)。
+
+    嵌套遮蔽的低估同样作用在这两个量上（而且比命中帖数更直接：剔除一个长词
+    等于把它那几个字符整个抹掉），见模块文档。
+    """
+    keep = term_subset_vector(incidence, term_subset)
+    lengths = term_length_vector(incidence)
+    if incidence.matrix.shape[1] == 0:
+        row_hits = np.zeros(incidence.matrix.shape[0], dtype=np.int64)
+        row_chars_hit = np.zeros(incidence.matrix.shape[0], dtype=np.int64)
+    else:
+        row_hits = incidence.matrix.dot(keep).astype(np.int64)
+        row_chars_hit = incidence.matrix.dot(keep * lengths).astype(np.int64)
+
+    matrix_row = posts["matrix_row"].to_numpy()
+    in_matrix = matrix_row >= 0
+    post_hits = np.zeros(len(posts), dtype=np.int64)
+    post_chars_hit = np.zeros(len(posts), dtype=np.int64)
+    post_hits[in_matrix] = row_hits[matrix_row[in_matrix]]
+    post_chars_hit[in_matrix] = row_chars_hit[matrix_row[in_matrix]]
+
+    expressive = posts["is_expressive"].to_numpy(dtype=bool)
+    work = pd.DataFrame({
+        "user_id": pd.Series(posts["user_id"].array),
+        "chars": np.where(expressive, posts["n_chars"].to_numpy(np.int64), 0),
+        "chars_hit": np.where(expressive, post_chars_hit, 0),
+        "n_hits": np.where(expressive, post_hits, 0),
+    })
+    grouped = work.groupby("user_id", observed=True, sort=True).sum()
+
+    out = pd.DataFrame({
+        "user_id": grouped.index.astype(str),
+        "chars": grouped["chars"].to_numpy(dtype=np.int64),
+        "chars_hit": grouped["chars_hit"].to_numpy(dtype=np.int64),
+        "n_hits": grouped["n_hits"].to_numpy(dtype=np.int64),
+    })
+    out["char_density"] = but._safe_divide(out["chars_hit"], out["chars"]).to_numpy(
+        dtype=np.float64
+    )
+    out["hits_per_1k"] = but._safe_divide(out["n_hits"], out["chars"]).to_numpy(
+        dtype=np.float64
+    ) * 1000
     return out.reset_index(drop=True)
 
 
