@@ -119,29 +119,83 @@ def _models_persistence():
 
 
 def _interaction():
+    """交互结果表：四个预测格子 + 两个域内性别差 + 差中差 + 交互系数
+
+    四个格子与两个差、差中差之间的恒等式在真实模块里被守到 1e-10，
+    这里的合成数字也照着满足：格子之差 == 域内性别差，两者再相减 == DiD。
+    """
     rows = []
-    for outcome, scale in (("source_entered", "probability"),
-                           ("topical_share", "proportion")):
+    specs = (
+        # outcome, scale, 四个格子（男公共、女公共、男娱乐、女娱乐）
+        ("source_entered", "probability", (0.30, 0.22, 0.18, 0.35)),
+        ("topical_share", "proportion", (0.09, 0.05, 0.03, 0.11)),
+    )
+    for outcome, scale, cells in specs:
+        male_public, female_public, male_celeb, female_celeb = cells
+        gap_public_base = male_public - female_public
+        gap_celeb_base = male_celeb - female_celeb
         for i, model in enumerate(("M0", "M1", "M2")):
-            did = 0.25 * (1 - 0.2 * i)
+            # 逐层缩水：女性格子不动，男性格子按 (1-0.2i) 向女性靠拢，
+            # 于是每一层内部"格子之差 == 域内性别差 == 差中差的两半"始终成立，
+            # 与真实模块守到 1e-10 的恒等式同构
+            shrink = 1 - 0.2 * i
+            gap_public = gap_public_base * shrink
+            gap_celeb = gap_celeb_base * shrink
+            male_public = female_public + gap_public
+            male_celeb = female_celeb + gap_celeb
+            did = gap_public - gap_celeb
             rows.append(_row(outcome=outcome, domain="both", model=model,
                              term="gender_male_x_public_did", estimate=did, se=0.006,
                              ci_low=did - 0.012, ci_high=did + 0.012, scale=scale,
                              n_obs=226000, n_dropped=0,
                              note="gee_exchangeable_cluster_user_2rows_per_user"))
             rows.append(_row(outcome=outcome, domain="public", model=model,
-                             term="gender_male_gap_public", estimate=0.08, se=0.004,
-                             ci_low=0.072, ci_high=0.088, scale=scale,
+                             term="gender_male_gap_public", estimate=gap_public,
+                             se=0.004, ci_low=gap_public - 0.008,
+                             ci_high=gap_public + 0.008, scale=scale,
                              n_obs=226000, n_dropped=0))
             rows.append(_row(outcome=outcome, domain="celebrity", model=model,
-                             term="gender_male_gap_celebrity", estimate=-0.17, se=0.004,
-                             ci_low=-0.178, ci_high=-0.162, scale=scale,
+                             term="gender_male_gap_celebrity", estimate=gap_celeb,
+                             se=0.004, ci_low=gap_celeb - 0.008,
+                             ci_high=gap_celeb + 0.008, scale=scale,
                              n_obs=226000, n_dropped=0))
             rows.append(_row(outcome=outcome, domain="both", model=model,
                              term="gender_male_x_public_coef", estimate=1.1, se=0.05,
                              ci_low=1.0, ci_high=1.2, scale="log_odds",
                              n_obs=226000, n_dropped=0, note="not_the_headline"))
+            for term, domain, value in (
+                    ("pred_male_public", "public", male_public),
+                    ("pred_female_public", "public", female_public),
+                    ("pred_male_celebrity", "celebrity", male_celeb),
+                    ("pred_female_celebrity", "celebrity", female_celeb),
+            ):
+                rows.append(_row(outcome=outcome, domain=domain, model=model,
+                                 term=term, estimate=value, se=0.003,
+                                 ci_low=value - 0.006, ci_high=value + 0.006,
+                                 scale=scale, n_obs=226000, n_dropped=0,
+                                 note="gee_exchangeable_cluster_user_2rows_per_user"
+                                      "+counterfactual_cell"))
     return pd.DataFrame(rows)
+
+
+def _interaction_with_flagged_cells():
+    """把 M1 的三个格子分别改成：区间被截断、区间不可用、整格 NaN"""
+    frame = _interaction()
+    base = (frame["outcome"] == "source_entered") & (frame["model"] == "M1")
+
+    clipped = base & (frame["term"] == "pred_male_public")
+    frame.loc[clipped, "ci_high"] = 1.0
+    frame.loc[clipped, "note"] = "counterfactual_cell+" \
+        "pred_ci_clipped_to_unit_interval"
+
+    unavailable = base & (frame["term"] == "pred_female_public")
+    frame.loc[unavailable, ["se", "ci_low", "ci_high"]] = np.nan
+    frame.loc[unavailable, "note"] = "counterfactual_cell+pred_ci_unavailable"
+
+    absent = base & (frame["term"] == "pred_male_celebrity")
+    frame.loc[absent, ["estimate", "se", "ci_low", "ci_high"]] = np.nan
+    frame.loc[absent, "note"] = "counterfactual_cell+pred_ci_unavailable"
+    return frame
 
 
 def _decomposition():
@@ -369,6 +423,65 @@ def test_did_annotation_contains_estimate_and_interval():
     text = fg.did_annotation(frame, outcome="source_entered", model="M1")
     assert "0.2" in text                          # M1 的 DiD = 0.25*0.8 = 0.20
     assert "95%" in text
+
+
+def test_predicted_cells_are_four_and_carry_real_domains():
+    """四个预测格子的 domain 是真实领域，不是 both——它们不属于跨域行"""
+    frame = _interaction()
+    cells = fg.predicted_cells(frame, outcome="source_entered", model="M1")
+    assert len(cells) == 4
+    assert set(cells["domain"]) == {"public", "celebrity"}
+    assert set(cells["term"]) == set(fg.TERM_PRED.values())
+
+
+def test_predicted_cells_reproduce_the_gaps_and_the_did():
+    """图上画的格子与标注的差中差必须来自同一次拟合：恒等式在这里再核一遍"""
+    frame = _interaction()
+    cells = fg.predicted_cells(frame, outcome="source_entered", model="M1")
+    lookup = dict(zip(cells["term"], cells["estimate"]))
+    gap_public = lookup["pred_male_public"] - lookup["pred_female_public"]
+    gap_celeb = lookup["pred_male_celebrity"] - lookup["pred_female_celebrity"]
+    gap_row = fg.select(frame, outcome="source_entered", model="M1",
+                        term="gender_male_gap_public").iloc[0]
+    assert gap_public == pytest.approx(gap_row["estimate"])
+    did_row = fg.did_rows(frame, outcome="source_entered", model="M1").iloc[0]
+    assert gap_public - gap_celeb == pytest.approx(did_row["estimate"])
+
+
+def test_predicted_cells_do_not_disturb_the_did_row():
+    """新增的 pred_* 行不能影响差中差与分面的取法"""
+    frame = _interaction()
+    assert len(fg.did_rows(frame, outcome="source_entered")) == 3
+    assert fg.domain_facets(frame) == ["public", "celebrity"]
+
+
+def test_cell_status_distinguishes_clipped_unavailable_and_missing():
+    """三种"不干净"的格子必须能被区分出来，不能都当成正常估计画"""
+    frame = _interaction_with_flagged_cells()
+    cells = fg.predicted_cells(frame, outcome="source_entered", model="M1")
+    status = {row["term"]: fg.cell_status(row) for _, row in cells.iterrows()}
+    assert status["pred_male_public"] == "clipped"
+    assert status["pred_female_public"] == "ci_unavailable"
+    assert status["pred_male_celebrity"] == "missing"
+    assert status["pred_female_celebrity"] == "ok"
+
+
+def test_fig3_draws_flagged_cells_without_dropping_them(figure_data):
+    """截断/不可用/缺失的格子都要留下痕迹，图仍然出得来"""
+    data_dir, fig_dir = figure_data
+    _interaction_with_flagged_cells().to_parquet(
+        os.path.join(data_dir, "interaction_gender_domain.parquet"),
+        engine="pyarrow", index=False)
+    path = fg.fig3_interaction(year=2020, data_dir=data_dir, fig_dir=fig_dir)
+    assert os.path.getsize(path) > 1000
+
+
+def test_fig3_raises_when_interaction_file_missing(figure_data):
+    data_dir, fig_dir = figure_data
+    os.remove(os.path.join(data_dir, "interaction_gender_domain.parquet"))
+    with pytest.raises(FileNotFoundError) as err:
+        fg.fig3_interaction(year=2020, data_dir=data_dir, fig_dir=fig_dir)
+    assert "interaction_gender_domain.parquet" in str(err.value)
 
 
 def test_did_annotation_reports_missing_estimate():

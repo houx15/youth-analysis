@@ -80,6 +80,17 @@ TERM_DID = "gender_male_x_public_did"
 TERM_GAP = {"public": "gender_male_gap_public",
             "celebrity": "gender_male_gap_celebrity"}
 TERM_AME = "gender_male"
+# 四个 性别 × 领域 反事实格子的预测水平（models_interaction.PRED_CELLS）。
+# 这些行的 domain 是真实领域，不是 "both"——只有差中差与交互系数写在
+# domain="both" 上。
+TERM_PRED = {
+    ("male", "public"): "pred_male_public",
+    ("female", "public"): "pred_female_public",
+    ("male", "celebrity"): "pred_male_celebrity",
+    ("female", "celebrity"): "pred_female_celebrity",
+}
+NOTE_PRED_CLIPPED = "pred_ci_clipped_to_unit_interval"
+NOTE_PRED_UNAVAILABLE = "pred_ci_unavailable"
 
 PARTICIPATION_TYPES = ("neither", "source_only", "content_only", "both")
 PARTICIPATION_LABELS = {"neither": "Neither", "source_only": "Source only",
@@ -243,6 +254,47 @@ def did_annotation(frame, outcome, model=HEADLINE_LAYER):
         model, row["estimate"], row["ci_low"], row["ci_high"])
 
 
+def predicted_cells(frame, outcome, model=HEADLINE_LAYER):
+    """取出四个 性别 × 领域 反事实格子的预测水平行
+
+    这些行由 models_interaction 与差中差在同一次拟合、同一批反事实设计
+    矩阵上算出（格子之差恒等于域内性别差，两者再相减恒等于差中差，
+    模块里守到 1e-10），所以图 3 画格子、标注差中差时，两者天然自洽。
+    它们的 domain 是真实领域，因此按领域分面时会自然落进正确的面板，
+    与 domain="both" 的差中差行互不干扰。
+    """
+    rows = select(frame, outcome=outcome, model=model)
+    rows = rows[rows["term"].astype("object").isin(list(TERM_PRED.values()))]
+    return rows[rows["domain"].astype("object").isin(list(DOMAIN_ORDER))]
+
+
+def _note_has(row, token):
+    note = row.get("note")
+    return isinstance(note, str) and token in note
+
+
+def cell_status(row):
+    """预测格子的成色：ok / clipped / ci_unavailable / missing
+
+    四种状态在图上长得不一样，是因为它们说的是四件不同的事：
+      ok              点估计与区间都算出来了；
+      clipped         区间是正态近似区间，被显式截回 [0,1]，那一端不是
+                      真实的置信界，画成实心端点会骗人；
+      ci_unavailable  协方差不可用，只有点估计——画一个没有区间的点，
+                      并写明区间为什么没有，而不是画一个宽度为 0 的区间；
+      missing         整格没估出来（NaN）——必须在该位置留一个显式的缺口
+                      标记，让读者看见"这里本该有一个格子"。
+    """
+    if pd.isna(row["estimate"]):
+        return "missing"
+    if _note_has(row, NOTE_PRED_UNAVAILABLE) or pd.isna(row["ci_low"]) \
+            or pd.isna(row["ci_high"]):
+        return "ci_unavailable"
+    if _note_has(row, NOTE_PRED_CLIPPED):
+        return "clipped"
+    return "ok"
+
+
 def missing_estimate_rows(frame):
     """估计值为 NaN 的行——拟合失败留下的痕迹，图必须把它们标出来"""
     return frame[pd.to_numeric(frame["estimate"], errors="coerce").isna()]
@@ -258,16 +310,22 @@ def missing_estimate_labels(frame):
     return labels
 
 
-def _annotate_missing(ax, labels, prefix="missing estimates"):
-    """把缺失说明写在坐标轴左下角，最多列 4 条，其余折叠成计数"""
+def _annotate_missing(ax, labels, prefix="missing estimates", y=0.02,
+                      va="bottom"):
+    """把缺失说明写在坐标轴上，最多列 4 条，其余折叠成计数
+
+    y < 0 时写在坐标轴下方（图 3 用这个位置，因为面板内部已经被格子、
+    连线和差中差标注框占满了）；保存时用 bbox_inches="tight"，轴外的
+    文字不会被裁掉。
+    """
     if not labels:
         return
     shown = labels[:4]
     text = "{}:\n".format(prefix) + "\n".join("· " + s for s in shown)
     if len(labels) > len(shown):
         text += "\n· … {} more".format(len(labels) - len(shown))
-    ax.text(0.02, 0.02, text, transform=ax.transAxes, fontsize=6,
-            color="#b22222", va="bottom", ha="left")
+    ax.text(0.02, y, text, transform=ax.transAxes, fontsize=6,
+            color="#b22222", va=va, ha="left")
 
 
 def monthly_rows(frame, outcome, domain):
@@ -478,79 +536,150 @@ def fig2_adjusted_effects(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
 # 图 3：Gender × Domain 交互（§12.3）
 # ---------------------------------------------------------------------------
 
-def fig3_interaction(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
-    """四个 性别 × 领域 格子的取值，并显式标出差中差（§12.3）
+def fig3_interaction(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
+                     model=HEADLINE_LAYER):
+    """四个 性别 × 领域 格子的**模型预测值**，并显式标出差中差（§12.3）
 
-    两处口径必须写清楚，否则这张图会被误读：
+    画的是什么：
 
-    1. 四个格子画的是**观测**比例（表 2，各自的主分母口径），不是模型
-       预测值。结果层的 interaction_gender_domain.parquet 只写出了差与
-       差中差，没有写出四个格子的模型预测水平；图这一层不许自己反推
-       （拿观测的女性水平加上调整后的性别差，等于在图里造一个结果表里
-       没有的数字）。所以格子用观测值，调整后的量以标注形式给出。
-    2. 差中差与两个领域内的调整后性别差来自 GEE 交互模型，写在图右侧的
-       标注框里，并注明层次（M0/M1/M2）。差中差那一行的 domain 是
-       "both"，用 did_rows 显式取出——它不属于任何一个面板。
+    1. 实心点 = 交互模型（GEE，按用户聚类稳健）在四个反事实格子上的预测
+       水平（`pred_{male,female}_{public,celebrity}`，默认 M1 层，可用
+       `model=` 改成 M0/M2）。这四行与两个域内性别差、与差中差来自同一次
+       拟合、同一批反事实设计矩阵，模块里用 1e-10 的恒等式断言守着：
+       格子之差 == 域内性别差，两者再相减 == 差中差。因此图上画的格子与
+       标注的头条数字天然自洽，读者可以自己在图上把差中差量出来。
+    2. 空心灰点 = 同一格的**观测**比例（表 2，主分母口径），只画点不画区间，
+       作为对照。保留它是因为"调整后与调整前差多少"本身就是要看的东西
+       （M1 控制了一般活动量，M2 还控制画像）；但两者是不同的量，因此
+       在图例、纵轴标签里分别标明 predicted / observed，不让读者去猜。
+    3. 标注框 = 差中差（M0/M1/M2 三层都写）与两个域内的调整后性别差。
+       差中差那一行的 domain 是 "both"，由 did_rows 显式取出——它不属于
+       任何一个面板；四个格子的 domain 是真实领域，因此自然落进对应面板，
+       两者互不干扰（domain_facets 永远只返回 public/celebrity）。
+
+    格子的三种"不干净"状态在图上长得不一样（见 cell_status）：
+    区间被截回 [0,1] 的格子在被截的那一端画一个箭头端点并在图上列出；
+    协方差不可用的格子只画一个空心点、不画区间；整格 NaN 的格子在该位置
+    留一个灰色 ✕ 标记——缺口必须看得见，不能让格子凭空消失。
     """
     data_dir = data_dir or figure_data_dir()
     table2 = _read(data_dir, "table2_raw_gender_gaps.parquet", TABLE2_COLUMNS)
     inter = _read(data_dir, "interaction_gender_domain.parquet", RESULT_COLUMNS)
 
     outcomes = ("source_entered", "topical_share")
-    fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.8))
+    fig, axes = plt.subplots(1, 2, figsize=(11.5, 5.2))
     for ax, outcome in zip(axes, outcomes):
         denominator = PRIMARY_DENOMINATOR[outcome]
         observed = select(table2, outcome=outcome, model="raw",
                           denominator=denominator)
-        facets = domain_facets(observed) or list(DOMAIN_ORDER)
-        missing = []
+        cells = predicted_cells(inter, outcome, model)
+        facets = domain_facets(cells) or list(DOMAIN_ORDER)
+        blended = matplotlib.transforms.blended_transform_factory(
+            ax.transData, ax.transAxes)
+        flags = []
         for i, domain in enumerate(facets):
-            cell_values = {}
             for gender in GENDER_ORDER:
-                cell = select(observed, domain=domain, term=gender)
-                if cell.empty or pd.isna(cell.iloc[0]["estimate"]):
-                    note = "row absent" if cell.empty else (
-                        cell.iloc[0]["note"] or "no note")
-                    missing.append("{}/{}: {}".format(domain, gender, note))
+                x = i + (0.13 if gender == "male" else -0.13)
+                color = GENDER_COLORS[gender]
+
+                # 观测值：空心灰点，只作对照，不画区间
+                obs = select(observed, domain=domain, term=gender)
+                if not obs.empty and pd.notna(obs.iloc[0]["estimate"]):
+                    ax.plot([x], [obs.iloc[0]["estimate"]],
+                            marker=GENDER_MARKERS[gender], markersize=6,
+                            markerfacecolor="none", markeredgecolor="#9e9e9e",
+                            linestyle="none", zorder=2,
+                            label="Observed (raw)" if i == 0 and gender == "male"
+                            else None)
+
+                cell = select(cells, domain=domain, term=TERM_PRED[(gender, domain)])
+                if cell.empty:
+                    flags.append("{}/{} predicted: row absent".format(domain, gender))
+                    ax.plot([x], [0.06], marker="x", markersize=8, color="#9e9e9e",
+                            linestyle="none", transform=blended, zorder=4)
                     continue
                 row = cell.iloc[0]
-                cell_values[gender] = row["estimate"]
-                _errorbar(ax, i + (0.12 if gender == "male" else -0.12),
-                          row["estimate"], row["ci_low"], row["ci_high"],
-                          GENDER_COLORS[gender], GENDER_MARKERS[gender],
-                          label=GENDER_LABELS[gender] if i == 0 else None,
-                          horizontal=False)
-                ax.annotate(_n_label(row),
-                            (i + (0.12 if gender == "male" else -0.12),
-                             row["estimate"]), textcoords="offset points",
-                            xytext=(6, 4), fontsize=6, color="#555555")
-            if len(cell_values) == 2:
-                ax.plot([i - 0.12, i + 0.12],
-                        [cell_values["female"], cell_values["male"]],
-                        color="#999999", linewidth=0.8, linestyle=":")
-                ax.annotate("gap {:+.3f}".format(
-                    cell_values["male"] - cell_values["female"]),
-                    (i, (cell_values["male"] + cell_values["female"]) / 2),
-                    textcoords="offset points", xytext=(12, 0), fontsize=7,
-                    color="#333333")
+                status = cell_status(row)
+                if status == "missing":
+                    # 缺口必须看得见：在该格的位置画一个灰色 ✕ 并写明原因
+                    flags.append("{}/{} predicted: no estimate ({})".format(
+                        domain, gender, row["note"] or "no note"))
+                    ax.plot([x], [0.06], marker="x", markersize=9, color="#b22222",
+                            linestyle="none", transform=blended, zorder=4)
+                    ax.annotate("no\nestimate", (x, 0.06), xycoords=blended,
+                                textcoords="offset points", xytext=(0, 10),
+                                ha="center", fontsize=5.5, color="#b22222")
+                    continue
+                if status == "ci_unavailable":
+                    flags.append("{}/{} predicted: CI unavailable ({})".format(
+                        domain, gender, row["note"] or "no note"))
+                    ax.plot([x], [row["estimate"]], marker=GENDER_MARKERS[gender],
+                            markersize=7, markerfacecolor="none",
+                            markeredgecolor=color, markeredgewidth=1.6,
+                            linestyle="none", zorder=3,
+                            label=GENDER_LABELS[gender] + " (predicted)"
+                            if i == 0 else None)
+                    ax.annotate("CI n/a", (x, row["estimate"]),
+                                textcoords="offset points", xytext=(6, -8),
+                                fontsize=5.5, color="#b22222")
+                    continue
 
-        # 调整后的量：两个领域内的性别差 + 跨域差中差（domain="both"）
-        lines = ["Model-adjusted (GEE, cluster-robust by user):"]
+                _errorbar(ax, x, row["estimate"], row["ci_low"], row["ci_high"],
+                          color, GENDER_MARKERS[gender],
+                          label=GENDER_LABELS[gender] + " (predicted)"
+                          if i == 0 else None, horizontal=False)
+                if status == "clipped":
+                    # 被截回 [0,1] 的那一端不是真实的置信界，用箭头端点标出来
+                    flags.append("{}/{} predicted: CI clipped to [0,1]".format(
+                        domain, gender))
+                    for bound, marker in ((row["ci_low"], "v"),
+                                          (row["ci_high"], "^")):
+                        if pd.notna(bound) and bound in (0.0, 1.0):
+                            ax.plot([x], [bound], marker=marker, markersize=5,
+                                    color=color, linestyle="none", zorder=4)
+                ax.annotate(_n_label(row), (x, row["estimate"]),
+                            textcoords="offset points", xytext=(6, 4), fontsize=6,
+                            color="#555555")
+
+            # 域内的性别差直接读结果表的 gap 行，不在图里自己相减：
+            # 恒等式虽然成立，但读表里的那一行才能顺带把区间一起写出来
+            gap = select(inter, outcome=outcome, domain=domain,
+                         term=TERM_GAP[domain], model=model)
+            male_cell = select(cells, domain=domain,
+                               term=TERM_PRED[("male", domain)])
+            female_cell = select(cells, domain=domain,
+                                 term=TERM_PRED[("female", domain)])
+            if (not gap.empty and not male_cell.empty and not female_cell.empty
+                    and pd.notna(male_cell.iloc[0]["estimate"])
+                    and pd.notna(female_cell.iloc[0]["estimate"])):
+                y_male = male_cell.iloc[0]["estimate"]
+                y_female = female_cell.iloc[0]["estimate"]
+                ax.plot([i - 0.13, i + 0.13], [y_female, y_male],
+                        color="#999999", linewidth=0.8, linestyle=":", zorder=1)
+                gap_row = gap.iloc[0]
+                text = "gap {:+.3f}".format(gap_row["estimate"]) \
+                    if pd.notna(gap_row["estimate"]) else "gap: no estimate"
+                ax.annotate(text, (i, (y_male + y_female) / 2),
+                            textcoords="offset points", xytext=(12, 0), fontsize=7,
+                            color="#333333")
+
+        # 头条：跨域差中差（domain="both"），三层并列写出
+        lines = ["Model-adjusted (GEE, cluster-robust by user);"
+                 " cells predicted at {}:".format(model)]
         for layer in MODEL_LAYERS:
             lines.append("  " + did_annotation(inter, outcome, layer))
         for domain in DOMAIN_ORDER:
             gap = select(inter, outcome=outcome, domain=domain,
-                         term=TERM_GAP[domain], model=HEADLINE_LAYER)
+                         term=TERM_GAP[domain], model=model)
             if gap.empty:
                 continue
             row = gap.iloc[0]
             if pd.isna(row["estimate"]):
                 lines.append("  {} gap ({}): 无估计（{}）".format(
-                    DOMAIN_LABELS[domain], HEADLINE_LAYER,
-                    row["note"] or "no note"))
+                    DOMAIN_LABELS[domain], model, row["note"] or "no note"))
             else:
                 lines.append("  {} gap ({}) = {:+.3f} [{:+.3f}, {:+.3f}]".format(
-                    DOMAIN_LABELS[domain], HEADLINE_LAYER, row["estimate"],
+                    DOMAIN_LABELS[domain], model, row["estimate"],
                     row["ci_low"], row["ci_high"]))
         ax.text(0.02, 0.98, "\n".join(lines), transform=ax.transAxes,
                 fontsize=6.5, va="top", ha="left",
@@ -560,16 +689,21 @@ def fig3_interaction(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
         ax.set_xticks(range(len(facets)))
         ax.set_xticklabels([DOMAIN_LABELS[d] for d in facets])
         ax.set_xlim(-0.6, len(facets) - 0.4)
-        ax.set_ylabel("{}\n(observed, {}, 95% CI)".format(
-            OUTCOME_LABELS[outcome], DENOMINATOR_LABELS[denominator]), fontsize=7)
+        ax.set_ylabel(
+            "{}\nfilled: model-predicted ({}, 95% CI); hollow grey: observed\n"
+            "({})".format(OUTCOME_LABELS[outcome], model,
+                          DENOMINATOR_LABELS[denominator]), fontsize=7)
         ax.set_title(OUTCOME_LABELS[outcome], fontsize=9)
         ax.grid(axis="y", alpha=0.25, linewidth=0.5)
-        ax.legend(fontsize=7, loc="lower right")
-        _annotate_missing(ax, missing)
+        # 图例与缺陷说明都放到轴下方：面板内部已经被四个格子、连线和差中差
+        # 标注框占满，硬塞进去只会盖住数据
+        ax.legend(fontsize=6.5, loc="upper center", bbox_to_anchor=(0.5, -0.09),
+                  ncol=3, frameon=False)
+        _annotate_missing(ax, flags, prefix="flagged cells", y=-0.28, va="top")
 
     fig.suptitle(
-        "Figure 3. Gender × domain cells with the difference-in-differences, "
-        "{}".format(year), fontsize=11)
+        "Figure 3. Model-predicted gender × domain cells with the "
+        "difference-in-differences, {}".format(year), fontsize=11)
     fig.tight_layout(rect=[0, 0, 1, 0.93])
     return _save_fig(fig, "fig3_interaction", fig_dir)
 
