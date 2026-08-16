@@ -22,15 +22,21 @@
 3. 效应量优先、p 值不出场（研究协议全局约束）：表 2 每一行只有
    estimate/ci_low/ci_high，schema 里根本没有 p 值列。
 4. 二值结果变量（source_entered）用 Wilson/Newcombe/对数尺度 risk ratio
-   （全部复用 stats_utils，不重新实现）。比例型结果变量（source_share/
-   topical_share/source_month_share）报告的是"用户层面比例的均值"，
-   不是"全域行为汇总后的比例"，因此其均值与均值差都改用 bootstrap：
-   均值本身用 stats_utils.bootstrap_ci；均值差 (gap_pp) 与均值之比
-   (risk_ratio 行) 需要两个独立样本各自重抽样再合并统计量——
-   stats_utils.bootstrap_ci 的 cluster 机制解决的是"同一用户在长表里
-   贡献多行、必须整簇重抽样"这个不同的问题，不能套用在"两个独立分组
-   各自重抽样"上，所以这里用 `_two_sample_bootstrap` 就地实现，不去改
-   stats_utils（模块文档明确不接受这种复用）。
+   （全部复用 stats_utils，不重新实现）：这是"进入"这个 0/1 事件在全体
+   用户里的二项比例，二项区间在这里是精确适用的。比例型结果变量
+   (source_share/topical_share/source_month_share) 报告的是"用户层面
+   比例的均值"（每个用户自己的转发/表达占比，再对用户取平均），不是
+   "全域行为汇总后的比例"——它的抽样分布不是二项分布，Newcombe/对数尺度
+   区间的前提不成立，因此均值与均值差改用 bootstrap：均值本身用
+   stats_utils.bootstrap_ci；均值差 (gap_pp) 与均值之比 (risk_ratio 行)
+   需要两个独立样本各自重抽样再合并统计量——stats_utils.bootstrap_ci 的
+   cluster 机制解决的是"同一用户在长表里贡献多行、必须整簇重抽样"这个
+   不同的问题，不能套用在"两个独立分组各自重抽样"上，所以这里用
+   `_two_sample_bootstrap` 就地实现，不去改 stats_utils（模块文档明确
+   不接受这种复用）。哪一行用了哪种区间方法，一律写进 `note` 列
+   （"wilson"/"newcombe"/"log_scale"/"bootstrap"/"bootstrap_two_sample"）
+   ——表 2 本身要能自证方法，不能指望读者看到二值结果变量用了 Newcombe
+   就默认全表都是 Newcombe。
 5. 头部集中度（top-1%/top-5% 份额）衡量的是"这项参与行为本身"的集中
    程度，因此用该结果变量对应的原始计数列（如 source_share/
    source_entered 共用的转发计数 `{domain}_source_count`），而不是 0/1
@@ -190,10 +196,12 @@ def _binary_outcome_rows(user_df, domain, male_mask, female_mask):
         rows.append(_make_row(
             outcome, domain, "male", s_m / n_m if n_m else np.nan, p_m_low, p_m_high,
             "probability", n_m, n_dropped_m, drop_reason if n_dropped_m else None, denom_label,
+            note="wilson",
         ))
         rows.append(_make_row(
             outcome, domain, "female", s_f / n_f if n_f else np.nan, p_f_low, p_f_high,
             "probability", n_f, n_dropped_f, drop_reason if n_dropped_f else None, denom_label,
+            note="wilson",
         ))
 
         diff, d_low, d_high = su.proportion_diff_ci(s_m, n_m, s_f, n_f)
@@ -235,10 +243,12 @@ def _proportion_outcome_rows(user_df, domain, outcome, count_col_tpl, drop_reaso
         _make_row(
             outcome, domain, "male", m_est, m_low, m_high, "proportion",
             len(male_valid), n_dropped_m, drop_reason if n_dropped_m else None, denominator,
+            note="bootstrap",
         ),
         _make_row(
             outcome, domain, "female", f_est, f_low, f_high, "proportion",
             len(female_valid), n_dropped_f, drop_reason if n_dropped_f else None, denominator,
+            note="bootstrap",
         ),
     ]
 
@@ -248,7 +258,7 @@ def _proportion_outcome_rows(user_df, domain, outcome, count_col_tpl, drop_reaso
     rows.append(_make_row(
         outcome, domain, "gap_pp", diff_point, diff_low, diff_high, "proportion",
         len(male_valid) + len(female_valid), n_dropped_m + n_dropped_f, None, denominator,
-        note="bootstrap_mean_diff",
+        note="bootstrap_two_sample",
     ))
 
     def _ratio(m, f):
@@ -259,7 +269,7 @@ def _proportion_outcome_rows(user_df, domain, outcome, count_col_tpl, drop_reaso
     rows.append(_make_row(
         outcome, domain, "risk_ratio", ratio_point, ratio_low, ratio_high, "ratio",
         len(male_valid) + len(female_valid), n_dropped_m + n_dropped_f, None, denominator,
-        note="bootstrap_ratio_of_means",
+        note="bootstrap_two_sample",
     ))
 
     rows.extend(_top_share_rows(outcome, domain, count_col, male_df, female_df))
@@ -328,7 +338,13 @@ def build(year=config.YEAR):
             "table2_rows": int(len(table2)),
         },
     )
-    config.write_manifest(manifest, out_dir)
+    # 每个步骤自己的 manifest 子目录，不直接写进 analysis_data/results/：
+    # write_manifest 会覆盖同目录下已有的 manifest.json，而后续任务
+    # （models_core/models_interaction/...）都会往同一个 results/ 目录
+    # 写结果，如果大家的 manifest 都落在 results/ 根目录，最后一个跑的
+    # 模块会把前面所有模块的溯源记录悄悄抹掉——这与 Plan 1 里表 A 按月
+    # 分片各自建 manifest_month_NN/ 子目录是同一个约定，这里延续它。
+    config.write_manifest(manifest, os.path.join(out_dir, "manifest_describe"))
     return table1_path, table2_path
 
 

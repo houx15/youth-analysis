@@ -339,3 +339,38 @@ def test_raw_gender_gaps_uses_tidy_result_schema_columns():
     out = de.raw_gender_gaps(_table2_fixture())
     for col in su.RESULT_SCHEMA:
         assert col in out.columns
+
+
+def test_raw_gender_gaps_note_labels_interval_method_per_row():
+    """表 2 必须能自证每一行的区间方法，不能让读者靠猜——见协调者第 2 条裁定。
+
+    二值结果变量 (source_entered) 用二项区间（Wilson/Newcombe/对数尺度
+    risk ratio），比例型结果变量 (source_share/topical_share/
+    source_month_share) 报告的是用户层面比例的均值，抽样分布不是二项，
+    改用两独立样本 bootstrap。note 列必须写清楚具体是哪一种，且两类
+    结果变量的取值必须不同，否则读者会默认全表都是 Newcombe。
+    """
+    out = de.raw_gender_gaps(_table2_fixture())
+
+    male_binary = _rows(out, "source_entered", "public", "male", "all_same_gender_users")
+    female_binary = _rows(out, "source_entered", "public", "female", "all_same_gender_users")
+    gap_binary = _rows(out, "source_entered", "public", "gap_pp", "all_same_gender_users")
+    rr_binary = _rows(out, "source_entered", "public", "risk_ratio", "all_same_gender_users")
+    assert male_binary["note"] == "wilson"
+    assert female_binary["note"] == "wilson"
+    assert gap_binary["note"] == "newcombe"
+    assert rr_binary["note"] == "log_scale"
+
+    male_prop = _rows(out, "topical_share", "public", "male")
+    female_prop = _rows(out, "topical_share", "public", "female")
+    gap_prop = _rows(out, "topical_share", "public", "gap_pp")
+    rr_prop = _rows(out, "topical_share", "public", "risk_ratio")
+    assert male_prop["note"] == "bootstrap"
+    assert female_prop["note"] == "bootstrap"
+    assert gap_prop["note"] == "bootstrap_two_sample"
+    assert rr_prop["note"] == "bootstrap_two_sample"
+
+    # 核心断言：二值结果变量与比例型结果变量的方法标签必须不同
+    assert male_binary["note"] != male_prop["note"]
+    assert gap_binary["note"] != gap_prop["note"]
+    assert rr_binary["note"] != rr_prop["note"]
