@@ -201,8 +201,12 @@ def test_users_without_expressive_posts_are_dropped_and_counted():
     male_rows = out[out["term"].str.endswith("_male")]
     # 三个男性用户里有一个没有表达帖，内容参与无定义
     assert (male_rows["n_obs"] == 2).all()
-    assert (male_rows["n_dropped"] == 1).all()
-    assert male_rows["drop_reason"].str.contains(mcomb.REASON_NO_EXPRESSIVE).all()
+    # 记账以"全体输入用户"为分母：另外两个女性用户记 other_gender
+    assert (male_rows["n_dropped"] == 3).all()
+    assert male_rows["drop_reason"].str.contains(
+        f"{mcomb.REASON_NO_EXPRESSIVE}=1").all()
+    assert male_rows["drop_reason"].str.contains(
+        f"{mcomb.REASON_OTHER_GENDER}=2").all()
 
 
 def test_participation_types_uses_the_shared_schema():
@@ -259,6 +263,52 @@ def test_activity_conditional_spearman_removes_a_pure_activity_artifact():
     assert abs(partial) < 0.5 * raw
 
 
+def test_activity_controls_are_columns_that_actually_exist_in_table_c():
+    """控制变量必须是表 C 上真实存在的列，否则会被静默跳过
+
+    第一版照抄了 M1 的 log_posts / log_retweets——那是 models_core 在建模帧
+    里现派生的列，表 C 上没有，于是 §7.2/§8.2 的"控制活跃度"实际只控制了
+    活跃天数与活跃月数。这条测试把控制变量钉死在表 C 的列名上。
+    """
+    frame = _base_frame(50, seed=30)
+    assert set(mcomb.ACTIVITY_CONTROLS) <= set(frame.columns)
+    out = mcomb.cross_relations(frame, "public", n_boot=20)
+    partial = _row(out, term="spearman_source_count_topical_share_partial_all",
+                   model=mcomb.VARIANT_ANY_HIT)
+    for column in mcomb.ACTIVITY_CONTROLS:
+        assert column in partial["note"]
+    assert "missing_activity_controls" not in partial["note"]
+
+
+def test_partial_correlation_removes_a_posting_volume_artifact():
+    """混淆只走发帖量/转发量时，偏相关必须把它消掉
+
+    活跃天数与活跃月数在这份数据里与结果变量无关，所以只有 n_posts /
+    n_retweets 能解释掉这个相关：如果控制变量列表退回到只剩天数与月数
+    （即第一版的静默失效），偏相关会几乎等于原始相关，本测试立刻失败。
+    """
+    rng = np.random.default_rng(31)
+    n = 600
+    frame = _base_frame(n, seed=31)
+    volume = rng.gamma(2.0, 30.0, n)
+    frame["n_posts"] = volume.round().astype(int) + 1
+    frame["n_retweets"] = (volume * 0.7).round().astype(int) + 1
+    # 天数与月数与混淆项无关：它们没有能力解释掉这个相关
+    frame["n_active_days"] = rng.integers(1, 300, n)
+    frame["n_active_months"] = rng.integers(1, 13, n)
+    frame["public_source_count"] = (volume * 0.5 + rng.normal(0, 1, n)).round().clip(0)
+    frame["public_topical_share"] = np.clip(
+        volume / volume.max() + rng.normal(0, 0.02, n), 0.0, 1.0
+    )
+    out = mcomb.cross_relations(frame, "public", n_boot=20)
+    raw = _row(out, term="spearman_source_count_topical_share_all",
+               model=mcomb.VARIANT_ANY_HIT)["estimate"]
+    partial = _row(out, term="spearman_source_count_topical_share_partial_all",
+                   model=mcomb.VARIANT_ANY_HIT)["estimate"]
+    assert raw > 0.8
+    assert abs(partial) < 0.3 * raw
+
+
 def test_cross_relations_uses_the_shared_schema():
     frame = _base_frame(100, seed=12)
     out = mcomb.cross_relations(frame, "public")
@@ -281,7 +331,7 @@ def test_content_on_source_recovers_a_positive_association():
     frame["source_combo"] = _combo(frame)
 
     out = mcomb.fit_content_on_source(frame, "public")
-    row = _row(out, model="M0", term=mcomb.TERM_SOURCE_AME)
+    row = _row(out, model="M0/any_hit", term=mcomb.TERM_SOURCE_AME)
     assert row["estimate"] == pytest.approx(0.5, abs=0.08)
     assert row["ci_low"] > 0
     assert row["scale"] == "probability"
@@ -291,7 +341,15 @@ def test_content_on_source_emits_all_layers_and_schema():
     frame = _base_frame(400, seed=14)
     out = mcomb.fit_content_on_source(frame, "public")
     assert list(out.columns) == list(su.RESULT_SCHEMA)
-    assert sorted(out["model"].unique()) == ["M0", "M1", "M2"]
+    # model 列是"层/内容参与口径"的复合标签，否则多个阈值变体会撞键
+    assert sorted(out["model"].unique()) == [
+        "M0/any_hit", "M1/any_hit", "M2/any_hit"
+    ]
+    strict = mcomb.fit_content_on_source(frame, "public", content_threshold=0.10)
+    assert sorted(strict["model"].unique()) == [
+        "M0/share_ge_0.1", "M1/share_ge_0.1", "M2/share_ge_0.1"
+    ]
+    assert set(out["model"]).isdisjoint(set(strict["model"]))
     for term in (mcomb.TERM_SOURCE_AME, mcomb.TERM_GENDER_AME,
                  mcomb.TERM_SOURCE_X_GENDER, mcomb.TERM_SOURCE_X_GENDER_COEF):
         assert (out["term"] == term).sum() == 3
@@ -321,6 +379,27 @@ def test_multinomial_m0_recovers_the_observed_category_gaps():
         row = _row(out, model="M0", term=mcomb.combo_ame_term(category))
         assert row["estimate"] == pytest.approx(expected, abs=1e-4)
         assert np.isfinite(row["se"]) and row["se"] > 0
+
+
+def test_multinomial_ame_se_matches_analytic_binomial_diff():
+    """M0 是饱和模型，各类别 AME 的标准误必须等于两个独立二项比例之差的解析值
+
+    这条测试守的是 AME-之和恒等式守不住的那条线：参数展平顺序与协方差矩阵
+    不一致时，四个 AME 会全变成垃圾而它们的和仍然是 1e-15；只有把标准误
+    对上一个独立算出来的解析值，协方差那条路径才真的有人看着。
+    """
+    frame = _combo_fixture(n_per_gender=1500, seed=16)
+    out = mcomb.fit_combination_multinomial(frame)
+    male = frame[frame["gender"] == "m"]["source_combo"].value_counts(normalize=True)
+    female = frame[frame["gender"] == "f"]["source_combo"].value_counts(normalize=True)
+    n_m = int((frame["gender"] == "m").sum())
+    n_f = int((frame["gender"] == "f").sum())
+    for category in mcomb.COMBO_CATEGORIES:
+        p_m = float(male.get(category, 0.0))
+        p_f = float(female.get(category, 0.0))
+        analytic = np.sqrt(p_m * (1 - p_m) / n_m + p_f * (1 - p_f) / n_f)
+        row = _row(out, model="M0", term=mcomb.combo_ame_term(category))
+        assert row["se"] == pytest.approx(analytic, rel=1e-3)
 
 
 def test_multinomial_emits_a_sum_check_row_and_shared_schema():
@@ -430,6 +509,113 @@ def test_module_source_defines_no_preference_index():
 # CLI
 # ---------------------------------------------------------------------------
 
+def test_undefined_as_absent_variant_keeps_everyone_and_is_labelled():
+    """§7.1 的稳健性读法：无表达帖用户按"内容参与=否"处理，一个都不剔除
+
+    同时钉住两种读法的数量关系：content_only / both 两格的占比在稳健性读法
+    下等于主口径的 (1-x) 倍（x 为该性别里无表达帖用户的占比）——这正是
+    "这条裁定可能把数字移动多少"的量。
+    """
+    frame = _four_cell_fixture()
+    main = mcomb.participation_types(frame, "public")
+    robust = mcomb.participation_types(frame, "public", undefined_as_absent=True)
+
+    label = mcomb.variant_label(None, undefined_as_absent=True)
+    assert (robust["model"] == label).all()
+    assert label.endswith(mcomb.SUFFIX_UNDEFINED_AS_ABSENT)
+    assert robust["note"].str.contains("robustness").all()
+
+    male_robust = robust[robust["term"].str.endswith("_male")]
+    # 男性 3 人全部保留（另外两名女性仍记 other_gender）
+    assert (male_robust["n_obs"] == 3).all()
+    assert male_robust["drop_reason"].str.contains(
+        mcomb.REASON_NO_EXPRESSIVE).sum() == 0
+
+    x = 1 / 3                                    # 三个男性里一个没有表达帖
+    for ptype in ("content_only", "both"):
+        main_est = _row(main, term=f"{ptype}_male",
+                        model=mcomb.VARIANT_ANY_HIT)["estimate"]
+        robust_est = _row(robust, term=f"{ptype}_male", model=label)["estimate"]
+        assert robust_est == pytest.approx(main_est * (1 - x))
+
+
+def _assert_accounting_identity(frame, n_input):
+    """结果表的样本量恒等式：每一行 n_obs + n_dropped == 输入用户数"""
+    for _, row in frame.iterrows():
+        assert row["n_obs"] + row["n_dropped"] == n_input, (
+            f"{row['outcome']}/{row['domain']}/{row['model']}/{row['term']} "
+            f"的 n_obs={row['n_obs']} + n_dropped={row['n_dropped']} != {n_input}"
+        )
+
+
+def test_every_row_accounts_for_all_input_users_including_missing_gender():
+    frame = _base_frame(120, seed=32)
+    frame.loc[frame.index[:7], "gender"] = None      # 性别缺失的用户不能凭空消失
+    frame.loc[frame.index[7:15], "public_topical_share"] = np.nan
+    frame.loc[frame.index[7:15], "celebrity_topical_share"] = np.nan
+    n_input = len(frame)
+
+    parts = mcomb.participation_types(frame, "public")
+    cross = mcomb.cross_relations(frame, "public", n_boot=20)
+    corr = mcomb.content_correlation(frame, n_boot=20)
+    for out in (parts, cross, corr):
+        _assert_accounting_identity(out, n_input)
+
+    male_rows = parts[parts["term"].str.endswith("_male")]
+    assert male_rows["drop_reason"].str.contains(
+        f"{mcomb.REASON_MISSING_GENDER}=7").all()
+
+
+def test_build_result_keys_are_unique(tmp_path, monkeypatch):
+    """一次完整 build 之后，(outcome, domain, model, term) 必须逐行唯一
+
+    §7.3 的第一版把内容参与口径只写在 note 里，一次 build 产出 297 行里有
+    96 行重复键，同一个 key 上并排放着 NaN 与三个不同阈值下的估计——任何按
+    这个键 join 的下游都会静默取到一个任意的阈值。这条测试是那次事故的
+    直接产物：它跑的是真实的 build 输出，而不是单个函数的返回值。
+    """
+    frame = _combo_fixture(n_per_gender=120, seed=33)
+    monkeypatch.setattr(mcomb.config, "OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(mcomb, "CONTENT_THRESHOLDS", (0.05, 0.10))
+    frame.to_parquet(tmp_path / "user_domain_2020_with_profile.parquet",
+                     engine="pyarrow", index=False)
+
+    paths = mcomb.build(year=2020, n_boot=20)
+    key = ["outcome", "domain", "model", "term"]
+    for path in paths:
+        out = pd.read_parquet(path, columns=list(su.RESULT_SCHEMA))
+        duplicated = out[out.duplicated(subset=key, keep=False)]
+        assert duplicated.empty, (
+            f"{path} 里有 {len(duplicated)} 行重复键，例如\n"
+            f"{duplicated.sort_values(key).head(8).to_string(index=False)}"
+        )
+        _assert_accounting_identity(
+            out[out["outcome"] == mcomb.OUTCOME_PARTICIPATION], len(frame)
+        )
+
+
+def test_build_manifest_records_the_undefined_content_share(tmp_path, monkeypatch):
+    frame = _combo_fixture(n_per_gender=100, seed=34)
+    frame.loc[frame.index[:40], "public_topical_share"] = np.nan
+    frame.loc[frame.index[:40], "celebrity_topical_share"] = np.nan
+    monkeypatch.setattr(mcomb.config, "OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(mcomb, "CONTENT_THRESHOLDS", (0.10,))
+    frame.to_parquet(tmp_path / "user_domain_2020_with_profile.parquet",
+                     engine="pyarrow", index=False)
+
+    mcomb.build(year=2020, n_boot=20)
+    with open(tmp_path / "results" / "manifest_combination" / "manifest.json",
+              encoding="utf-8") as f:
+        manifest = json.load(f)
+    stats = manifest["counts"]["undefined_content"]["public"]
+    assert stats["n_undefined"] == 40
+    assert stats["share_undefined"] == pytest.approx(40 / len(frame))
+    assert set(stats) >= {"male", "female"}
+    assert stats["male"]["n_undefined"] + stats["female"]["n_undefined"] == 40
+    variants = manifest["params"]["participation_variants"]
+    assert mcomb.variant_label(None, undefined_as_absent=True) in variants
+
+
 def test_build_writes_both_tables_and_a_manifest(tmp_path, monkeypatch):
     frame = _combo_fixture(n_per_gender=150, seed=22)
     monkeypatch.setattr(mcomb.config, "OUTPUT_DIR", str(tmp_path))
@@ -437,7 +623,7 @@ def test_build_writes_both_tables_and_a_manifest(tmp_path, monkeypatch):
     frame.to_parquet(tmp_path / "user_domain_2020_with_profile.parquet",
                      engine="pyarrow", index=False)
 
-    paths = mcomb.build(year=2020)
+    paths = mcomb.build(year=2020, n_boot=20)
     assert len(paths) == 2
     for path in paths:
         out = pd.read_parquet(path, columns=list(su.RESULT_SCHEMA))
@@ -466,7 +652,7 @@ def test_build_writes_incrementally_so_a_killed_job_keeps_finished_stages(
 
     monkeypatch.setattr(mcomb, "fit_combination_multinomial", _explode)
     with pytest.raises(RuntimeError):
-        mcomb.build(year=2020)
+        mcomb.build(year=2020, n_boot=20)
 
     decomposition = tmp_path / "results" / "decomposition_source_content.parquet"
     assert decomposition.exists(), "§7 阶段已经算完，必须已经落盘"
