@@ -645,8 +645,8 @@ def _write_post_shards(output_dir, with_manifest_months=(1,)):
     shard_dir.mkdir(parents=True)
     frame = _posts().copy()
     # 表 A 真实存在、但表 C/表 D 一次都用不到的列
-    frame["public_terms"] = "疫情|防控"
-    frame["celebrity_terms"] = ""
+    frame["public_term_counts"] = "疫情:1|防控:1"
+    frame["celebrity_term_counts"] = ""
     frame["chain_stripped"] = False
     frame["province"] = "11"
     for month in sorted(frame["month"].unique()):
@@ -699,15 +699,15 @@ def _write_event_shards(output_dir):
 def test_read_shards_requests_only_the_columns_the_aggregations_use(tmp_path, monkeypatch):
     """parquet 读取必须显式传 columns
 
-    表 A 带着 {domain}_terms 两列竖线拼接的命中词字符串，表 C/表 D 一次
-    都用不到，全年读进内存纯属浪费（也违反项目的全局约定）。
+    表 A 带着 {domain}_term_counts 两列"词:次数"拼接字符串，表 C/表 D
+    一次都用不到，全年读进内存纯属浪费（也违反项目的全局约定）。
     """
     monkeypatch.setattr(but.config, "OUTPUT_DIR", str(tmp_path))
     _write_post_shards(tmp_path)
     frame, files = but._read_shards("post_domain_measures", 2020, but.POST_SHARD_COLUMNS)
     assert list(frame.columns) == but.POST_SHARD_COLUMNS
-    assert "public_terms" not in frame.columns
-    assert "celebrity_terms" not in frame.columns
+    assert "public_term_counts" not in frame.columns
+    assert "celebrity_term_counts" not in frame.columns
     assert len(files) == 2
 
 

@@ -27,8 +27,9 @@ DOMAINS = ("public", "celebrity")
 EXPRESSIVE_TYPES = tr.EXPRESSIVE_TYPES
 
 # 表 A 分片里表 C/表 D 真正用到的列。parquet 必须显式指定 columns：
-# 表 A 还带着 public_terms / celebrity_terms 两列竖线拼接的命中词字符串，
-# 全年一次性读进内存却一次都用不到，是纯粹的浪费。
+# 表 A 还带着 public_term_counts / celebrity_term_counts 两列"词:次数"
+# 拼接字符串（供 §13.3 词表重采样重新聚合用），全年一次性读进内存却
+# 一次都用不到，是纯粹的浪费。
 #
 # province：表 A 已经透传的省级行政区划代码列（见 build_post_table.py），
 # 这里显式读入供 aggregate_posts 聚合到表 C。region 不在这份列表里——
@@ -393,7 +394,7 @@ def combine_user_table(post_agg, event_agg, month_panel):
 def _read_shards(name, year, columns):
     """读取某一步的全年分片，返回 (合并后的 DataFrame, 分片文件列表)
 
-    必须显式传 columns：表 A 的 {domain}_terms 是竖线拼接的命中词字符串，
+    必须显式传 columns：表 A 的 {domain}_term_counts 是"词:次数"拼接字符串，
     表 C/表 D 一次都用不到，全年读进来只是白白占内存。
     """
     pattern = os.path.join(config.OUTPUT_DIR, f"{name}_{year}", "month=*.parquet")
