@@ -62,6 +62,54 @@ RESULT_SCHEMA = (
     "note",
 )
 
+# `scale` 是一个**封闭词表**，不是自由文本。它唯一的用途是告诉绘图层
+# "这一行该画在什么轴上、参照线画在哪里"，所以每多一个拼写变体，就多一个
+# 会被下游 if/else 漏掉的分支：方案文档只声明了四个取值，实现里一度长到
+# 十个，其中三个还是同一件事的三种写法。因此这里把允许的取值写死，由
+# tidy_result 在构造每一行时就地拒绝表外的取值——与它拒绝未知字段名
+# 完全同一个理由：静默接受一个没人认识的取值，比报错更容易一路混进论文。
+#
+# 分组说明（新增取值前先想清楚它属于哪一组，再往对应的元组里加）：
+#
+# 1) 落在 [0,1] 上的水平量，线性轴，无参照线（或参照线在 0，差值型时）：
+#    probability   二值事件的概率（进入率、预测格子）
+#    proportion    用户层面的占比（话题占比、参与月份占比）
+# 2) 对称的差值/系数量，线性轴，参照线在 0：
+#    log_odds      logit 尺度的回归系数（含交互项系数）
+#    log1p_count   log(1+计数) 尺度的 OLS 系数
+#    correlation   相关系数（phi / Spearman），天然落在 [-1,1]
+# 3) 比值量，**对数轴，参照线在 1**——三者共用同一种画法，但**不是同一个
+#    估计量**，因此刻意不合并成一个名字：
+#    risk_ratio    两个比例（或两组用户层面均值）之比。describe.py 原来把
+#                  它写成含糊的 "ratio"，与下面两个混在一起看不出区别，
+#                  这里改名为 risk_ratio，与 stats_utils.risk_ratio_ci 同名。
+#    odds_ratio    两个发生比之比（logit 系数取指数），在协变量集合不同的
+#                  模型之间不可比（见 models_core 模块文档第 1 条），
+#                  与 risk_ratio 数值上也不相等（罕见事件下才近似）。
+#    irr           零截断负二项的发生率比，且是"潜在未截断均值之比"
+#                  （models_core 模块文档第 4 条），既不是 risk_ratio 也
+#                  不是 odds_ratio。
+#    需要"这三个都画成对数轴 + 参照线 1"时用 RATIO_SCALES，不要在下游
+#    各自硬编码一份名字清单。
+# 4) 带单位的量，线性轴，无参照线：
+#    hours              小时（转发延迟）
+#    share_of_behavior  头部集中度份额（前 q 比例用户占行为总量的份额）；
+#                       它是一个 [0,1] 的份额，但分母是"行为总量"而不是
+#                       "用户总数"，与 proportion 不是同一个总体单位，
+#                       所以单列一个名字而不是并进 proportion。
+RATIO_SCALES = ("risk_ratio", "odds_ratio", "irr")
+
+RESULT_SCALES = (
+    "probability",
+    "proportion",
+    "log_odds",
+    "log1p_count",
+    "correlation",
+) + RATIO_SCALES + (
+    "hours",
+    "share_of_behavior",
+)
+
 _DEFAULT_CONFIDENCE = 0.95
 
 
@@ -365,7 +413,40 @@ def tidy_result(**kwargs):
             f"tidy_result 收到未知字段 {sorted(unknown)}，"
             f"超出共享结果 schema {RESULT_SCHEMA} 的范围"
         )
+    scale = kwargs.get("scale")
+    if scale is not None and scale not in RESULT_SCALES:
+        raise ValueError(
+            f"tidy_result 收到未知的 scale={scale!r}，超出封闭词表 {RESULT_SCALES}。"
+            "scale 决定绘图层把这一行画在什么轴上、参照线画在哪里，多一个拼写"
+            "变体就多一个会被下游漏掉的分支——真的需要一种新尺度时，请先在"
+            "stats_utils.RESULT_SCALES 里按分组说明加上它，并在绘图层处理它，"
+            "不要在调用处就地新造一个名字。"
+        )
     return {col: kwargs.get(col) for col in RESULT_SCHEMA}
+
+
+# ---------------------------------------------------------------------------
+# 样本流失原因的统一写法
+# ---------------------------------------------------------------------------
+
+def format_drop_reason(counts):
+    """把 [(原因, 观测数), ...] 拼成 "reason=count+reason=count" 形式
+
+    只写原因名而不写数量是不够的：读者看到
+    "missing_gender+no_expressive_posts+incomplete_profile" 和一个合计
+    n_dropped=3，无法知道每条规则各自丢了多少人——而"某条规则的代价有
+    多大"恰恰是各模块必须让读者能自己核对的东西。因此这里逐条记数量，
+    且各条数量按定义互不重叠、相加恰好等于 n_dropped（顺序归因）。
+
+    这个格式在整套结果表里只有一处实现，就是本函数：一张
+    decomposition_source_content.parquet 里同时出现两种 drop_reason 写法
+    （一半带计数、一半只有名字），会让"样本流程能不能重建"这件事变成
+    逐行掷骰子。models_interaction.format_drop_reason 是本函数的别名，
+    保留是因为 models_temporal 与测试都按那个名字引用它。
+    """
+    if not counts:
+        return None
+    return "+".join("{}={}".format(reason, n) for reason, n in counts)
 
 
 # ---------------------------------------------------------------------------

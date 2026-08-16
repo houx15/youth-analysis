@@ -323,6 +323,66 @@ def test_missing_month_is_counted_as_a_drop_not_an_exception():
     assert ((lomo["n_obs"] + lomo["n_dropped"]) == len(panel)).all()
 
 
+def test_month_fixed_effects_survives_a_covariate_with_missing_values():
+    """协变量含 NaN 时，聚类标准误的 groups 必须跟着 patsy 的取舍走
+
+    此前 groups 是在拟合之前从 sample 直接取的整列
+    （`sample[USER_COLUMN].to_numpy()`）。patsy 会静默丢掉任何一个协变量
+    为 NaN 的行，于是设计矩阵比 groups 短，statsmodels 抛
+    "The weights and list don't have the same length."，而 mc._safe_fit
+    把异常吞成一行"模型失败"——整个"月份固定效应 + 留一月重估"的块会读
+    成"这个假设检验过了但没估出来"，而不是"这里有个 bug"。
+
+    这条路径今天走不到，只是因为 build_user_tables 恰好把面板计数列填满
+    了；结果表的正确性不该依赖另一个模块的内部约定（这正是
+    mc._reconcile_nobs 明确拒绝依赖的同一件事）。这里在 M1 的协变量
+    n_posts 上打 40 个 NaN，断言模型照常估出来、n_obs 记的是真正进入拟合
+    的行数、且记账仍然自洽。
+    """
+    panel = _panel(n_users=200, months=(1, 2, 3), gap=0.15, seed=44)
+    panel.loc[panel.index[:40], "n_posts"] = np.nan
+    out = mt.fit_month_fixed_effects(panel, "public")
+
+    m1 = out[(out["outcome"] == mt.OUTCOME_ENTRY)
+             & (out["model"] == mt.fe_label(mt.LAYER_M1))
+             & (out["term"] == mt.TERM_GENDER)].iloc[0]
+    # 关键断言：这一层必须真的估出来，而不是留下一行 NaN 说"模型失败"
+    assert np.isfinite(m1["estimate"]), m1["note"]
+    assert np.isfinite(m1["se"]), m1["note"]
+    # n_obs 是真正进入拟合的行数（patsy 丢掉的 40 行不算），且记账自洽
+    assert m1["n_obs"] == len(panel) - 40
+    assert m1["n_obs"] + m1["n_dropped"] == len(panel)
+    assert f"{mt.REASON_MISSING_COVARIATE}=40" in m1["drop_reason"]
+    # M0 不含 n_posts，不受影响，仍然用满整张面板
+    m0 = out[(out["outcome"] == mt.OUTCOME_ENTRY)
+             & (out["model"] == mt.fe_label(mt.LAYER_M0))
+             & (out["term"] == mt.TERM_GENDER)].iloc[0]
+    assert m0["n_obs"] == len(panel)
+
+
+def test_cluster_groups_align_with_the_rows_patsy_kept():
+    """_cluster_groups 返回的标签必须与设计矩阵逐行对齐
+
+    直接钉住那个函数本身：上一条测试证明"整块不再假失败"，这一条证明
+    对齐方式是对的（长度等于 result.nobs，取值来自被保留下来的那些行）。
+    """
+    import statsmodels.formula.api as smf
+
+    panel = _panel(n_users=120, months=(1, 2), seed=45)
+    frame = mt.prepare_panel_frame(panel)
+    frame.loc[frame.index[:17], "n_posts"] = np.nan
+    model = smf.logit("public_source_entered ~ male + n_posts + C(month)",
+                      data=frame)
+    groups = mt._cluster_groups(model, frame)
+    assert len(groups) == model.exog.shape[0] == len(frame) - 17
+    kept = frame.loc[model.data.row_labels, mt.USER_COLUMN].to_numpy()
+    assert list(groups) == list(kept)
+    # 拟合本身也必须能跑通（长度对不上时 statsmodels 会直接抛 ValueError）
+    fitted = model.fit(cov_type="cluster", cov_kwds={"groups": groups},
+                       disp=False, maxiter=100)
+    assert np.isfinite(fitted.bse).all()
+
+
 def test_month_fixed_effects_reports_share_on_the_proportion_scale_only():
     """占比模型不给发生比：分数 logit 的指数化系数不是可解释的发生比
 
@@ -408,8 +468,13 @@ def _cleaning_fixture():
          "source_post": "p3", "source_time": "2020-06-01 10:00", "delay_hours": 50000.0},
         {"user_id": "u1", "gender": "m", "domain": "public",
          "source_post": "p1", "source_time": "2020-06-01 10:00", "delay_hours": 30.0},
+        # 跨年那条的延迟刻意取在 720 小时**之上**：400 小时低于超长延迟
+        # 阈值，无论两条规则谁先判，它都只会落在 prior_year 上，于是
+        # test_clean_delays_separates_prior_year_sources_from_long_delays
+        # 断言的"规则顺序"根本没有被检验（交换两条规则，计数一模一样）。
+        # 1000 小时同时命中两条规则，顺序才真的能被区分出来。
         {"user_id": "u4", "gender": "m", "domain": "celebrity",
-         "source_post": "p4", "source_time": "2019-12-20 10:00", "delay_hours": 400.0},
+         "source_post": "p4", "source_time": "2019-12-20 10:00", "delay_hours": 1000.0},
         {"user_id": "u5", "gender": "f", "domain": "celebrity",
          "source_post": "p5", "source_time": "2020-06-01 10:00", "delay_hours": None},
     ])
@@ -442,12 +507,22 @@ def test_clean_delays_keeps_the_earliest_of_a_duplicated_pair():
 def test_clean_delays_separates_prior_year_sources_from_long_delays():
     """跨年转发必须记在 prior_year 上，不能被"超长延迟"吞掉
 
-    一条 2019 年旧帖、延迟 400 小时的记录：如果先判超长延迟，它会被记成
-    异常值；实际上它是一个完全正常的跨年转发行为，只是不属于当年扩散。
+    fixture 里那条 2019 年旧帖的延迟是 1000 小时，**同时**命中"跨年"与
+    "超长延迟（>720 小时）"两条规则——这是本测试成立的前提：只有当一条
+    记录同时符合两条规则时，"谁先判"才有可分辨的后果。如果两条规则的
+    顺序被调换，这条记录会被记成 implausible，于是 prior_year=0、
+    implausible=2，下面两条断言都会挂。
+
+    为什么顺序必须是"先跨年、后超长"：一条 2019 年旧帖被隔了很久才转发，
+    是一个完全正常的跨年转发行为（只是不属于当年扩散），不是数据异常值。
+    把它记进 implausible 会同时污染两个数字——低估跨年转发的规模，
+    高估异常值的规模。
     """
     _, report = mt.clean_delays(_cleaning_fixture(), year=2020)
     assert report["removed"][mt.RULE_PRIOR_YEAR] == 1
     assert report["removed"][mt.RULE_IMPLAUSIBLE] == 1
+    # 前提自检：那条记录确实同时越过了超长延迟阈值，否则这个测试什么也没测
+    assert 1000.0 > mt.MAX_DELAY_HOURS
 
 
 def test_clean_delays_detects_millisecond_timestamps():

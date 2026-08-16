@@ -19,6 +19,12 @@
    不让"这是对谁的比例"这件事只能靠猜。其余三个比例型结果变量分母单一，
    同样填 `denominator` 列说明是哪个子总体（例如 source_share 的分母是
    "至少转发过一次的用户"）。
+   **两个分母变体同时折进 `model` 列**（"raw/all_users" 与
+   "raw/retweeters_only"，见 _ENTERED_DENOM_SPECS）：整套结果表共用
+   "(outcome, domain, model, term) 逐行唯一"这条不变量，只靠 denominator
+   区分会让表 2 有 16 行撞键，任何按四元组取行的下游都会静默拿到其中
+   任意一行。折进 model 的做法与 models_combination（"M1/share_ge_0.1"）、
+   models_temporal（"record_level/male/max=720h"）完全一致。
 3. 效应量优先、p 值不出场（研究协议全局约束）：表 2 每一行只有
    estimate/ci_low/ci_high，schema 里根本没有 p 值列。
 4. 二值结果变量（source_entered）用 Wilson/Newcombe/对数尺度 risk ratio
@@ -74,6 +80,22 @@ _TOP_SHARE_QS = ((0.01, "top1_share"), (0.05, "top5_share"))
 
 _BOOT_SEED = 0
 _BOOT_N = 1000
+
+# 表 2 的 model 列取值。source_entered 有两个分母口径，它们是同一个结果
+# 变量在两个不同总体上的两个估计，(outcome, domain, model, term) 这个键
+# 必须能把它们分开——只靠额外的 denominator 列区分，会让表 2 违反
+# "一个键唯一对应一行"这条整套结果表共用的不变量（models_interaction 里
+# 用断言守着，三个测试模块各测一遍），而下游任何一个按四元组 join 的
+# 调用方都会静默拿到其中任意一行。做法与 models_combination/models_temporal
+# 把变体折进 model 完全一致（"M1/share_ge_0.1"、"record_level/male/max=720h"）。
+MODEL_RAW = "raw"
+DENOM_ALL_USERS = "all_same_gender_users"
+DENOM_RETWEETERS = "retweeters_only"
+# (denominator 列的取值, model 列的变体标签, 用来收窄分母的列)
+_ENTERED_DENOM_SPECS = (
+    (DENOM_ALL_USERS, "raw/all_users", None),
+    (DENOM_RETWEETERS, "raw/retweeters_only", "n_retweets"),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -136,16 +158,18 @@ def _two_sample_bootstrap(male_values, female_values, statistic, n_boot=_BOOT_N,
 
 
 def _make_row(outcome, domain, term, estimate, ci_low, ci_high, scale, n_obs, n_dropped,
-              drop_reason, denominator, note=None):
+              drop_reason, denominator, note=None, model=MODEL_RAW):
     """套上共享结果 schema（tidy_result），再补上表 2 专属的 denominator 列
 
     denominator 不在 stats_utils.RESULT_SCHEMA 里——那是给 models_*.parquet
     用的通用 schema，表 2 需要额外标注分母，tidy_result 会拒绝未知字段，
     所以在拿到 tidy_result 返回的 dict 之后再补这一列，而不是塞进
-    tidy_result 的调用参数。
+    tidy_result 的调用参数。denominator 保留是因为它是给人读的（"这是对谁
+    的比例"），而 model 里的变体标签是给机器用的唯一键的一部分——两者
+    刻意不合并成一列。
     """
     row = su.tidy_result(
-        outcome=outcome, domain=domain, model="raw", term=term,
+        outcome=outcome, domain=domain, model=model, term=term,
         estimate=estimate, se=None, ci_low=ci_low, ci_high=ci_high,
         scale=scale, n_obs=n_obs, n_dropped=n_dropped, drop_reason=drop_reason,
         note=note,
@@ -178,11 +202,7 @@ def _binary_outcome_rows(user_df, domain, male_mask, female_mask):
     female_df = user_df[female_mask]
     rows = []
 
-    denom_specs = (
-        ("all_same_gender_users", None),
-        ("retweeters_only", "n_retweets"),
-    )
-    for denom_label, filter_col in denom_specs:
+    for denom_label, model_label, filter_col in _ENTERED_DENOM_SPECS:
         m_sub = male_df if filter_col is None else male_df[male_df[filter_col] > 0]
         f_sub = female_df if filter_col is None else female_df[female_df[filter_col] > 0]
         s_m, n_m = int(m_sub[outcome_col].sum()), len(m_sub)
@@ -196,24 +216,26 @@ def _binary_outcome_rows(user_df, domain, male_mask, female_mask):
         rows.append(_make_row(
             outcome, domain, "male", s_m / n_m if n_m else np.nan, p_m_low, p_m_high,
             "probability", n_m, n_dropped_m, drop_reason if n_dropped_m else None, denom_label,
-            note="wilson",
+            note="wilson", model=model_label,
         ))
         rows.append(_make_row(
             outcome, domain, "female", s_f / n_f if n_f else np.nan, p_f_low, p_f_high,
             "probability", n_f, n_dropped_f, drop_reason if n_dropped_f else None, denom_label,
-            note="wilson",
+            note="wilson", model=model_label,
         ))
 
         diff, d_low, d_high = su.proportion_diff_ci(s_m, n_m, s_f, n_f)
         rows.append(_make_row(
             outcome, domain, "gap_pp", diff, d_low, d_high, "probability",
             n_m + n_f, n_dropped_m + n_dropped_f, None, denom_label, note="newcombe",
+            model=model_label,
         ))
 
         rr, rr_low, rr_high = su.risk_ratio_ci(s_m, n_m, s_f, n_f)
         rows.append(_make_row(
-            outcome, domain, "risk_ratio", rr, rr_low, rr_high, "ratio",
+            outcome, domain, "risk_ratio", rr, rr_low, rr_high, "risk_ratio",
             n_m + n_f, n_dropped_m + n_dropped_f, None, denom_label, note="log_scale",
+            model=model_label,
         ))
 
     rows.extend(_top_share_rows(outcome, domain, count_col, male_df, female_df))
@@ -267,7 +289,7 @@ def _proportion_outcome_rows(user_df, domain, outcome, count_col_tpl, drop_reaso
 
     ratio_point, ratio_low, ratio_high = _two_sample_bootstrap(m_vals, f_vals, _ratio)
     rows.append(_make_row(
-        outcome, domain, "risk_ratio", ratio_point, ratio_low, ratio_high, "ratio",
+        outcome, domain, "risk_ratio", ratio_point, ratio_low, ratio_high, "risk_ratio",
         len(male_valid) + len(female_valid), n_dropped_m + n_dropped_f, None, denominator,
         note="bootstrap_two_sample",
     ))
@@ -280,7 +302,10 @@ def raw_gender_gaps(user_df):
     """表 2：四个核心结果变量 x 两个领域的原始性别差异
 
     每个结果变量在每个领域下产出多行（男/女取值、pp 差距、risk ratio、
-    头部集中度），用 term 列区分具体是哪个量，用 denominator 列区分分母。
+    头部集中度），用 term 列区分具体是哪个量，用 model 列区分 source_entered
+    的两个分母变体（denominator 列同时保留，给人读）。
+    (outcome, domain, model, term) 在整张表里逐行唯一，由
+    test_table2_result_keys_are_unique 守着。
     绝不产出 p 值列——效应量与区间已经是全部内容。
     """
     male_mask = user_df["gender"] == "m"
@@ -345,6 +370,12 @@ def build(year=config.YEAR):
     # 模块会把前面所有模块的溯源记录悄悄抹掉——这与 Plan 1 里表 A 按月
     # 分片各自建 manifest_month_NN/ 子目录是同一个约定，这里延续它。
     config.write_manifest(manifest, os.path.join(out_dir, "manifest_describe"))
+    # 运行标识：本步骤写出的两张表都记进 results/run_stamps.json，导出层
+    # 据此校验 12 张结果表来自同一次运行（见 config.verify_same_run）
+    config.stamp_result_files(
+        out_dir, [os.path.basename(table1_path), os.path.basename(table2_path)],
+        step=f"describe_{year}",
+    )
     return table1_path, table2_path
 
 

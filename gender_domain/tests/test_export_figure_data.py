@@ -287,6 +287,9 @@ def _write_results(results_dir):
         else:
             frame = schema_frame.copy()
         frame.to_parquet(os.path.join(results_dir, name), engine="pyarrow", index=False)
+    # 12 张表全部记进 run_stamps.json：真实流程里由各 build 步骤写，
+    # 导出层据此核对它们来自同一次运行（config.verify_same_run）
+    config.stamp_result_files(results_dir, list(ex.RESULT_FILES), step="test_fixture")
 
 
 def _write_events(events_dir, year=2020):
@@ -399,3 +402,75 @@ def test_build_is_reproducible_end_to_end(analysis_dir):
         columns=ex.DIST_COLUMNS,
     )
     pd.testing.assert_frame_equal(first, second)
+
+
+# ---------------------------------------------------------------------------
+# 运行标识：只检查"文件在不在"挡不住新旧混装
+# ---------------------------------------------------------------------------
+
+def test_copy_result_tables_rejects_tables_from_a_different_run(analysis_dir):
+    """一张来自上一次运行的旧表必须被点名，而不是照单全收
+
+    这是 C1 的核心：run_results.slurm 此前没有 set -e，某一步崩掉之后
+    后面的步骤照常运行、作业退出码仍是 0、--mail-type=end 照样报"结束"，
+    盘上留下"前几张是本次的、后几张是上一次的"这种组合。旧文件同样存在，
+    存在性检查对此完全无效——最后图上会把上周的估计画在本周的样本量旁边。
+    """
+    results = str(analysis_dir / "results")
+    stamps = config.read_run_stamps(results)
+    stamps["models_entry.parquet"]["run_id"] = "last-week"
+    with open(os.path.join(results, config.RUN_STAMP_FILE), "w",
+              encoding="utf-8") as f:
+        json.dump(stamps, f)
+
+    with pytest.raises(ValueError) as err:
+        ex.copy_result_tables()
+    message = str(err.value)
+    assert "models_entry.parquet" in message      # 不一致的文件必须被点名
+    assert "last-week" in message
+    # 没有一张表被复制出去：混装的结果连碰都不该碰
+    assert not os.path.exists(
+        os.path.join(ex.figure_data_dir(), "models_entry.parquet"))
+
+
+def test_copy_result_tables_rejects_a_table_with_no_run_stamp(analysis_dir):
+    """没有运行标识的表同样不能放行：它无法证明自己属于这一批"""
+    results = str(analysis_dir / "results")
+    stamps = config.read_run_stamps(results)
+    del stamps["models_share.parquet"]
+    with open(os.path.join(results, config.RUN_STAMP_FILE), "w",
+              encoding="utf-8") as f:
+        json.dump(stamps, f)
+
+    with pytest.raises(ValueError) as err:
+        ex.copy_result_tables()
+    assert "models_share.parquet" in str(err.value)
+
+
+def test_copy_result_tables_passes_when_every_table_shares_one_run(analysis_dir):
+    outputs = ex.copy_result_tables()
+    assert len(outputs) == len(ex.RESULT_FILES)
+    run_ids = {run for _, _, run in outputs}
+    assert len(run_ids) == 1
+
+
+# ---------------------------------------------------------------------------
+# figure_data/manifest.json：跟着结果表一起下载，本地据它核对年份
+# ---------------------------------------------------------------------------
+
+def test_build_writes_a_manifest_into_the_download_directory(analysis_dir):
+    """本地的 figures.py 看不到服务器上的 results/manifest_figures/
+
+    figure_data/ 是唯一会被整个拷到笔记本上的目录，年份必须写在里面，
+    否则"2019 年的导出 + --year=2020"在本地无法察觉。
+    """
+    ex.build(year=2020, max_points=50, seed=42)
+    path = os.path.join(ex.figure_data_dir(), ex.FIGURE_MANIFEST_FILE)
+    assert os.path.exists(path)
+    with open(path, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+    assert manifest["params"]["year"] == 2020
+    assert manifest["params"]["seed"] == 42
+    # 结果表共用的运行标识也带过去，出问题时能直接指认是哪一批
+    assert manifest["counts"]["results_run_id"]
+    assert manifest["run_id"]

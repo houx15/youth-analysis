@@ -28,6 +28,8 @@ gender_domain.models_core 的单元测试（§6.2–6.5 进入/强度/占比/持
    也不是少一行——少一行在论文里读起来像"这个假设没人做过"。
 """
 
+import os
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -222,7 +224,9 @@ def test_m2_fits_fewer_observations_and_records_the_attrition():
     assert m2["n_obs"] == n_complete
     assert m2["n_obs"] < m1["n_obs"]
     assert m2["n_dropped"] == len(df) - n_complete
-    assert m2["drop_reason"] == "incomplete_profile"
+    # drop_reason 是带计数的顺序归因（与 §7.1/§7.2 的行同一种写法）：
+    # 只写原因名的话，读者拿不到"这条规则本身丢了多少人"
+    assert m2["drop_reason"] == "incomplete_profile={}".format(len(df) - n_complete)
 
 
 def test_m2_also_requires_region_because_region_is_an_m2_control():
@@ -232,7 +236,7 @@ def test_m2_also_requires_region_because_region_is_an_m2_control():
     out = mc.fit_entry_models(df, "public")
     m2 = _row(out, "M2")
     assert m2["n_obs"] == len(df) - 80
-    assert m2["drop_reason"] == "incomplete_profile"
+    assert m2["drop_reason"] == "incomplete_profile=80"
     assert _row(out, "M1")["n_obs"] == len(df)
 
 
@@ -244,7 +248,7 @@ def test_missing_profile_columns_degrade_only_m2():
     m2 = _row(out, "M2")
     assert np.isnan(m2["estimate"])
     assert m2["n_obs"] == 0
-    assert m2["drop_reason"] == "incomplete_profile"
+    assert m2["drop_reason"] == "incomplete_profile={}".format(len(df))
     assert isinstance(m2["note"], str) and m2["note"]
     assert np.isfinite(_row(out, "M1")["estimate"])
 
@@ -635,3 +639,100 @@ def test_build_writes_four_result_tables(tmp_path, monkeypatch):
         assert list(frame.columns) == list(su.RESULT_SCHEMA)
         assert sorted(frame["domain"].unique()) == ["celebrity", "public"]
     assert (tmp_path / "results" / "manifest_models_core" / "manifest.json").exists()
+
+
+def test_build_result_keys_are_unique(tmp_path, monkeypatch):
+    """一次完整 build 之后，(outcome, domain, model, term) 必须逐行唯一
+
+    §12 的绘图层在 15 个地方按这个四元组取行再 .iloc[0]。键一旦撞上，
+    取到的是哪一行完全取决于行序——不会报错、不会留痕，只会让图上的某个
+    点变成另一个模型的估计。models_interaction / models_combination /
+    models_temporal 三个模块各有一条这样的测试，喂图 1–3 的这两个模块
+    （describe 与 models_core）此前一条都没有，这条补上 models_core 这一半。
+    """
+    df = _simulate_users(n_male=400, n_female=400, seed=41)
+    monkeypatch.setattr(mc.config, "OUTPUT_DIR", str(tmp_path))
+    df.to_parquet(tmp_path / "user_domain_2020_with_profile.parquet",
+                  engine="pyarrow", index=False)
+
+    key = ["outcome", "domain", "model", "term"]
+    for path in mc.build(year=2020):
+        frame = pd.read_parquet(path, columns=list(su.RESULT_SCHEMA))
+        duplicated = frame[frame.duplicated(subset=key, keep=False)]
+        assert duplicated.empty, (
+            f"{path} 里有 {len(duplicated)} 行重复键，例如\n"
+            f"{duplicated.sort_values(key).head(8).to_string(index=False)}"
+        )
+
+
+def test_build_uses_only_the_declared_scale_vocabulary(tmp_path, monkeypatch):
+    """结果表里出现的每一个 scale 都必须在封闭词表里"""
+    df = _simulate_users(n_male=300, n_female=300, seed=42)
+    monkeypatch.setattr(mc.config, "OUTPUT_DIR", str(tmp_path))
+    df.to_parquet(tmp_path / "user_domain_2020_with_profile.parquet",
+                  engine="pyarrow", index=False)
+    for path in mc.build(year=2020):
+        frame = pd.read_parquet(path, columns=list(su.RESULT_SCHEMA))
+        assert set(frame["scale"].dropna()) <= set(su.RESULT_SCALES)
+
+
+def test_build_stamps_every_result_table_with_the_run_id(tmp_path, monkeypatch):
+    """四张表都要记进 results/run_stamps.json，且共用同一个 run_id
+
+    这是 C1 那条"崩掉的一步会静默发表上一次的数字"的落点之一：导出层
+    只有拿到每张表的运行标识，才能判断盘上这一组表是不是同一批。
+    """
+    df = _simulate_users(n_male=200, n_female=200, seed=43)
+    monkeypatch.setattr(mc.config, "OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setenv(mc.config.RUN_ID_ENV, "run-under-test")
+    df.to_parquet(tmp_path / "user_domain_2020_with_profile.parquet",
+                  engine="pyarrow", index=False)
+
+    paths = mc.build(year=2020)
+    stamps = mc.config.read_run_stamps(str(tmp_path / "results"))
+    for path in paths:
+        assert stamps[os.path.basename(path)]["run_id"] == "run-under-test"
+
+
+# ---------------------------------------------------------------------------
+# _formula_terms：缺列与常量列是两件不同的事
+# ---------------------------------------------------------------------------
+
+def test_formula_terms_drops_nothing_from_a_well_formed_m1_frame():
+    """结构良好的 M1 建模帧不该掉任何一个协变量
+
+    这条断言存在的理由：`covariate_note` 只在有东西被剔除时才写 note，
+    所以"note 是空的"既可能意味着一切正常，也可能意味着剔除清单根本没
+    被拼进去。先钉死"正常情况下确实一个都不掉"，下面两条关于剔除原因的
+    测试才有意义。
+    """
+    df = _simulate_users(n_male=100, n_female=100, seed=44)
+    frame = mc.prepare_model_frame(df)
+    terms, dropped = mc._formula_terms(mc.M1, frame)
+    assert dropped == []
+    assert mc.covariate_note(dropped) is None
+    assert terms[0] == mc.FOCAL_COLUMN
+    assert set(terms[1:]) == set(mc.M1[1:])
+
+
+def test_formula_terms_distinguishes_an_absent_column_from_a_constant_one():
+    """缺列与常量列必须写成两种不同的 note 前缀
+
+    两者是完全不同的事：verified_flag 整列不在建模帧里，是上游构表漏了
+    一列、必须有人去修的 bug；verified_flag 在本层样本里恰好都等于 1，
+    是这一层样本的真实性质。都写成 dropped_constant 会让前者永远伪装
+    成后者，"这一层其实没控制住它"与"这一列压根没送进来"再也分不开。
+    """
+    df = _simulate_users(n_male=100, n_female=100, seed=45)
+    frame = mc.prepare_model_frame(df)
+    frame["verified_flag"] = 1.0                 # 常量列
+    frame = frame.drop(columns=["log_fans"])     # 整列缺失
+    _, dropped = mc._formula_terms(mc.M2, frame)
+    assert ("verified_flag", mc.DROP_KIND_CONSTANT) in dropped
+    assert ("log_fans", mc.DROP_KIND_MISSING) in dropped
+
+    note = mc.covariate_note(dropped)
+    assert "{}:verified_flag".format(mc.DROP_KIND_CONSTANT) in note
+    assert "{}:log_fans".format(mc.DROP_KIND_MISSING) in note
+    # 两个前缀不能是同一个字符串，否则这条测试什么也没区分
+    assert mc.DROP_KIND_CONSTANT != mc.DROP_KIND_MISSING

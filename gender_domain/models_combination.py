@@ -810,7 +810,7 @@ def fit_content_on_source(user_df, domain, content_threshold=None):
         width_terms = [FOCAL_COLUMN, "source_flag", "male_x_source"] + others
         base_note = mc._join_notes(
             model_note,
-            "dropped_constant:" + ",".join(dropped) if dropped else None,
+            mc.covariate_note(dropped),
         )
 
         blocked = _blocked_note(sample, width_terms, outcome_col="content_flag")
@@ -1107,7 +1107,7 @@ def fit_combination_multinomial(user_df):
             frame, layer, n_input, base_mask=known, base_reason=REASON_UNKNOWN_COMBO,
         )
         terms, dropped = mc._formula_terms(covariates, sample)
-        base_note = "dropped_constant:" + ",".join(dropped) if dropped else None
+        base_note = mc.covariate_note(dropped)
 
         categories = [c for c in COMBO_CATEGORIES
                       if c in set(sample[COMBO_COLUMN].astype("object"))]
@@ -1335,6 +1335,9 @@ def _write_partial(frames, path, out_dir, source_path, year, n_users, completed,
     frame.to_parquet(path, engine="pyarrow", index=False)
     n_failed = int(frame["estimate"].isna().sum())
     print(f"已保存（增量）: {path}（{len(frame)} 行，其中 {n_failed} 行为拟合失败留痕）")
+    # 见 models_interaction._write_partial：增量落盘的每一份都要带上运行标识
+    config.stamp_result_files(out_dir, [os.path.basename(path)],
+                              step=f"models_combination_{year}")
 
     manifest = config.build_manifest(
         step=f"models_combination_{year}",

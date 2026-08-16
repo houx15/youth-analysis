@@ -240,17 +240,31 @@ def active_months_column(frame):
 # 公式与样本
 # ---------------------------------------------------------------------------
 
+# _formula_terms 剔除一个协变量的两种原因。两者在结果表里必须能分开：
+# "这一列根本不在表里"（上游少写了一列、或读 parquet 时没取这一列）与
+# "这一列在本样本里恰好是常量"（例如 M2 子样本里所有人都已认证）是两件
+# 完全不同的事——前者是必须有人去修的构表 bug，后者是这一层样本的真实
+# 性质。都写成 dropped_constant 会让前者永远伪装成后者。
+DROP_KIND_CONSTANT = "dropped_constant"
+DROP_KIND_MISSING = "missing_covariate"
+
+
 def _formula_terms(covariates, sample):
-    """把协变量常量翻译成 patsy 右侧项，并剔除在本样本里退化的变量
+    """把协变量常量翻译成 patsy 右侧项，并剔除在本样本里用不了的变量
 
     - "gender" -> male（0/1 数值列，见 FOCAL_COLUMN 的说明）
     - "region" -> C(region)（分类变量）
-    - 在本样本里取值唯一的协变量直接剔除：留着它只会让设计矩阵奇异，
-      拟合要么报错要么给出无意义的巨大系数。剔除了哪些变量写进 note，
-      不静默处理——"这一层其实没控制住 verified_flag"是读者需要知道的。
+    - 样本里根本没有这一列：剔除并记为 DROP_KIND_MISSING；
+    - 在本样本里取值唯一的协变量直接剔除，记为 DROP_KIND_CONSTANT：
+      留着它只会让设计矩阵奇异，拟合要么报错要么给出无意义的巨大系数。
+    剔除了哪些变量、因为哪一种原因，都写进 note，不静默处理——
+    "这一层其实没控制住 verified_flag"是读者需要知道的，而"verified_flag
+    这一列压根不在建模帧里"更是必须有人去修的东西。
 
     Returns:
-        (terms, dropped)：patsy 项列表，与被剔除的协变量名列表
+        (terms, dropped)：patsy 项列表，与 [(协变量名, 剔除原因), ...]
+        （原因取 DROP_KIND_CONSTANT / DROP_KIND_MISSING）。用
+        `covariate_note(dropped)` 把它拼成结果表里的 note 片段。
     """
     terms = []
     dropped = []
@@ -259,13 +273,31 @@ def _formula_terms(covariates, sample):
             terms.append(FOCAL_COLUMN)
             continue
         if name not in sample.columns:
-            dropped.append(name)
+            dropped.append((name, DROP_KIND_MISSING))
             continue
         if sample[name].nunique(dropna=True) < 2:
-            dropped.append(name)
+            dropped.append((name, DROP_KIND_CONSTANT))
             continue
         terms.append("C(region)" if name == "region" else name)
     return terms, dropped
+
+
+def covariate_note(dropped):
+    """把 _formula_terms 的剔除清单拼成 note 片段，两种原因各自成组
+
+    形如 "dropped_constant:verified_flag+missing_covariate:region"。
+    没有任何剔除时返回 None（一个结构良好的 M1 建模帧就该是这样，由
+    test_formula_terms_drops_nothing_from_a_well_formed_m1_frame 守着）。
+    """
+    by_kind = {}
+    for name, kind in dropped:
+        by_kind.setdefault(kind, []).append(name)
+    parts = [
+        "{}:{}".format(kind, ",".join(by_kind[kind]))
+        for kind in (DROP_KIND_CONSTANT, DROP_KIND_MISSING)
+        if kind in by_kind
+    ]
+    return "+".join(parts) if parts else None
 
 
 def _layer_sample(frame, layer, n_input, base_mask=None, base_reason=None):
@@ -278,17 +310,30 @@ def _layer_sample(frame, layer, n_input, base_mask=None, base_reason=None):
         base_mask: 该结果变量自身的有效性掩码（例如占比非 NaN、计数为正）
         base_reason: 上述掩码对应的缺失原因字符串
 
+    drop_reason 用**带计数的顺序归因**格式（stats_utils.format_drop_reason，
+    形如 "missing_gender=11+no_expressive_posts=19"），而不是只写原因名：
+    同一张 decomposition_source_content.parquet 里，§7.1/§7.2 的行走的是
+    models_interaction 的带计数写法，§7.3 的行走的是本函数——两种格式并存
+    时，样本流程对一半的行可以重建、对另一半不能，读者没有办法判断该信
+    哪一半。计数按剔除顺序归因，互不重叠，相加恰好等于 n_dropped。
+
     Returns:
         (sample, n_obs, n_dropped, drop_reason)
     """
     mask = pd.Series(True, index=frame.index)
-    reasons = []
-    if n_input > len(frame):
-        reasons.append("missing_gender")
+    counts = []
+    n_missing_gender = int(n_input - len(frame))
+    if n_missing_gender > 0:
+        counts.append(("missing_gender", n_missing_gender))
     if base_mask is not None:
-        mask &= base_mask.reindex(frame.index).fillna(False).astype(bool)
-        if int((~mask).sum()) > 0 and base_reason:
-            reasons.append(base_reason)
+        base = base_mask.reindex(frame.index).fillna(False).astype(bool)
+        n_base_dropped = int((mask & ~base).sum())
+        mask &= base
+        if n_base_dropped > 0:
+            # base_reason 缺省只可能是调用方漏写；宁可记一个笼统的名字，
+            # 也不能让这批被剔除的观测在 drop_reason 里凭空消失（那会让
+            # 逐条计数相加不等于 n_dropped）
+            counts.append((base_reason or "outcome_undefined", n_base_dropped))
     if layer == "M2":
         complete = frame["profile_complete"] if "profile_complete" in frame.columns \
             else pd.Series(False, index=frame.index)
@@ -296,14 +341,14 @@ def _layer_sample(frame, layer, n_input, base_mask=None, base_reason=None):
             complete = complete & frame["region"].notna()
         before = int(mask.sum())
         mask &= complete.astype(bool)
-        if int(mask.sum()) < before:
-            reasons.append("incomplete_profile")
+        n_incomplete = before - int(mask.sum())
+        if n_incomplete > 0:
+            counts.append(("incomplete_profile", n_incomplete))
 
     sample = frame[mask]
     n_obs = len(sample)
     n_dropped = n_input - n_obs
-    drop_reason = "+".join(reasons) if reasons else None
-    return sample, n_obs, n_dropped, drop_reason
+    return sample, n_obs, n_dropped, su.format_drop_reason(counts)
 
 
 def _join_notes(*parts):
@@ -423,8 +468,10 @@ def _reconcile_nobs(result, n_input, n_obs, n_dropped, drop_reason):
     """
     fitted = int(result.nobs)
     if fitted != n_obs:
+        # 与 _layer_sample 同一种带计数的写法：只写 "missing_covariate"
+        # 不写数量，读者就无法判断 patsy 到底静默丢了几行
         reasons = [drop_reason] if drop_reason else []
-        reasons.append("missing_covariate")
+        reasons.append("missing_covariate={}".format(n_obs - fitted))
         drop_reason = "+".join(reasons)
         n_obs = fitted
         n_dropped = n_input - fitted
@@ -532,7 +579,7 @@ def fit_entry_models(user_df, domain, note_prefix=None):
         )
         note = _join_notes(
             base_note,
-            "dropped_constant:" + ",".join(dropped) if dropped else None,
+            covariate_note(dropped),
             fail,
         )
         if result is None:
@@ -651,7 +698,7 @@ def fit_intensity_models(user_df, domain):
                                  _join_notes(NOTE_LOG1P_OLS, blocked)))
             continue
 
-        dropped_note = "dropped_constant:" + ",".join(dropped) if dropped else None
+        dropped_note = covariate_note(dropped)
 
         # --- 第二部分：零截断负二项（NB2），报告 IRR ---
         formula = "{} ~ {}".format(count_col, " + ".join(terms))
@@ -753,7 +800,7 @@ def fit_share_models(user_df, domain, outcome):
             sample, outcome_col, terms, f"{outcome}/{domain}/{model}"
         )
         note = _join_notes(
-            "dropped_constant:" + ",".join(dropped) if dropped else None, fail
+            covariate_note(dropped), fail
         )
         if result is None:
             rows.append(_nan_row(outcome, domain, model, TERM_AME, "proportion",
@@ -828,7 +875,7 @@ def fit_persistence_models(user_df, domain):
         note = _join_notes(
             "months_weighted_fit",
             "ame_averaged_over_users",
-            "dropped_constant:" + ",".join(dropped) if dropped else None,
+            covariate_note(dropped),
             fail,
         )
         if result is None:
@@ -906,6 +953,9 @@ def build(year=config.YEAR):
     # results/ 根目录是所有 results 层模块共用的，不能各写各的 manifest.json
     # （与 describe 的 manifest_describe/ 同一约定）。
     config.write_manifest(manifest, os.path.join(out_dir, "manifest_models_core"))
+    config.stamp_result_files(
+        out_dir, [os.path.basename(p) for p in paths], step=f"models_core_{year}",
+    )
     return paths
 
 

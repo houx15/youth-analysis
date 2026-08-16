@@ -11,6 +11,8 @@ source_entered/source_share/topical_share/source_month_share 四个
 "标准答案"，因为那些函数本身已经在 test_stats_utils.py 里单独验证过。
 """
 
+import os
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -374,3 +376,85 @@ def test_raw_gender_gaps_note_labels_interval_method_per_row():
     assert male_binary["note"] != male_prop["note"]
     assert gap_binary["note"] != gap_prop["note"]
     assert rr_binary["note"] != rr_prop["note"]
+
+
+# ---------------------------------------------------------------------------
+# 表 2 的唯一键：(outcome, domain, model, term) 逐行唯一
+# ---------------------------------------------------------------------------
+
+def test_table2_result_keys_are_unique():
+    """整张表 2 里 (outcome, domain, model, term) 必须逐行唯一
+
+    这是整套结果表共用的不变量：models_interaction 里用断言守着，
+    三个测试模块各测一遍，而绘图层在 15 个地方按这个四元组取行再
+    .iloc[0]。表 2 此前有 16 行撞键——source_entered 的两个分母口径
+    都写 model="raw"，只靠额外的 denominator 列区分，任何按四元组
+    join 的下游都会静默拿到其中任意一行。
+    """
+    out = de.raw_gender_gaps(_table2_fixture())
+    key = ["outcome", "domain", "model", "term"]
+    duplicated = out[out.duplicated(subset=key, keep=False)]
+    assert duplicated.empty, (
+        f"表 2 里有 {len(duplicated)} 行重复键，例如\n"
+        f"{duplicated.sort_values(key).head(8).to_string(index=False)}"
+    )
+
+
+def test_source_entered_denominators_are_separate_model_variants():
+    """两个分母口径折进 model 列，denominator 列同时保留给人读
+
+    折进 model 的做法与 models_combination（"M1/share_ge_0.1"）、
+    models_temporal（"record_level/male/max=720h"）完全一致。
+    """
+    out = de.raw_gender_gaps(_table2_fixture())
+    entered = out[out["outcome"] == "source_entered"]
+    # 分母口径的行落在两个 model 变体上；头部集中度行分母不适用，仍是 raw
+    by_model = dict(zip(entered["model"], entered["denominator"]))
+    assert by_model["raw/all_users"] == de.DENOM_ALL_USERS
+    assert by_model["raw/retweeters_only"] == de.DENOM_RETWEETERS
+    # 同一个 (domain, term) 在两个变体下各有一行，且互不撞键
+    male_all = _rows(out, "source_entered", "public", "male", de.DENOM_ALL_USERS)
+    male_rt = _rows(out, "source_entered", "public", "male", de.DENOM_RETWEETERS)
+    assert male_all["model"] != male_rt["model"]
+    # 分母不同，估计值也确实不同（否则这条测试区分不出任何东西）
+    assert male_all["estimate"] != pytest.approx(male_rt["estimate"])
+
+
+def test_table2_uses_only_the_declared_scale_vocabulary():
+    """表 2 里出现的每一个 scale 都必须在 stats_utils 的封闭词表里
+
+    尤其是 risk ratio 那一行：它原来叫含糊的 "ratio"，与 odds_ratio /
+    irr 三个名字说同一种画法（对数轴 + 参照线 1）却互不相认。
+    """
+    out = de.raw_gender_gaps(_table2_fixture())
+    assert set(out["scale"].dropna()) <= set(su.RESULT_SCALES)
+    rr = _rows(out, "source_entered", "public", "risk_ratio", de.DENOM_ALL_USERS)
+    assert rr["scale"] == "risk_ratio"
+    assert rr["scale"] in su.RATIO_SCALES
+
+
+# ---------------------------------------------------------------------------
+# CLI：落盘的表也要满足同一条不变量，并带上运行标识
+# ---------------------------------------------------------------------------
+
+def test_build_writes_unique_keys_and_stamps_the_run_id(tmp_path, monkeypatch):
+    monkeypatch.setattr(de.config, "OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setenv(de.config.RUN_ID_ENV, "run-under-test")
+    # 表 2 的 fixture 只带结果变量所需的原始计数；表 1 还要四个活动变量，
+    # 这里补齐（取值本身与本测试无关，本测试只看键唯一性与运行标识）
+    frame = _table2_fixture()
+    for var in de.ACTIVITY_VARS:
+        if var not in frame.columns:
+            frame[var] = np.arange(len(frame), dtype=float) + 1.0
+    frame.to_parquet(tmp_path / "user_domain_2020.parquet",
+                     engine="pyarrow", index=False)
+
+    table1_path, table2_path = de.build(year=2020)
+    table2 = pd.read_parquet(table2_path,
+                             columns=list(su.RESULT_SCHEMA) + ["denominator"])
+    key = ["outcome", "domain", "model", "term"]
+    assert not table2.duplicated(subset=key).any()
+
+    stamps = de.config.read_run_stamps(str(tmp_path / "results"))
+    for path in (table1_path, table2_path):
+        assert stamps[os.path.basename(path)]["run_id"] == "run-under-test"

@@ -10,6 +10,7 @@ gender_domain.figures 的单元测试（§12 正文图与附录图）。
 matplotlib 用 Agg 无头后端。
 """
 
+import json
 import os
 from datetime import datetime
 
@@ -48,11 +49,16 @@ def _table2():
         ("topical_share", "celebrity", "proportion", "users_with_expressive_posts", 0.03, 0.11),
     ]
     for outcome, domain, scale, denom, male, female in specs:
+        # source_entered 的两个分母口径是两个 model 变体（describe.py 里
+        # 折进 model 列，见 _ENTERED_DENOM_SPECS）；其余结果变量分母单一，
+        # model 仍是 "raw"。合成数据必须照着真实模块的形状写，否则测试
+        # 守的是一份现实中不存在的表。
+        model = fg.PRIMARY_TABLE2_MODEL[outcome]
         for term, est, n in (("male", male, 52000), ("female", female, 174000)):
-            rows.append(_row(outcome=outcome, domain=domain, model="raw", term=term,
+            rows.append(_row(outcome=outcome, domain=domain, model=model, term=term,
                              estimate=est, ci_low=est - 0.01, ci_high=est + 0.01,
                              scale=scale, n_obs=n, n_dropped=0, note="wilson"))
-        rows.append(_row(outcome=outcome, domain=domain, model="raw", term="gap_pp",
+        rows.append(_row(outcome=outcome, domain=domain, model=model, term="gap_pp",
                          estimate=male - female, ci_low=male - female - 0.01,
                          ci_high=male - female + 0.01, scale=scale,
                          n_obs=226000, n_dropped=0, note="newcombe"))
@@ -60,9 +66,11 @@ def _table2():
     frame["denominator"] = "all_same_gender_users"
     frame.loc[frame["outcome"] == "topical_share", "denominator"] = \
         "users_with_expressive_posts"
-    # 再补一组非主口径分母的行，确认图会按分母筛选而不是把两套口径叠在一起
+    # 再补一组非主口径分母的行，确认图会按分母筛选而不是把两套口径叠在一起。
+    # 它们与主口径行只差 model/denominator，正好也守住"表 2 的四元组唯一"
     extra = frame[frame["outcome"] == "source_entered"].copy()
     extra["denominator"] = "retweeters_only"
+    extra["model"] = "raw/retweeters_only"
     extra["estimate"] = extra["estimate"] * 1.4
     return pd.concat([frame, extra], ignore_index=True)
 
@@ -377,7 +385,25 @@ def figure_data(tmp_path):
         frame.to_parquet(str(data_dir / fg.DIST_FILES[measure]),
                          engine="pyarrow", index=False)
     summary.to_parquet(str(data_dir / fg.SUMMARY_FILE), engine="pyarrow", index=False)
+    # 图数据清单：真实的 export_figure_data.build 会把它写进 figure_data/，
+    # figures 画图前核对它的 year（见 fg.assert_manifest）
+    _write_figure_manifest(str(data_dir), year=2020)
     return str(data_dir), str(fig_dir)
+
+
+def _write_figure_manifest(data_dir, year=2020, run_id="run-under-test"):
+    manifest = {
+        "step": "export_figure_data_{}".format(year),
+        "run_id": run_id,
+        "git_sha": "deadbee",
+        "git_dirty": False,
+        "params": {"year": year, "seed": 20200101, "max_points": 500},
+        "counts": {},
+    }
+    with open(os.path.join(data_dir, fg.FIGURE_MANIFEST_FILE), "w",
+              encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False)
+    return manifest
 
 
 # ---------------------------------------------------------------------------
@@ -761,3 +787,178 @@ def test_month_from_model_label_parses_only_month_rows():
     assert sorted(monthly["month"].unique()) == list(range(1, 13))
     # 月度固定效应那一行（model="M0/month_fixed_effects"）必须被排除
     assert "M0/month_fixed_effects" not in set(monthly["model"])
+
+
+# ---------------------------------------------------------------------------
+# select_one：撞键必须当场失败，不能按行序任取一行
+# ---------------------------------------------------------------------------
+
+def test_select_one_returns_the_single_matching_row():
+    frame = _interaction()
+    row = fg.select_one(frame, outcome="source_entered", domain="both",
+                        model="M1", term=fg.TERM_DID)
+    assert row is not None
+    assert row["model"] == "M1"
+
+
+def test_select_one_returns_none_when_nothing_matches():
+    """没有匹配是一种正当情形：调用方要把它标成 row absent，而不是崩掉"""
+    frame = _interaction()
+    assert fg.select_one(frame, outcome="source_entered", model="M9",
+                         term=fg.TERM_DID) is None
+
+
+def test_select_one_refuses_to_pick_arbitrarily_when_the_key_is_duplicated():
+    """撞键时 .iloc[0] 会按行序任取一行——不报错、不留痕、数字随行序漂移
+
+    这正是表 2 曾经的问题（两个分母口径都写 model="raw"）。图在十几处
+    按 (outcome, domain, model, term) 筛完就取第一行，所以这道闸门必须
+    设在取行的入口上，而不是指望每个调用方自己检查。
+    """
+    frame = _interaction()
+    duplicated = pd.concat([frame, frame], ignore_index=True)
+    with pytest.raises(AssertionError, match="必须唯一"):
+        fg.select_one(duplicated, outcome="source_entered", domain="both",
+                      model="M1", term=fg.TERM_DID)
+
+
+def test_select_still_allows_multi_row_filtering():
+    """select 本身不加唯一性断言：它同样用于取一整张子表（12 个月、一层三行）"""
+    frame = _monthly()
+    rows = fg.monthly_rows(frame, outcome="monthly_source_entered_rate",
+                           domain="public")
+    assert len(fg.select(rows, term="male")) == 12
+
+
+def test_every_figure_survives_a_full_draw_with_the_uniqueness_guard(figure_data):
+    """整套图在开着唯一性断言的情况下必须画得出来
+
+    等价于在合成数据上把"结果表四元组唯一"这条不变量跑了一遍：任何一格
+    撞键，对应的图会直接抛 AssertionError，而不是悄悄画错。
+    """
+    data_dir, fig_dir = figure_data
+    assert len(fg.all(year=2020, data_dir=data_dir, fig_dir=fig_dir)) == 7
+
+
+# ---------------------------------------------------------------------------
+# 图 6：月度区间缺失同样要留痕（此前被 NaN 区间修复漏掉）
+# ---------------------------------------------------------------------------
+
+def test_fig6_marks_a_month_whose_interval_is_missing(figure_data):
+    """有点估计、区间是 NaN 的月份必须画成"CI n/a"，不能画成一个普通点
+
+    图 6 原来自己调 fill_between、自己只检查估计值是否有限，于是这种月份
+    在一条连续折线上看起来与别的点毫无区别——不确定性缺失被读成不确定性
+    为零，正是整个 §12 反复要避免的那种误导。
+    """
+    data_dir, fig_dir = figure_data
+    monthly = _monthly()
+    mask = ((monthly["outcome"] == "monthly_source_entered_rate")
+            & (monthly["domain"] == "public")
+            & (monthly["model"] == "month=06") & (monthly["term"] == "male"))
+    assert mask.sum() == 1
+    monthly.loc[mask, ["ci_low", "ci_high"]] = np.nan
+    monthly.loc[mask, "note"] = "wilson_unavailable"
+
+    # 先确认这一行确实被判成 ci_unavailable（否则下面画出来的图证明不了什么）
+    row = monthly[mask].iloc[0]
+    assert fg.estimate_status(row) == "ci_unavailable"
+
+    monthly.to_parquet(os.path.join(data_dir, "monthly_rates.parquet"),
+                       engine="pyarrow", index=False)
+    path = fg.fig6_monthly(year=2020, data_dir=data_dir, fig_dir=fig_dir)
+    assert os.path.getsize(path) > 1000
+
+
+def test_fig6_marks_a_month_with_no_estimate_at_all(figure_data):
+    data_dir, fig_dir = figure_data
+    monthly = _monthly()
+    mask = ((monthly["outcome"] == "monthly_topical_share_mean")
+            & (monthly["domain"] == "celebrity")
+            & (monthly["model"] == "month=09") & (monthly["term"] == "female"))
+    monthly.loc[mask, ["estimate", "ci_low", "ci_high"]] = np.nan
+    monthly.loc[mask, "note"] = "empty_sample"
+    monthly.to_parquet(os.path.join(data_dir, "monthly_rates.parquet"),
+                       engine="pyarrow", index=False)
+    path = fg.fig6_monthly(year=2020, data_dir=data_dir, fig_dir=fig_dir)
+    assert os.path.getsize(path) > 1000
+
+
+def test_fig6_flags_a_missing_interval_through_draw_estimate():
+    """区间缺失的月份走的是 draw_estimate 的 ci_unavailable 分支
+
+    直接在坐标轴上验证，不依赖 PDF 的字节数：不画区间容器、留下一条
+    带 note 的说明。图 6 与图 1/2/3/5 必须是同一条规则。
+    """
+    fig, ax = plt.subplots()
+    flags = []
+    row = pd.Series(_row(outcome="monthly_source_entered_rate", domain="public",
+                         model="month=06", term="male", estimate=0.32,
+                         ci_low=np.nan, ci_high=np.nan, scale="probability",
+                         n_obs=100000, n_dropped=0, note="wilson_unavailable"))
+    status = fg.draw_estimate(ax, row, 6, fg.MALE_COLOR, "o", orientation="v",
+                              flags=flags, tag="male month=06")
+    plt.close(fig)
+    assert status == "ci_unavailable"
+    assert len(ax.containers) == 0
+    assert flags and "CI unavailable" in flags[0] and "month=06" in flags[0]
+
+
+# ---------------------------------------------------------------------------
+# 图数据清单：年份错配必须被察觉（figure_data/ 的文件名不带年份）
+# ---------------------------------------------------------------------------
+
+def test_figures_reject_a_manifest_from_a_different_year(figure_data):
+    """用 2019 年的导出画 2020 年的图，此前完全无法察觉
+
+    figure_data/ 的文件名不带年份，--year 只进标题与文件名前缀，所以
+    错配画出来的图每个数字都是真的，只是属于另一年。
+    """
+    data_dir, fig_dir = figure_data
+    _write_figure_manifest(data_dir, year=2019)
+    with pytest.raises(ValueError) as err:
+        fg.fig1_core_outcomes(year=2020, data_dir=data_dir, fig_dir=fig_dir)
+    assert "2019" in str(err.value) and "2020" in str(err.value)
+
+
+def test_figures_require_the_manifest_to_exist(figure_data):
+    data_dir, fig_dir = figure_data
+    os.remove(os.path.join(data_dir, fg.FIGURE_MANIFEST_FILE))
+    with pytest.raises(FileNotFoundError) as err:
+        fg.fig2_adjusted_effects(year=2020, data_dir=data_dir, fig_dir=fig_dir)
+    assert "export_figure_data" in str(err.value)
+
+
+def test_manifest_check_covers_every_figure_entry_point(figure_data):
+    """七个入口一个都不能漏：漏掉的那一个就是年份错配的后门"""
+    data_dir, fig_dir = figure_data
+    _write_figure_manifest(data_dir, year=2019)
+    for func_name in ("fig1_core_outcomes", "fig2_adjusted_effects",
+                      "fig3_interaction", "fig4_source_content",
+                      "fig5_combinations", "fig6_monthly",
+                      "appendix_distributions"):
+        with pytest.raises(ValueError):
+            getattr(fg, func_name)(year=2020, data_dir=data_dir, fig_dir=fig_dir)
+
+
+def test_figure_manifest_filename_matches_the_export_layer():
+    """两个模块各写一份常量（figures 跑在本地，不 import 导出层），必须同名"""
+    from gender_domain import export_figure_data as ex
+    assert fg.FIGURE_MANIFEST_FILE == ex.FIGURE_MANIFEST_FILE
+
+
+# ---------------------------------------------------------------------------
+# 表 2 的两个分母口径：图必须取主口径那个 model 变体
+# ---------------------------------------------------------------------------
+
+def test_fig1_reads_the_primary_denominator_variant():
+    """两个分母口径在 model 里分开之后，图必须显式挑主口径那一个"""
+    table2 = _table2()
+    rows = fg.select(table2, outcome="source_entered",
+                     model=fg.PRIMARY_TABLE2_MODEL["source_entered"],
+                     denominator=fg.PRIMARY_DENOMINATOR["source_entered"])
+    # 两个域 × (男/女/gap) = 6 行，非主口径的那一组一行都不许混进来
+    assert len(rows) == 6
+    assert set(rows["denominator"]) == {"all_same_gender_users"}
+    male_public = fg.select_one(rows, domain="public", term="male")
+    assert male_public["estimate"] == pytest.approx(0.30)

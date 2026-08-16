@@ -850,7 +850,7 @@ def fit_interaction(long_df, model_layer, outcome_kind=None, did_method="auto",
     )
     formula, dropped, others = _build_formula(sample, model_layer)
     base_note = mc._join_notes(
-        NOTE_GEE, "dropped_constant:" + ",".join(dropped) if dropped else None
+        NOTE_GEE, mc.covariate_note(dropped)
     )
 
     blocked = _blocked_note_users(sample, others, n_obs)
@@ -989,6 +989,10 @@ def _write_partial(frame, out_dir, path, source_path, year, n_users, completed):
     n_failed = int(frame["estimate"].isna().sum())
     print(f"已保存（增量，{len(completed)}/6 层）: {path}"
           f"（{len(frame)} 行，其中 {n_failed} 行为拟合失败留痕）")
+    # 每次增量落盘都重记一次运行标识：被墙钟杀掉时盘上留下的那份截断结果
+    # 同样带着本次的 run_id，导出层不会把它误当成上一次运行的完整结果
+    config.stamp_result_files(out_dir, [os.path.basename(path)],
+                              step=f"models_interaction_{year}")
 
     manifest = config.build_manifest(
         step=f"models_interaction_{year}",

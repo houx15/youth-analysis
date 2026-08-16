@@ -256,6 +256,9 @@ def test_tidy_result_minimal_call_keys_match_schema():
 
 def test_tidy_result_full_call_keys_match_schema():
     kwargs = {col: f"val_{col}" for col in su.RESULT_SCHEMA}
+    # scale 是封闭词表，不能塞一个占位字符串（见 test_tidy_result_rejects_
+    # an_unknown_scale）；其余字段仍用占位串，确认它们原样透传
+    kwargs["scale"] = "probability"
     kwargs["estimate"] = 0.12
     kwargs["se"] = 0.01
     kwargs["ci_low"] = 0.10
@@ -271,6 +274,54 @@ def test_tidy_result_full_call_keys_match_schema():
 def test_tidy_result_rejects_unknown_field():
     with pytest.raises(ValueError):
         su.tidy_result(outcome="x", made_up_field=1)
+
+
+def test_tidy_result_rejects_an_unknown_scale():
+    """scale 是封闭词表，表外取值必须当场报错
+
+    scale 唯一的用途是告诉绘图层"画在什么轴上、参照线画在哪里"。方案文档
+    只声明了四个取值，实现里一度长到十个，其中三个还是同一件事的三种写法
+    （"ratio"/"odds_ratio"/"irr"）——每多一个拼写变体，就多一个会被下游
+    if/else 静默漏掉的分支。因此这里与拒绝未知字段名同一条规则：报错，
+    而不是让一个没人认识的取值一路混进论文表格。
+    """
+    with pytest.raises(ValueError, match="未知的 scale"):
+        su.tidy_result(outcome="x", domain="public", model="M0", term="t",
+                       estimate=0.1, scale="ratio", n_obs=10)
+
+
+def test_tidy_result_accepts_every_declared_scale():
+    for scale in su.RESULT_SCALES:
+        row = su.tidy_result(outcome="x", domain="public", model="M0", term="t",
+                             estimate=0.1, scale=scale, n_obs=10)
+        assert row["scale"] == scale
+
+
+def test_tidy_result_allows_a_missing_scale():
+    """scale 是可选字段：不传时仍然补成 None，不因为"None 不在词表里"报错"""
+    row = su.tidy_result(outcome="x", estimate=0.1)
+    assert row["scale"] is None
+
+
+def test_ratio_scales_are_a_declared_group_inside_the_vocabulary():
+    """三个比值尺度共用"对数轴 + 参照线 1"的画法，但不是同一个估计量
+
+    risk ratio / odds ratio / IRR 在数值上互不相等（罕见事件下才近似），
+    所以刻意保留三个名字；但"它们该画成同一种样子"这件事只在
+    RATIO_SCALES 里声明一次，下游不要各自硬编码一份名字清单。
+    """
+    assert set(su.RATIO_SCALES) == {"risk_ratio", "odds_ratio", "irr"}
+    assert set(su.RATIO_SCALES) <= set(su.RESULT_SCALES)
+    # 含糊的旧名字 "ratio" 已经从词表里消失，不能再被写进任何结果表
+    assert "ratio" not in su.RESULT_SCALES
+
+
+def test_format_drop_reason_is_counted_and_none_when_empty():
+    assert su.format_drop_reason([]) is None
+    assert su.format_drop_reason([("missing_gender", 2)]) == "missing_gender=2"
+    assert su.format_drop_reason(
+        [("missing_gender", 11), ("no_expressive_posts", 19)]
+    ) == "missing_gender=11+no_expressive_posts=19"
 
 
 # ---------------------------------------------------------------------------

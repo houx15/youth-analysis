@@ -489,9 +489,17 @@ def test_bootstrap_path_used_when_cov_params_unavailable():
         n_boot=25, seed=5,
     )
     assert result["method"] == mi.METHOD_BOOTSTRAP
-    assert np.isfinite(result["se"]) or np.isfinite(result["ci_low"])
     assert np.isfinite(result["ci_low"]) and np.isfinite(result["ci_high"])
     assert result["ci_low"] < result["did"] < result["ci_high"]
+    # 原来这里还有一条 `isfinite(se) or isfinite(ci_low)`：下一行已经断言了
+    # 两个界都有限，那条"或"永远为真，等于没有断言。真正要钉住的是重拟合
+    # bootstrap 这条退路给出的是一条**有宽度、且宽度合理**的区间——协方差
+    # 不可用时最危险的失败模式，恰恰是返回一个几乎为零宽的自信区间
+    # （stats_utils 模块文档第 6 条）。
+    width = result["ci_high"] - result["ci_low"]
+    assert width > 1e-3, result
+    # 25 次重抽样至少要有大部分成功，否则这条区间是靠零星几次拟合撑起来的
+    assert result["n_boot_failed"] <= 5, result
 
 
 def test_delta_method_is_the_default_when_cov_params_exists():
@@ -524,8 +532,14 @@ def test_delta_and_bootstrap_intervals_agree():
     assert boot["did"] == pytest.approx(delta["did"], abs=1e-8)
     width_delta = delta["ci_high"] - delta["ci_low"]
     width_boot = boot["ci_high"] - boot["ci_low"]
-    assert 0.6 < width_boot / width_delta < 1.6
-    assert boot["ci_low"] == pytest.approx(delta["ci_low"], abs=0.4 * width_delta)
+    # 容差按"这两条路径必须实质一致"来定，不是按"能过就行"。原来的
+    # 0.6–1.6 允许一条区间比另一条宽 60%，也就是允许其中一条把标准误算错
+    # 四成还照样通过——那正是这条测试要抓的错误量级。数据 seed 与
+    # bootstrap seed 都固定，结果是确定的：实测 width 比 0.923、两端各
+    # 差 0.04 个 width。下面的门槛留了约 4 倍余量，同时把"错四成"挡在外面。
+    assert 0.80 < width_boot / width_delta < 1.25, (width_boot, width_delta)
+    assert boot["ci_low"] == pytest.approx(delta["ci_low"], abs=0.15 * width_delta)
+    assert boot["ci_high"] == pytest.approx(delta["ci_high"], abs=0.15 * width_delta)
 
 
 def test_auto_refuses_to_enter_an_unaffordable_bootstrap(monkeypatch):

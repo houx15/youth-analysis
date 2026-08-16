@@ -79,6 +79,11 @@ DIST_FILES = {
 }
 SUMMARY_FILE = "distribution_summary.parquet"
 COMBO_FILE = "combo_distribution.parquet"
+# 与结果表一起下载到本地的清单：figure_data/ 这个目录会被整个拷到笔记本上，
+# 而 figures.py 在那边完全看不到服务器上的 results/manifest_figures/。
+# 没有这份清单，"用 2019 年的导出画 2020 年的图"这件事在本地无法察觉——
+# figure_data/ 里的文件名不带年份，--year 只进标题。见 figures.assert_manifest。
+FIGURE_MANIFEST_FILE = "manifest.json"
 
 DIST_COLUMNS = ["measure", "gender", "domain", "value"]
 GROUP_KEYS = ["measure", "gender", "domain"]
@@ -346,10 +351,18 @@ def combo_distribution(user_df):
 # ---------------------------------------------------------------------------
 
 def copy_result_tables(out_dir=None):
-    """把 12 张结果表原样复制到 figure_data/，返回 (路径, MB) 列表
+    """把 12 张结果表原样复制到 figure_data/，返回 (路径, MB, run_id) 三元组列表
 
     读的时候显式给 columns=（全局约束）：结果表的列集合是已知的，这里
     直接按文件里的 schema 全列读入，但仍然显式传参，不走"默认读全部"。
+
+    **只检查文件在不在是不够的。** 这一层原本只做存在性检查，于是
+    run_results.slurm 里某一步崩掉（那个脚本此前连 set -e 都没有）之后，
+    盘上留着的是"前几张表是本次的、后几张是上一次的"这种半新半旧的组合：
+    旧文件同样存在、同样通过检查、同样被复制到 figure_data/，最后
+    figures.py 会把上周的估计画在本周的样本量旁边，而且不留任何痕迹。
+    因此复制之前先调 config.verify_same_run 核对每张表的运行标识
+    （results/run_stamps.json），有一张对不上就报错并点名。
     """
     src_dir = results_dir()
     out_dir = out_dir or figure_data_dir()
@@ -361,6 +374,8 @@ def copy_result_tables(out_dir=None):
             "slurm/run_results.slurm（gender_domain.describe / models_* 各模块）"
             "再导出图数据".format(src_dir, ", ".join(missing))
         )
+    run = config.verify_same_run(src_dir, list(RESULT_FILES))
+    print("  12 张结果表全部来自同一次运行: run_id={}".format(run))
 
     outputs = []
     for name in RESULT_FILES:
@@ -370,7 +385,7 @@ def copy_result_tables(out_dir=None):
         columns = pq.ParquetFile(src).schema.names
         frame = pd.read_parquet(src, columns=columns)
         dst = os.path.join(out_dir, name)
-        outputs.append((dst, _save_parquet(frame, dst)))
+        outputs.append((dst, _save_parquet(frame, dst), run))
     return outputs
 
 
@@ -465,6 +480,7 @@ def build(year=config.YEAR, max_points=MAX_POINTS_PER_GROUP, seed=SAMPLE_SEED):
     print("\n导出完成，共 {} 个文件，合计 {:.2f} MB".format(
         len(os.listdir(out_dir)), total_mb))
 
+    run = copied[0][2] if copied else config.run_id()
     manifest = config.build_manifest(
         step="export_figure_data_{}".format(year),
         inputs=[os.path.relpath(user_path, config.OUTPUT_DIR)]
@@ -495,9 +511,16 @@ def build(year=config.YEAR, max_points=MAX_POINTS_PER_GROUP, seed=SAMPLE_SEED):
                 "n_input": reports[label]["n_input"],
                 "n_clean": reports[label]["n_clean"],
             },
+            # 12 张结果表共用的运行标识（verify_same_run 已核对过一致）
+            "results_run_id": run,
         },
     )
     config.write_manifest(manifest, os.path.join(results_dir(), MANIFEST_DIRNAME))
+    # 同一份 manifest 再写一份到 figure_data/ 里：这个目录会被整个下载到
+    # 本地，而本地的 figures.py 看不到服务器上的 results/manifest_figures/。
+    # figures 在画图前核对它的 year，避免"2019 的导出 + --year=2020"这种
+    # 目前完全无法察觉的错配（文件名不带年份，--year 只进标题）。
+    config.write_manifest(manifest, out_dir)
     return out_dir
 
 

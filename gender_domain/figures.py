@@ -30,6 +30,7 @@ visualize.py 的分工完全一致。
   python3 -m gender_domain.figures fig3 --year=2020
 """
 
+import json
 import os
 import re
 from datetime import datetime
@@ -56,6 +57,9 @@ matplotlib.rcParams["axes.unicode_minus"] = False
 
 FIG_DIR = "figures"
 FIGURE_DATA_DIRNAME = "figure_data"
+# 与 export_figure_data.FIGURE_MANIFEST_FILE 必须同名：本模块跑在本地，
+# 不 import 那个会去读服务器路径的模块（与 quantile_column 同一处理）
+FIGURE_MANIFEST_FILE = "manifest.json"
 
 MALE_COLOR = "#20AEE6"
 FEMALE_COLOR = "#ff7333"
@@ -144,6 +148,16 @@ PRIMARY_DENOMINATOR = {
     "source_entered": "all_same_gender_users",
     "topical_share": "users_with_expressive_posts",
 }
+# 表 2 里 model 列的取值。source_entered 有两个分母口径，describe.py 把它们
+# 折成了两个 model 变体（"raw/all_users" / "raw/retweeters_only"），这样
+# (outcome, domain, model, term) 才在整张表里唯一；其余结果变量分母单一，
+# model 仍然是 "raw"。图只画主口径，因此这里只需要主口径对应的那个变体。
+PRIMARY_TABLE2_MODEL = {
+    "source_entered": "raw/all_users",
+    "topical_share": "raw",
+    "source_share": "raw",
+    "source_month_share": "raw",
+}
 # 图 2 每一行自己写分母：这张图把三个结果变量画在一起，分母各不相同，
 # 写一句"与表 2 相同"只是把说明推给别处
 AME_DENOMINATOR = {
@@ -203,6 +217,50 @@ def _read(data_dir, name, columns):
     return pd.read_parquet(path, columns=columns)
 
 
+def read_manifest(data_dir):
+    """读 figure_data/manifest.json；缺文件当场报错
+
+    这份清单由 export_figure_data.build 写在 figure_data/ 里，与结果表
+    一起被下载到本地。缺了它就说明这批图数据是旧版导出层写的（或者只
+    拷了部分文件），不能拿来画图。
+    """
+    path = os.path.join(data_dir, FIGURE_MANIFEST_FILE)
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            "未找到图数据清单 {}。这批 figure_data/ 是旧版导出层写的，或者"
+            "只拷了一部分文件。请在服务器上重新运行 "
+            "`python -m gender_domain.export_figure_data build --year=YYYY`，"
+            "再把 analysis_data/figure_data/ 整个目录（含 manifest.json）"
+            "下载到本地。".format(path)
+        )
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def assert_manifest(data_dir, year):
+    """核对这批图数据确实是为 `year` 导出的，返回 manifest
+
+    为什么必须核对：figure_data/ 里的文件名不带年份，`--year` 在本模块里
+    只进标题和文件名前缀。也就是说"拿 2019 年的导出画一张标题写着 2020
+    的图"在此之前完全无法察觉——图能正常画出来，每个数字都是真的，只是
+    属于另一年。清单里同时带着 run_id 与 git_sha，出问题时能直接指认是
+    哪一次运行的产物。
+    """
+    manifest = read_manifest(data_dir)
+    exported = manifest.get("params", {}).get("year")
+    if exported is not None and int(exported) != int(year):
+        raise ValueError(
+            "图数据是 {} 年导出的（{}/{} 的 params.year），但这次画图要的是 {} 年。"
+            "figure_data/ 的文件名不带年份，--year 只进标题，所以这种错配"
+            "画出来的图看不出任何异常——每个数字都是真的，只是属于另一年。"
+            "请下载对应年份的导出目录，或用 --year={} 重画。"
+            "（该批导出 run_id={}, git_sha={}）".format(
+                exported, data_dir, FIGURE_MANIFEST_FILE, year, exported,
+                manifest.get("run_id"), manifest.get("git_sha"))
+        )
+    return manifest
+
+
 def _date_prefix():
     return datetime.now().strftime("%Y%m%d")
 
@@ -222,13 +280,43 @@ def _save_fig(fig, name, fig_dir):
 # ---------------------------------------------------------------------------
 
 def select(frame, **filters):
-    """按列值精确筛选。传 None 表示这一列不筛"""
+    """按列值精确筛选。传 None 表示这一列不筛
+
+    刻意**不**在这里断言"只剩一行"：本函数同样用于多行筛选
+    （按 outcome + denominator 取出一整张子表、按月份取出 12 行等），
+    一刀切的断言会把这些正当用法一起打死。要"恰好一行"的地方一律走
+    `select_one`——它才是 .iloc[0] 的唯一合法入口。
+    """
     mask = pd.Series(True, index=frame.index)
     for column, value in filters.items():
         if value is None:
             continue
         mask &= frame[column].astype("object") == value
     return frame[mask]
+
+
+def select_one(frame, **filters):
+    """按列值精确筛选并取出**唯一**一行；没有匹配时返回 None
+
+    存在的理由：整套结果表共用"(outcome, domain, model, term) 逐行唯一"
+    这条不变量，而本模块在十几处按这个键筛完就直接 `.iloc[0]`。键一旦
+    撞上（表 2 的两个分母口径就曾经都写 model="raw"），`.iloc[0]` 会
+    按行序任取一行——不报错、不留痕，只是图上某个点悄悄变成了另一个
+    口径的估计。这里把"多于一行"变成当场失败：宁可画不出图，也不要画
+    一张看起来正常、数字却随行序漂移的图。
+
+    没有匹配时返回 None 而不是报错：调用方本来就要区分"这一格没有行"
+    （在图上标注 row absent）与"这一格有多行"（是数据的 bug）。
+    """
+    rows = select(frame, **filters)
+    assert len(rows) <= 1, (
+        "按 {} 筛出了 {} 行，但这个键在结果表里必须唯一。撞键时 .iloc[0] "
+        "会按行序任取一行，图上的数字就再也说不清是哪一个模型/口径的估计。"
+        "重复的行是：\n{}".format(
+            {k: v for k, v in filters.items() if v is not None},
+            len(rows), rows.head(8).to_string(index=False))
+    )
+    return rows.iloc[0] if len(rows) == 1 else None
 
 
 def domain_facets(frame):
@@ -264,6 +352,9 @@ def did_annotation(frame, outcome, model=HEADLINE_LAYER):
     rows = did_rows(frame, outcome=outcome, model=model)
     if rows.empty:
         return "DiD ({}): 结果表里没有这一行".format(model)
+    assert len(rows) == 1, (
+        "差中差行 outcome={} model={} 有 {} 行；这一行是全篇的头条数字，"
+        "撞键时任取一行等于随机挑一个头条".format(outcome, model, len(rows)))
     row = rows.iloc[0]
     status = estimate_status(row)
     if status == "missing":
@@ -589,25 +680,27 @@ def fig1_core_outcomes(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
     比较。每个面板的横轴标签写明自己的分母。
     """
     data_dir = data_dir or figure_data_dir()
+    assert_manifest(data_dir, year)
     table2 = _read(data_dir, "table2_raw_gender_gaps.parquet", TABLE2_COLUMNS)
 
     fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
     panels = (("source_entered", "probability"), ("topical_share", "proportion"))
     for ax, (outcome, _scale) in zip(axes, panels):
         denominator = PRIMARY_DENOMINATOR[outcome]
-        rows = select(table2, outcome=outcome, model="raw", denominator=denominator)
+        rows = select(table2, outcome=outcome,
+                      model=PRIMARY_TABLE2_MODEL[outcome], denominator=denominator)
         y_ticks, y_labels, flags = [], [], []
         for i, domain in enumerate(DOMAIN_ORDER):
             y_ticks.append(i)
             y_labels.append(DOMAIN_LABELS[domain])
             for gender in GENDER_ORDER:
-                cell = select(rows, domain=domain, term=gender)
+                cell = select_one(rows, domain=domain, term=gender)
                 y = i + (0.14 if gender == "male" else -0.14)
-                if cell.empty:
+                if cell is None:
                     flags.append("{}/{}: row absent".format(domain, gender))
                     continue
                 draw_estimate(
-                    ax, cell.iloc[0], y, GENDER_COLORS[gender],
+                    ax, cell, y, GENDER_COLORS[gender],
                     GENDER_MARKERS[gender], orientation="h",
                     label=GENDER_LABELS[gender] if i == 0 else None,
                     flags=flags, tag="{}/{}".format(domain, gender),
@@ -644,6 +737,7 @@ def fig2_adjusted_effects(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
     上一层重合"。
     """
     data_dir = data_dir or figure_data_dir()
+    assert_manifest(data_dir, year)
     entry = _read(data_dir, "models_entry.parquet", RESULT_COLUMNS)
     share = _read(data_dir, "models_share.parquet", RESULT_COLUMNS)
     persistence = _read(data_dir, "models_persistence.parquet", RESULT_COLUMNS)
@@ -669,13 +763,12 @@ def fig2_adjusted_effects(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
                 OUTCOME_LABELS[outcome].split(",")[0], DOMAIN_LABELS[domain],
                 DENOMINATOR_LABELS[AME_DENOMINATOR[outcome]]))
             for k, layer in enumerate(MODEL_LAYERS):
-                cell = select(rows, model=layer)
+                row = select_one(rows, model=layer)
                 offset = 0.22 * (1 - k)
-                if cell.empty:
+                if row is None:
                     flags.append("{}/{}/{}: row absent".format(
                         outcome, domain, layer))
                     continue
-                row = cell.iloc[0]
                 # 颜色编码"谁更高"；估计值缺失时按中性灰画缺口标记
                 color = "#777777" if pd.isna(row["estimate"]) else (
                     MALE_COLOR if row["estimate"] >= 0 else FEMALE_COLOR)
@@ -748,6 +841,7 @@ def fig3_interaction(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
     留一个灰色 ✕ 标记——缺口必须看得见，不能让格子凭空消失。
     """
     data_dir = data_dir or figure_data_dir()
+    assert_manifest(data_dir, year)
     table2 = _read(data_dir, "table2_raw_gender_gaps.parquet", TABLE2_COLUMNS)
     inter = _read(data_dir, "interaction_gender_domain.parquet", RESULT_COLUMNS)
 
@@ -755,7 +849,8 @@ def fig3_interaction(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
     fig, axes = plt.subplots(1, 2, figsize=(11.5, 5.2))
     for ax, outcome in zip(axes, outcomes):
         denominator = PRIMARY_DENOMINATOR[outcome]
-        observed = select(table2, outcome=outcome, model="raw",
+        observed = select(table2, outcome=outcome,
+                          model=PRIMARY_TABLE2_MODEL[outcome],
                           denominator=denominator)
         cells = predicted_cells(inter, outcome, model)
         facets = domain_facets(cells) or list(DOMAIN_ORDER)
@@ -769,9 +864,8 @@ def fig3_interaction(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
                 # 观测值：灰色空心方块，与预测点的圆/三角形状完全不同。
                 # 只靠"填充与否"区分两种点，在正文尺寸下会被读错端点，
                 # 而这张图恰恰要求读者把同一个领域内的两端连起来看。
-                obs = select(observed, domain=domain, term=gender)
-                if not obs.empty and pd.notna(obs.iloc[0]["estimate"]):
-                    obs_row = obs.iloc[0]
+                obs_row = select_one(observed, domain=domain, term=gender)
+                if obs_row is not None and pd.notna(obs_row["estimate"]):
                     ax.plot([x], [obs_row["estimate"]], marker=OBSERVED_MARKER,
                             markersize=6, markerfacecolor="none",
                             markeredgecolor=OBSERVED_COLOR, color=OBSERVED_COLOR,
@@ -783,11 +877,11 @@ def fig3_interaction(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
                     if pd.notna(obs_row.get("n_obs")):
                         n_observed.add(int(obs_row["n_obs"]))
 
-                cell = select(cells, domain=domain, term=TERM_PRED[(gender, domain)])
-                if cell.empty:
+                row = select_one(cells, domain=domain,
+                                 term=TERM_PRED[(gender, domain)])
+                if row is None:
                     flags.append("{}/{} predicted: row absent".format(domain, gender))
                     continue
-                row = cell.iloc[0]
                 if pd.notna(row.get("n_obs")):
                     n_predicted.add(int(row["n_obs"]))
                 draw_estimate(ax, row, x, color, GENDER_MARKERS[gender],
@@ -797,20 +891,20 @@ def fig3_interaction(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
 
             # 域内的性别差直接读结果表的 gap 行，不在图里自己相减：
             # 恒等式虽然成立，但读表里的那一行才能顺带把区间一起写出来
-            gap = select(inter, outcome=outcome, domain=domain,
-                         term=TERM_GAP[domain], model=model)
-            male_cell = select(cells, domain=domain,
-                               term=TERM_PRED[("male", domain)])
-            female_cell = select(cells, domain=domain,
-                                 term=TERM_PRED[("female", domain)])
-            if (not gap.empty and not male_cell.empty and not female_cell.empty
-                    and pd.notna(male_cell.iloc[0]["estimate"])
-                    and pd.notna(female_cell.iloc[0]["estimate"])):
-                y_male = male_cell.iloc[0]["estimate"]
-                y_female = female_cell.iloc[0]["estimate"]
+            gap_row = select_one(inter, outcome=outcome, domain=domain,
+                                 term=TERM_GAP[domain], model=model)
+            male_cell = select_one(cells, domain=domain,
+                                   term=TERM_PRED[("male", domain)])
+            female_cell = select_one(cells, domain=domain,
+                                     term=TERM_PRED[("female", domain)])
+            if (gap_row is not None and male_cell is not None
+                    and female_cell is not None
+                    and pd.notna(male_cell["estimate"])
+                    and pd.notna(female_cell["estimate"])):
+                y_male = male_cell["estimate"]
+                y_female = female_cell["estimate"]
                 ax.plot([i - 0.13, i + 0.13], [y_female, y_male],
                         color="#999999", linewidth=0.8, linestyle=":", zorder=1)
-                gap_row = gap.iloc[0]
                 text = "gap {:+.3f}".format(gap_row["estimate"]) \
                     if pd.notna(gap_row["estimate"]) else "gap: no estimate"
                 ax.annotate(text, (i, (y_male + y_female) / 2),
@@ -823,11 +917,10 @@ def fig3_interaction(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
         for layer in MODEL_LAYERS:
             lines.append("  " + did_annotation(inter, outcome, layer))
         for domain in DOMAIN_ORDER:
-            gap = select(inter, outcome=outcome, domain=domain,
-                         term=TERM_GAP[domain], model=model)
-            if gap.empty:
+            row = select_one(inter, outcome=outcome, domain=domain,
+                             term=TERM_GAP[domain], model=model)
+            if row is None:
                 continue
-            row = gap.iloc[0]
             if pd.isna(row["estimate"]):
                 lines.append("  {} gap ({}): 无估计（{}）".format(
                     DOMAIN_LABELS[domain], model, row["note"] or "no note"))
@@ -888,6 +981,7 @@ def fig4_source_content(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
     没画上，这一点必须让读者直接看见。
     """
     data_dir = data_dir or figure_data_dir()
+    assert_manifest(data_dir, year)
     decomposition = _read(data_dir, "decomposition_source_content.parquet",
                           RESULT_COLUMNS)
     rows = select(decomposition, outcome="participation_type",
@@ -899,14 +993,13 @@ def fig4_source_content(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
         for gender in GENDER_ORDER:
             values, n_obs = [], None
             for ptype in PARTICIPATION_TYPES:
-                cell = select(rows, domain=domain,
-                              term="{}_{}".format(ptype, gender))
-                if cell.empty:
+                row = select_one(rows, domain=domain,
+                                 term="{}_{}".format(ptype, gender))
+                if row is None:
                     missing.append("{}/{}/{}: row absent".format(
                         domain, gender, ptype))
                     values.append(np.nan)
                     continue
-                row = cell.iloc[0]
                 n_obs = row["n_obs"]
                 if pd.isna(row["estimate"]):
                     missing.append("{}/{}/{}: {}".format(
@@ -993,6 +1086,7 @@ def fig5_combinations(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
     面板标题与横轴标签分别写明，不让读者去猜。
     """
     data_dir = data_dir or figure_data_dir()
+    assert_manifest(data_dir, year)
     observed = _read(data_dir, COMBO_FILE, RESULT_COLUMNS)
     multinomial = _read(data_dir, "combination_multinomial.parquet", RESULT_COLUMNS)
 
@@ -1003,12 +1097,12 @@ def fig5_combinations(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
     flags = []
     for i, category in enumerate(COMBO_CATEGORIES):
         for gender in GENDER_ORDER:
-            cell = select(observed, term="{}_{}".format(category, gender))
+            cell = select_one(observed, term="{}_{}".format(category, gender))
             y = i + (0.14 if gender == "male" else -0.14)
-            if cell.empty:
+            if cell is None:
                 flags.append("{}/{}: row absent".format(category, gender))
                 continue
-            draw_estimate(ax, cell.iloc[0], y, GENDER_COLORS[gender],
+            draw_estimate(ax, cell, y, GENDER_COLORS[gender],
                           GENDER_MARKERS[gender], orientation="h", flags=flags,
                           tag="{}/{} observed".format(category, gender),
                           annotate_n=True, unit_scale=True)
@@ -1029,12 +1123,11 @@ def fig5_combinations(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
     n_pred = set()
     for i, category in enumerate(COMBO_CATEGORIES):
         for gender in GENDER_ORDER:
-            cell = select(cells, term="pred_{}_{}".format(gender, category))
+            row = select_one(cells, term="pred_{}_{}".format(gender, category))
             y = i + (0.14 if gender == "male" else -0.14)
-            if cell.empty:
+            if row is None:
                 flags.append("{}/{} predicted: row absent".format(category, gender))
                 continue
-            row = cell.iloc[0]
             if pd.notna(row.get("n_obs")):
                 n_pred.add(int(row["n_obs"]))
             draw_estimate(ax, row, y, GENDER_COLORS[gender],
@@ -1059,13 +1152,12 @@ def fig5_combinations(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
     combo_rows = select(multinomial, outcome="source_combo", domain=DOMAIN_BOTH)
     for i, category in enumerate(COMBO_CATEGORIES):
         for k, layer in enumerate(MODEL_LAYERS):
-            cell = select(combo_rows, model=layer,
-                          term="gender_male_ame_{}".format(category))
+            row = select_one(combo_rows, model=layer,
+                             term="gender_male_ame_{}".format(category))
             offset = 0.22 * (1 - k)
-            if cell.empty:
+            if row is None:
                 flags.append("{}/{}: row absent".format(category, layer))
                 continue
-            row = cell.iloc[0]
             color = "#777777" if pd.isna(row["estimate"]) else (
                 MALE_COLOR if row["estimate"] >= 0 else FEMALE_COLOR)
             draw_estimate(ax, row, i + offset, color, LAYER_MARKERS[layer],
@@ -1119,8 +1211,17 @@ def fig6_monthly(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
     月份来自 monthly_rates.parquet 里 model="month=NN" 的描述行；同一份
     文件里 model="M0/month_fixed_effects" 的行是全年固定效应估计，不是
     按月的点，由 monthly_rows 按 model 形状排除。
+
+    **每个月的成色按 estimate_status 判定，与图 1/2/3/5 同一条规则。**
+    这张图画的是折线 + 区间带，不是逐点的误差棒，所以带子用
+    `where=` 只覆盖区间齐全的月份；区间缺失（ci_unavailable）与整点缺失
+    （missing）的月份改走 draw_estimate，分别画成空心点 + "CI n/a" 与
+    红色 ✕ 缺口，并列进图上的说明。在一条连续曲线上，一个"有点估计、
+    没有区间"的月份如果不标出来，看起来与别的点毫无区别——那正是
+    §12 反复要避免的"缺失的不确定性被读成确定"。
     """
     data_dir = data_dir or figure_data_dir()
+    assert_manifest(data_dir, year)
     monthly = _read(data_dir, "monthly_rates.parquet", RESULT_COLUMNS)
 
     outcomes = (("monthly_source_entered_rate",
@@ -1149,17 +1250,34 @@ def fig6_monthly(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
                 color = GENDER_COLORS[gender]
                 ax.plot(months, values, color=color, marker=GENDER_MARKERS[gender],
                         markersize=4, linewidth=1.3, label=GENDER_LABELS[gender])
-                ax.fill_between(months, low, high, color=color, alpha=0.15,
-                                linewidth=0)
-                flags = flag_unusual_months(values)
-                if flags.any():
-                    ax.scatter(months[flags], values[flags], s=90,
+
+                # 每个月单独判成色，与图 1/2/3/5 用的是同一条规则
+                # （estimate_status）。这张图原来自己画 fill_between、
+                # 自己只检查估计值是否有限，于是"有点估计、区间是 NaN"的
+                # 月份会画成一个光秃秃的点：既没有带子，也没有 "CI n/a" 的
+                # 标记——在一条连续曲线上，那个点看起来和别的点毫无区别，
+                # 读者没有任何办法知道它的不确定性是缺失的。
+                statuses = [estimate_status(row) for _, row in series.iterrows()]
+                banded = np.array([s in ("ok", "clipped") for s in statuses])
+                # where= 让缺界的月份在带子上留一个缺口，而不是让 NaN 被
+                # 相邻月份的界脑补过去
+                ax.fill_between(months, low, high, where=banded, color=color,
+                                alpha=0.15, linewidth=0)
+                for (_, row), month, status in zip(series.iterrows(), months,
+                                                   statuses):
+                    if status in ("ok", "clipped"):
+                        continue
+                    # ci_unavailable -> 空心点 + "CI n/a"；missing -> 红色 ✕ 缺口
+                    draw_estimate(ax, row, month, color,
+                                  GENDER_MARKERS[gender], orientation="v",
+                                  flags=missing,
+                                  tag="{} month={:02d}".format(gender, month))
+
+                unusual = flag_unusual_months(values)
+                if unusual.any():
+                    ax.scatter(months[unusual], values[unusual], s=90,
                                facecolors="none", edgecolors="#b22222",
                                linewidths=1.2, zorder=5)
-                for month, value, row_note in zip(months, values, series["note"]):
-                    if not np.isfinite(value):
-                        missing.append("{} month={:02d}: {}".format(
-                            gender, month, row_note or "no note"))
             ax.set_xticks(range(1, 13))
             ax.set_title("{}".format(DOMAIN_LABELS[domain]), fontsize=9)
             if c == 0:
@@ -1201,6 +1319,7 @@ def appendix_distributions(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
     零值悄悄丢掉会让 ECDF 的起点凭空抬高。
     """
     data_dir = data_dir or figure_data_dir()
+    assert_manifest(data_dir, year)
     summary = _read(data_dir, SUMMARY_FILE, None)
 
     measures = ("retweet_count", "delay_hours", "char_density")

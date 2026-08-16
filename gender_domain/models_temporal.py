@@ -544,6 +544,33 @@ def panel_prefix_pairs(panel_df):
     ]
 
 
+def _cluster_groups(model, sample):
+    """取出与设计矩阵**逐行对齐**的聚类标签
+
+    为什么不能直接把 `sample[USER_COLUMN].to_numpy()` 塞进 cov_kwds：
+    patsy 会静默丢掉任何一个协变量为 NaN 的行，于是进入拟合的设计矩阵
+    可能比 sample 短。长度一旦不一致，statsmodels 会抛
+    "The weights and list don't have the same length."，而 mc._safe_fit
+    会把它吞成一行"模型失败"的留痕——整个"月份固定效应 + 留一月重估"
+    的块（一个域 13 行 × 两层）都会读成"这个假设检验过了但没估出来"，
+    而不是"这里有个 bug"。今天之所以没炸，只是因为
+    build_user_tables 恰好把面板计数列填满了；结果表的正确性不该依赖
+    另一个模块的内部约定，这正是 mc._reconcile_nobs 拒绝依赖的同一件事。
+
+    models_interaction 在 GEE 上避开这一点的办法是直接传**列名**
+    （smf.gee(..., groups=CLUSTER_COLUMN)，让 statsmodels 自己去对齐）。
+    logit/GLM 的 `cov_type="cluster"` 走的是 statsmodels.base.covtype，
+    那条路径只接受数组、不接受列名（实测 0.14.2：字符串会被
+    np.asarray 变成 0 维数组，最后抛 "only two groups are supported"），
+    所以这里改成"先建模型、再按模型保留下来的行标签取聚类列"——
+    对齐这件事同样交给模型自己说了算，而不是我们在外面猜。
+    """
+    labels = getattr(model.data, "row_labels", None)
+    if labels is None:
+        return sample[USER_COLUMN].to_numpy()
+    return sample.loc[labels, USER_COLUMN].to_numpy()
+
+
 def _month_terms(sample, terms):
     """在协变量项后追加月份固定效应；月份不变时不追加并返回提示"""
     if sample["month"].nunique(dropna=True) < 2:
@@ -609,26 +636,29 @@ def _fit_month_model(frame, domain, layer, covariates, n_input, model_label,
 
     formula = "{} ~ {}".format(outcome_col, " + ".join(terms))
     label = f"{outcome}/{domain}/{model_label}"
-    groups = sample[USER_COLUMN].to_numpy()
+    # 先构造模型（patsy 在这一步就已经决定了哪些行进得去），再按它保留
+    # 下来的行标签取聚类列——绝不在外面按 sample 的长度猜（见 _cluster_groups）
     if outcome_kind == "entry":
+        model = smf.logit(formula, data=sample)
+        groups = _cluster_groups(model, sample)
         result, fail = mc._safe_fit(
-            lambda: smf.logit(formula, data=sample).fit(
+            lambda: model.fit(
                 cov_type="cluster", cov_kwds={"groups": groups},
                 disp=False, maxiter=100,
             ),
             label,
         )
     else:
+        model = smf.glm(formula, data=sample, family=sm.families.Binomial())
+        groups = _cluster_groups(model, sample)
         result, fail = mc._safe_fit(
-            lambda: smf.glm(
-                formula, data=sample, family=sm.families.Binomial()
-            ).fit(cov_type="cluster", cov_kwds={"groups": groups}),
+            lambda: model.fit(cov_type="cluster", cov_kwds={"groups": groups}),
             label,
         )
 
     note = mc._join_notes(
         note_base, month_note,
-        "dropped_constant:" + ",".join(dropped) if dropped else None,
+        mc.covariate_note(dropped),
         fail,
     )
     if result is None:
@@ -1337,6 +1367,9 @@ def _write_partial(frames, path, out_dir, inputs, year, counts, completed,
     frame.to_parquet(path, engine="pyarrow", index=False)
     n_failed = int(frame["estimate"].isna().sum())
     print(f"已保存（增量）: {path}（{len(frame)} 行，其中 {n_failed} 行为拟合失败留痕）")
+    # 见 models_interaction._write_partial：增量落盘的每一份都要带上运行标识
+    config.stamp_result_files(out_dir, [os.path.basename(path)],
+                              step=f"models_temporal_{year}")
 
     manifest = config.build_manifest(
         step=f"models_temporal_{year}",
