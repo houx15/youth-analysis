@@ -402,6 +402,70 @@ def test_multinomial_ame_se_matches_analytic_binomial_diff():
         assert row["se"] == pytest.approx(analytic, rel=1e-3)
 
 
+def test_multinomial_reports_predicted_probabilities_per_gender_and_category():
+    """§12.5 的图 5 要画的预测概率必须在表里，并与已报告的 AME 严格自洽
+
+    恒等式 pred_male[c] - pred_female[c] == AME[c] 是这批预测水平存在的意义：
+    它证明图上的柱子与表里的边际效应是同一次拟合的两种写法。图那一层不能用
+    "观察到的女性水平 + 调整后的 AME"拼柱子——那会把观察量与模型调整量相加。
+    """
+    frame = _combo_fixture(n_per_gender=400, seed=40)
+    out = mcomb.fit_combination_multinomial(frame)
+    for layer in ("M0", "M1", "M2"):
+        preds = out[(out["model"] == layer)
+                    & (out["term"].isin(mcomb.combo_pred_terms()))]
+        assert len(preds) == 8
+        assert (preds["scale"] == "probability").all()
+        assert preds["note"].str.contains("counterfactual_predicted_probability").all()
+        for gender_label in ("male", "female"):
+            values = [
+                _row(out, model=layer,
+                     term=mcomb.combo_pred_term(gender_label, c))["estimate"]
+                for c in mcomb.COMBO_CATEGORIES
+            ]
+            assert all(0.0 <= v <= 1.0 for v in values)
+            # 同一性别在四个类别上的预测概率必须构成一个分布
+            assert sum(values) == pytest.approx(1.0)
+        for category in mcomb.COMBO_CATEGORIES:
+            male = _row(out, model=layer,
+                        term=mcomb.combo_pred_term("male", category))
+            female = _row(out, model=layer,
+                          term=mcomb.combo_pred_term("female", category))
+            ame = _row(out, model=layer, term=mcomb.combo_ame_term(category))
+            assert male["estimate"] - female["estimate"] == pytest.approx(
+                ame["estimate"], abs=1e-10
+            )
+            assert np.isfinite(male["se"]) and male["ci_low"] >= 0.0
+            assert female["ci_high"] <= 1.0
+
+
+def test_multinomial_m0_predicted_probabilities_equal_observed_shares():
+    """M0 是饱和模型：预测概率必须精确等于该性别的观测占比"""
+    frame = _combo_fixture(n_per_gender=1200, seed=41)
+    out = mcomb.fit_combination_multinomial(frame)
+    for gender_label, code in (("male", "m"), ("female", "f")):
+        observed = frame[frame["gender"] == code]["source_combo"].value_counts(
+            normalize=True
+        )
+        for category in mcomb.COMBO_CATEGORIES:
+            row = _row(out, model="M0",
+                       term=mcomb.combo_pred_term(gender_label, category))
+            assert row["estimate"] == pytest.approx(
+                float(observed.get(category, 0.0)), abs=1e-4
+            )
+
+
+def test_multinomial_failed_layer_still_leaves_predicted_probability_rows():
+    frame = _combo_fixture(n_per_gender=200, seed=42)
+    frame["gender"] = "f"
+    out = mcomb.fit_combination_multinomial(frame)
+    preds = out[(out["model"] == "M0")
+                & (out["term"].isin(mcomb.combo_pred_terms()))]
+    assert len(preds) == 8
+    assert preds["estimate"].isna().all()
+    assert preds["note"].str.contains("no_gender_variation").all()
+
+
 def test_multinomial_emits_a_sum_check_row_and_shared_schema():
     frame = _combo_fixture(n_per_gender=300, seed=17)
     out = mcomb.fit_combination_multinomial(frame)
@@ -582,6 +646,10 @@ def test_build_result_keys_are_unique(tmp_path, monkeypatch):
 
     paths = mcomb.build(year=2020, n_boot=20)
     key = ["outcome", "domain", "model", "term"]
+    combination = pd.read_parquet(paths[1], columns=list(su.RESULT_SCHEMA))
+    # §12.5 的预测概率行也在这张表里，且同样不能撞键
+    assert set(mcomb.combo_pred_terms()) <= set(combination["term"])
+    assert (combination["term"].isin(mcomb.combo_pred_terms())).sum() == 8 * 3
     for path in paths:
         out = pd.read_parquet(path, columns=list(su.RESULT_SCHEMA))
         duplicated = out[out.duplicated(subset=key, keep=False)]

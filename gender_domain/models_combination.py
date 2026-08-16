@@ -177,6 +177,17 @@ TERM_SOURCE_X_GENDER = "source_x_gender_did"
 TERM_SOURCE_X_GENDER_COEF = "source_x_gender_coef"
 TERM_AME_SUM = "gender_male_ame_sum"
 
+# §12.5 的图 5 要画"四类参与组合 × 性别"的柱子**并附多项模型的预测概率**。
+# 这些预测概率必须由模型直接给出，不能用"观察到的女性水平 + 调整后的性别
+# AME"拼出来——那是把一个观察量和一个模型调整量相加，得到的数字不对应任何
+# 一个估计量（与 models_interaction 的 PRED_CELLS 同一条理由）。
+PRED_GENDERS = (("male", 1), ("female", 0))
+# 预测水平与 AME 必须来自同一次拟合，这条恒等式的容差：
+# pred_male[c] - pred_female[c] == 该类别的 AME。两者由同一批反事实预测
+# 算出，因此这是一条接线检查（wiring check）——它证明图上的柱子与表里的
+# 边际效应是同一个模型的两种写法，不证明模型本身是对的。
+PRED_AME_TOL = 1e-10
+
 MODEL_RAW = "raw"
 MODEL_ACTIVITY_PARTIAL = "activity_partial"
 
@@ -918,6 +929,21 @@ def combo_ame_terms(categories=COMBO_CATEGORIES):
     return tuple(combo_ame_term(c) for c in categories)
 
 
+def combo_pred_term(gender_label, category):
+    """某个性别在某一类参与组合上的模型预测概率的 term 名
+
+    命名与 models_interaction 的 pred_male_public 同一形状：性别与类别都写在
+    term 里，(outcome, domain, model, term) 因此仍然唯一。
+    """
+    return f"pred_{gender_label}_{category}"
+
+
+def combo_pred_terms(categories=COMBO_CATEGORIES):
+    return tuple(
+        combo_pred_term(g, c) for g, _ in PRED_GENDERS for c in categories
+    )
+
+
 def _multinomial_ames(result, design_info, sample, categories):
     """多项 logit 的性别 AME（逐类别）+ delta method 标准误
 
@@ -968,6 +994,66 @@ def _multinomial_ames(result, design_info, sample, categories):
     return np.asarray(ames, dtype=float), np.asarray(ses, dtype=float), ame_sum
 
 
+def _multinomial_predicted(result, design_info, sample, categories):
+    """各性别在各类别上的模型预测概率（§12.5 图 5 要画的水平量）+ delta method
+
+    做法与 _multinomial_ames 同源：把样本里每个人分别设成男性、女性，各自
+    预测各类别概率，再逐类取均值——只是这里报告**水平**而不是两者之差。
+    区间用同一套数值梯度 + 同一个稳健协方差矩阵，因此预测水平与 AME 是同一次
+    拟合下的两种写法，pred_male[c] - pred_female[c] 恒等于该类别的 AME。
+
+    刻意不与 _multinomial_ames 合并成一次参数扰动：合并能省一轮预测
+    （M2 上约 120 个参数 × 2 次预测），但会改动已经产出论文数字的那段代码，
+    浮点求和顺序一变，既有 AME 的 se 就可能在末位发生变化。本次改动的硬要求
+    是既有行的取值一个都不许动，因此宁可多跑一轮。
+
+    水平量的正态近似区间原则上可能越过 [0,1]，而本项目的规则是"区间绝不越界"
+    （stats_utils 模块文档第 2 条），所以显式 clip 一次并在真的截断时标注——
+    截断意味着该格贴近边界、正态近似已经不合适，读者需要知道。
+
+    Returns:
+        {(性别标签, 类别): (est, se, low, high, clipped)}
+    """
+    params_2d = np.asarray(result.params, dtype=float)
+    k_exog, n_eq = params_2d.shape
+    flat = params_2d.ravel(order="F")
+    exogs = {
+        label: _forced_exog(design_info, sample, {FOCAL_COLUMN: value})
+        for label, value in PRED_GENDERS
+    }
+
+    def _levels(p):
+        reshaped = np.asarray(p, dtype=float).reshape(k_exog, n_eq, order="F")
+        return np.concatenate([
+            np.asarray(result.model.predict(reshaped, exog=exogs[label])).mean(axis=0)
+            for label, _ in PRED_GENDERS
+        ])
+
+    cov = su._get_cov_params_or_none(result)
+    if cov is None:
+        levels = _levels(flat)
+        ses = np.full(levels.shape, np.nan)
+        print("警告: 多项 logit 拿不到 cov_params()，各性别预测概率的区间记为 NaN")
+    else:
+        levels, ses = _delta_method_se(flat, cov, _levels)
+
+    n_cat = len(categories)
+    out = {}
+    for g_index, (label, _) in enumerate(PRED_GENDERS):
+        for c_index, category in enumerate(categories):
+            est = float(levels[g_index * n_cat + c_index])
+            se = float(ses[g_index * n_cat + c_index])
+            if np.isfinite(se):
+                raw_low, raw_high = est - _Z * se, est + _Z * se
+                low = float(np.clip(raw_low, 0.0, 1.0))
+                high = float(np.clip(raw_high, 0.0, 1.0))
+                clipped = (low != raw_low) or (high != raw_high)
+            else:
+                low, high, clipped = np.nan, np.nan, False
+            out[(label, category)] = (est, se, low, high, clipped)
+    return out
+
+
 def _combo_nan_rows(layer, n_obs, n_dropped, drop_reason, note,
                     categories=COMBO_CATEGORIES):
     rows = [
@@ -978,16 +1064,32 @@ def _combo_nan_rows(layer, n_obs, n_dropped, drop_reason, note,
     rows.append(mc._nan_row(OUTCOME_COMBO, DOMAIN_BOTH, layer, TERM_AME_SUM,
                             "probability", n_obs, n_dropped, drop_reason,
                             mc._join_notes(note, "internal_consistency_check")))
+    # 预测概率同样要留痕：一层失败时结果表里少几行，读者会理解成"这几个量
+    # 没人算过"，而不是"这一层没估出来"（与 models_interaction._nan_rows 同）
+    rows.extend(
+        mc._nan_row(OUTCOME_COMBO, DOMAIN_BOTH, layer,
+                    combo_pred_term(label, category), "probability",
+                    n_obs, n_dropped, drop_reason, note)
+        for label, _ in PRED_GENDERS for category in categories
+    )
     return rows
 
 
 def fit_combination_multinomial(user_df):
     """§8.1 四类 source_combo 上的多项 logit，报告各类别的性别 AME（M0/M1/M2）
 
-    每层五行：四个类别各一行 AME（概率尺度），外加一行 TERM_AME_SUM 写出
-    四者之和——它在数学上恒等于 0，写进结果表是为了让读者能一眼确认这批
-    边际效应是"同一次移动的四个去向"，而不是四个各自算出来的数字
-    （代码里同时硬断言，见 _multinomial_ames）。
+    每层十三行：
+        四个类别各一行性别 AME（概率尺度）
+        一行 TERM_AME_SUM——四者之和，数学上恒等于 0，写进结果表是为了让读者
+            一眼确认这批边际效应是"同一次移动的四个去向"，而不是四个各自算
+            出来的数字（代码里同时硬断言，见 _multinomial_ames；也读一下那里
+            关于"这条检查抓不住什么"的说明）
+        八行 pred_{male,female}_{类别}——§12.5 的图 5 要画的模型预测概率。
+            图那一层不能用"观察到的女性水平 + 调整后的 AME"拼出这些柱子：
+            那是把一个观察量和一个模型调整量相加，得到的数字不对应任何一个
+            估计量。落行之前先断言 pred_male[c] - pred_female[c] == AME[c]。
+
+    (outcome, domain, model, term) 四元组在整张表里唯一。
     """
     n_input = len(user_df)
     frame = mc.prepare_model_frame(user_df)
@@ -1078,6 +1180,38 @@ def fit_combination_multinomial(user_df):
             drop_reason=drop_reason,
             note=mc._join_notes(note, "internal_consistency_check"),
         ))
+
+        # §12.5 图 5 要画的"各性别在各类别上的模型预测概率"。与上面的 AME 来自
+        # 同一次拟合、同一批反事实预测，因此 pred_male[c] - pred_female[c] 恒等于
+        # 该类别的 AME——先断言这条恒等式，再落行：一旦破了，说明图上的柱子与表里
+        # 的边际效应已经不是同一个模型的两种写法，那种不一致印到论文里没人看得出来。
+        preds = _multinomial_predicted(result, design_info, aligned, categories)
+        for category, ame in zip(categories, ames):
+            gap = preds[("male", category)][0] - preds[("female", category)][0]
+            if abs(gap - float(ame)) > PRED_AME_TOL:
+                raise ValueError(
+                    f"类别 {category} 的预测概率之差 {gap!r} 与报告的性别 AME "
+                    f"{float(ame)!r} 不一致（差 {gap - float(ame):.3e} 超出容差 "
+                    f"{PRED_AME_TOL}）。两者本应由同一批反事实预测算出，不一致说明"
+                    "预测水平与边际效应来自不同的拟合、不同的样本或不同的类别顺序，"
+                    "图与表会互相矛盾，必须先查清再出结果。"
+                )
+        for label, _ in PRED_GENDERS:
+            for category in categories:
+                est, se, low, high, clipped = preds[(label, category)]
+                rows.append(su.tidy_result(
+                    outcome=OUTCOME_COMBO, domain=DOMAIN_BOTH, model=layer,
+                    term=combo_pred_term(label, category), estimate=est,
+                    se=se if np.isfinite(se) else np.nan,
+                    ci_low=low, ci_high=high, scale="probability",
+                    n_obs=n_obs, n_dropped=n_dropped, drop_reason=drop_reason,
+                    note=mc._join_notes(
+                        note, "counterfactual_predicted_probability",
+                        # 区间算不出来 / 被截断时如实标注，不留一个看不出原因的空白
+                        "pred_ci_unavailable" if not np.isfinite(se) else None,
+                        "pred_ci_clipped_to_unit_interval" if clipped else None,
+                    ),
+                ))
     return pd.DataFrame(rows, columns=list(su.RESULT_SCHEMA))
 
 
