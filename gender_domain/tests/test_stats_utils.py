@@ -97,6 +97,17 @@ def test_risk_ratio_ci_nan_bounds_when_numerator_zero_does_not_raise():
     assert np.isnan(high2)
 
 
+def test_risk_ratio_ci_denominator_zero_numerator_positive_returns_nan_not_inf():
+    # s2=0 但 s1>0 时，旧实现返回 rr=inf——"分母组从未发生"已经让比率
+    # 本身失去意义，不应该给一个看似有信息量的 inf（下游排序/汇总会被
+    # 误导）；修复后统一记为 NaN，与"两组都为 0"的情形一致。
+    rr, low, high = su.risk_ratio_ci(5, 100, 0, 100)
+    assert np.isnan(rr)
+    assert not np.isinf(rr)
+    assert np.isnan(low)
+    assert np.isnan(high)
+
+
 # ---------------------------------------------------------------------------
 # bootstrap_ci
 # ---------------------------------------------------------------------------
@@ -189,6 +200,14 @@ def test_top_share_excludes_nan_from_denominator_and_numerator():
     assert su.top_share(values, 0.25) == pytest.approx(4 / 10)
 
 
+def test_top_share_zero_q_returns_zero_not_the_single_user_floor():
+    # 旧实现里 k = max(ceil(q*n), 1)，q=0.0 时也会被地板到 k=1，
+    # 于是"前 0 个用户的份额"被悄悄算成了"贡献最大的 1 个用户的份额"，
+    # 结果是个看似合理、实则错误的非零数。修复后 q<=0 直接返回 0.0。
+    values = np.array([1.0, 2.0, 1000.0])
+    assert su.top_share(values, 0.0) == 0.0
+
+
 # ---------------------------------------------------------------------------
 # tidy_result
 # ---------------------------------------------------------------------------
@@ -264,32 +283,155 @@ def test_average_marginal_effect_recovers_analytic_ame_saturated_logit():
     assert low < ame < high
 
 
-class _NoCovWrapper:
-    """包一层已拟合结果，模拟 cov_params() 不可用的模型，只用于测试
-    average_marginal_effect 的 bootstrap 退化路径"""
+class _MissingCovWrapper:
+    """包一层已拟合结果，模拟"模型压根没有 cov_params 方法"的情况
+    （合法的"协方差不可用"信号之一）"""
+
+    def __init__(self, fitted_result):
+        self.params = fitted_result.params
+        self.model = fitted_result.model
+
+
+class _NotImplementedCovWrapper:
+    """cov_params() 显式抛 NotImplementedError——statsmodels 里部分拟合
+    方式表示"这次拟合没有协方差矩阵"的合法信号，也应被当作不可用"""
 
     def __init__(self, fitted_result):
         self.params = fitted_result.params
         self.model = fitted_result.model
 
     def cov_params(self):
-        raise RuntimeError("模拟协方差矩阵不可用")
+        raise NotImplementedError("模拟这次拟合没有协方差矩阵")
 
 
-def test_average_marginal_effect_falls_back_to_bootstrap_when_cov_unavailable():
+class _BuggyCovWrapper:
+    """cov_params() 抛出与"协方差不可用"无关的任意异常（模拟调用方代码
+    本身的 bug），用来确认这类异常必须原样向上抛出，不能被当成
+    "协方差不可用"悄悄吞掉——这正是 C1 修复要收窄的那个 except 范围"""
+
+    def __init__(self, fitted_result):
+        self.params = fitted_result.params
+        self.model = fitted_result.model
+
+    def cov_params(self):
+        raise RuntimeError("模拟调用方代码里的真实 bug，不是协方差不可用")
+
+
+class _FixedCovWrapper:
+    """cov_params() 返回调用方指定的（可能是坏的）矩阵，用来测试
+    NaN / 形状不匹配两种"协方差矩阵本身有问题"的场景"""
+
+    def __init__(self, fitted_result, cov_matrix):
+        self.params = fitted_result.params
+        self.model = fitted_result.model
+        self._cov_matrix = cov_matrix
+
+    def cov_params(self):
+        return self._cov_matrix
+
+
+def test_average_marginal_effect_returns_nan_interval_when_cov_params_missing(capsys):
+    # C1/I3 修复后的契约：协方差矩阵确实不可用时，不再退化成任何区间
+    # （旧版本的 bootstrap 退化路径固定住已拟合参数、只重抽样预测数据，
+    # 完全不反映参数不确定性，实测比真实 delta method 区间窄了一个
+    # 数量级，比"没有区间"更危险）。现在必须返回 NaN，并打印警告说明
+    # 原因，而不是让调用方误以为拿到了一个可信的区间。
     res, df = _saturated_two_group_logit()
-    wrapped = _NoCovWrapper(res)
+    ame, se, low, high = su.average_marginal_effect(_MissingCovWrapper(res), "x", df)
+    assert ame == pytest.approx(0.20, abs=1e-3)
+    assert np.isnan(se)
+    assert np.isnan(low)
+    assert np.isnan(high)
+    captured = capsys.readouterr()
+    assert "警告" in captured.out
+
+
+def test_average_marginal_effect_returns_nan_interval_when_cov_params_not_implemented(capsys):
+    res, df = _saturated_two_group_logit()
     ame, se, low, high = su.average_marginal_effect(
-        wrapped, "x", df, n_boot=300, seed=5
+        _NotImplementedCovWrapper(res), "x", df
     )
     assert ame == pytest.approx(0.20, abs=1e-3)
-    # 这个 fixture 里模型只有 Intercept + x 两个协变量，反事实预测把 x
-    # 强制设为 1/0 后，每一行的预测值只取决于 x（被覆盖为常量），与该行
-    # 原本是哪个用户无关；因此对 data 的行做 bootstrap 重抽样时，无论
-    # 抽中哪些行，AME 的计算结果都恒等于同一个值——区间理应退化为一个
-    # 点（low == ame == high），这正说明退化路径是在"就着已拟合参数、
-    # 重新走一遍反事实预测"，而不是在瞎抽样出别的数字。
-    assert low <= ame <= high
-    assert low == pytest.approx(ame, abs=1e-6)
-    assert high == pytest.approx(ame, abs=1e-6)
-    assert np.isfinite(se)
+    assert np.isnan(se) and np.isnan(low) and np.isnan(high)
+    assert "警告" in capsys.readouterr().out
+
+
+def test_average_marginal_effect_propagates_unrelated_cov_params_error():
+    # 与上面两个测试相反：cov_params() 抛出的不是"协方差不可用"的信号，
+    # 而是任意异常（模拟真实 bug），必须原样向上抛出，绝不能被吞掉后
+    # 悄悄退化成一个看似正常的结果——这是 C1 那个过宽 except 的直接回归测试。
+    res, df = _saturated_two_group_logit()
+    with pytest.raises(RuntimeError):
+        su.average_marginal_effect(_BuggyCovWrapper(res), "x", df)
+
+
+def test_average_marginal_effect_raises_on_nan_covariance_matrix():
+    # cov_params() 返回一个形状正确但全是 NaN 的矩阵：grad @ cov @ grad
+    # 不会自动报错（NaN 参与运算只会静默传播成 NaN），旧版本这里被外层
+    # except Exception 吞掉后退化成一个 se=0.000457 的窄区间（真实 delta
+    # SE 应为 0.006370，区间因此窄了约 14 倍）。修复后必须显式检测无效
+    # 方差并 raise，而不是被更外层的 except 拦下来变成一个看似正常的数。
+    res, df = _saturated_two_group_logit()
+    bad_cov = np.full((2, 2), np.nan)
+    with pytest.raises(ValueError):
+        su.average_marginal_effect(_FixedCovWrapper(res, bad_cov), "x", df)
+
+
+def test_average_marginal_effect_raises_on_wrong_shaped_covariance_matrix():
+    # cov_params() 返回的矩阵维度与参数个数不匹配（这里模型有 2 个参数，
+    # 却返回一个 3x3 矩阵）：numpy 的 grad @ cov @ grad 会在维度不匹配时
+    # 自然抛 ValueError；这个测试确认该错误不会被吞掉，而是原样传出。
+    res, df = _saturated_two_group_logit()
+    wrong_shape_cov = np.eye(3)
+    with pytest.raises(ValueError):
+        su.average_marginal_effect(_FixedCovWrapper(res, wrong_shape_cov), "x", df)
+
+
+def test_average_marginal_effect_distinguishes_ame_from_mem_with_skewed_control():
+    # I2 修复：饱和两组 fixture 里 focal 变量是唯一协变量，AME 和"在协变
+    # 量均值处求边际效应"（MEM）代数上恒等，测试测不出"错误地在均值处
+    # 求值"这个陷阱。这里加入一个右偏的连续协变量 z（指数分布，均值
+    # 1.5、但有长尾到 17+），并且不经过拟合——直接手写已知真参数，
+    # 这样 AME 和 MEM 都能独立于 average_marginal_effect 之外、用同一个
+    # sigmoid 定义单独算出来，互相校验：
+    #   a=-3.0, b_x=1.2, b_z=2.0
+    #   AME_true = mean_i[ sigmoid(a+b_x+b_z*z_i) - sigmoid(a+b_z*z_i) ]
+    #   MEM_true = sigmoid(a+b_x+b_z*mean(z)) - sigmoid(a+b_z*mean(z))
+    # 这两个数在非线性模型 + 有方差的协变量下一般不相等，算出来相差
+    # 约 0.10（远超浮点误差），能明确分辨"反事实平均"和"均值处求值"
+    # 两种实现。
+    rng = np.random.default_rng(123)
+    n = 20000
+    x = rng.integers(0, 2, size=n).astype(float)
+    z = rng.exponential(scale=1.5, size=n)
+    a, b_x, b_z = -3.0, 1.2, 2.0
+
+    def sigmoid(v):
+        return 1.0 / (1.0 + np.exp(-v))
+
+    eta1 = a + b_x * 1.0 + b_z * z
+    eta0 = a + b_x * 0.0 + b_z * z
+    ame_true = float(np.mean(sigmoid(eta1) - sigmoid(eta0)))
+    mean_z = z.mean()
+    mem_true = float(
+        sigmoid(a + b_x * 1.0 + b_z * mean_z) - sigmoid(a + b_x * 0.0 + b_z * mean_z)
+    )
+    # 确认这个 fixture 确实具有判别力：两个候选答案要离得足够远
+    assert abs(ame_true - mem_true) > 0.05
+
+    # 构造一个未拟合的 statsmodels GLM，直接用已知真参数预测（不经过
+    # .fit()，没有估计噪声）；exog 用 statsmodels 默认生成的列名
+    # const/x1/x2，因此 data 的列名也必须是这三个，focal 变量是 x1
+    exog = np.column_stack([np.ones(n), x, z])
+    y_placeholder = np.zeros(n)  # 未拟合，endog 内容不影响 predict
+    model = sm.GLM(y_placeholder, exog, family=sm.families.Binomial())
+    df = pd.DataFrame({"const": 1.0, "x1": x, "x2": z})
+
+    class _KnownParamsWrapper:
+        def __init__(self):
+            self.params = np.array([a, b_x, b_z])
+            self.model = model
+
+    ame, _, _, _ = su.average_marginal_effect(_KnownParamsWrapper(), "x1", df)
+    assert ame == pytest.approx(ame_true, abs=1e-9)
+    assert ame != pytest.approx(mem_true, abs=1e-3)

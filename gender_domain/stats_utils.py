@@ -24,6 +24,17 @@ id_rules.py 同一思路，方便脱离服务器环境单测。后续所有 resu
 4. 边际效应一律报告在概率/比例尺度上，而不是发生比（odds ratio）：
    论文要把 M0/M1/M2 三层协变量集合的模型并排比较，发生比在协变量集合
    不同的模型之间不可比，概率尺度的平均边际效应（AME）才可比。
+5. 本模块的区间型函数（proportion_ci、proportion_diff_ci、risk_ratio_ci）
+   只返回 (low, high)，故意不附带一个 se 字段：Wilson/Newcombe/对数尺度
+   区间本来就不是对称于点估计的，(high-low)/(2z) 这种反推只在正态近似
+   下才有意义，用它给这些非对称区间"补"一个 se 会丢失区间形状携带的
+   信息，还可能让下游模块以为拿到了一个可以自由做加减法的正态近似量。
+   下游模块如果确实需要 se，应该直接使用区间本身，或者改用 bootstrap_ci
+   拿到的百分位区间，不要在这些函数外自己反推一个数字。
+6. 缺置信区间比给一个偏窄的置信区间更安全：某个数量真的没办法算出
+   不确定性时（例如协方差矩阵不可用），本模块的原则是返回 NaN 而不是
+   退化成一个看起来自信、实际低估了不确定性的区间——一个缺失的区间在
+   论文里是可以说明原因的，一个悄悄偏窄 10 倍的区间不是。
 """
 
 import numpy as np
@@ -115,6 +126,9 @@ def proportion_diff_ci(s1, n1, s2, n2, confidence=_DEFAULT_CONFIDENCE):
     （low' = -high, high' = -low）——区间宽度不变，只是围绕新的差值
     对称地重新定位，这是 Newcombe 方法本身的代数性质，不是巧合。
 
+    与 `proportion_ci` 不同，本函数只接受标量 s1/n1/s2/n2，不做向量化；
+    需要批量计算请显式循环。另见模块文档第 5 条：不返回 se。
+
     Returns:
         (diff, low, high)
     """
@@ -143,15 +157,25 @@ def risk_ratio_ci(s1, n1, s2, n2, confidence=_DEFAULT_CONFIDENCE):
     任一分子为 0 时，log(rr) 未定义（0 或除以 0），区间没有意义；
     这里返回 NaN 边界而不是抛异常——描述性表格里出现"某组这项行为
     从未发生"是完全正常的数据事实，不该让整张表的计算因此中断。
+    s2=0 时 rr 本身统一记为 NaN（即便 s1>0，"分母组从未发生"也已经
+    让"比率"这个概念本身失去意义，不应该返回一个看似有信息量的 inf，
+    那会在下游排序/汇总时造成误导）。
+
+    本函数只接受标量 s1/n1/s2/n2（与 `proportion_ci` 不同，后者对
+    `successes`/`n` 做了逐元素向量化）。这里不做向量化是因为分子为 0
+    时的分支处理天然是逐对进行的；调用方如果有一批 (s1,n1,s2,n2)
+    需要计算，请显式循环或用 `np.vectorize` 包一层，不要假设本函数
+    能直接接受数组输入。
+    另见模块文档第 5 条：本函数不返回 se，只返回对数尺度正态近似
+    换算回原始尺度后的 (low, high)。
 
     Returns:
-        (rr, low, high)；分子为 0 时 rr 仍尽量给出（0 或 NaN），
-        但 low/high 恒为 NaN。
+        (rr, low, high)；任一分子为 0 时 rr 记为 NaN，low/high 恒为 NaN。
     """
     if n1 == 0 or n2 == 0:
         return np.nan, np.nan, np.nan
     if s2 == 0:
-        rr = np.nan if s1 == 0 else np.inf
+        rr = np.nan
     else:
         rr = (s1 * n2) / (n1 * s2)
     if s1 == 0 or s2 == 0:
@@ -254,13 +278,16 @@ def top_share(values, q):
             当作 0（§项目全局约定：NaN is not zero）
         q: 头部用户占比，取值 (0, 1]
 
-    头部用户数 k 取 ceil(q * n) 并至少为 1（"前 0 个用户的份额"没有
-    意义，因此即便 q 很小也至少纳入贡献最大的 1 人）；q=1 时 k 被
-    min 到 n，份额恒为 1.0。
+    q<=0 时直接返回 0.0（"前 0 个用户的份额"就是 0，不做特殊照顾）；
+    q>0 时头部用户数 k 取 ceil(q * n) 并至少为 1（q 很小时也至少纳入
+    贡献最大的 1 人，否则"前一点点用户的份额"会因为四舍五入到 0 个人
+    而无法计算）；q>=1 时 k 被 min 到 n，份额恒为 1.0。
 
     Returns:
         float，份额；若没有任何有效观测或总量为 0，返回 NaN
     """
+    if q <= 0:
+        return 0.0
     values = np.asarray(values, dtype=float)
     values = values[~np.isnan(values)]
     n = len(values)
@@ -332,8 +359,32 @@ def _ame_at_params(model_result, params, exog1, exog0):
     return float(np.mean(pred1 - pred0))
 
 
+def _get_cov_params_or_none(model_result):
+    """尝试取模型的参数协方差矩阵；只有在协方差"确实不可用"时才返回 None
+
+    "不可用"严格限定为两种情况：模型对象根本没有 `cov_params` 这个
+    方法，或者调用它时抛出 `NotImplementedError`（statsmodels 里部分
+    拟合方式——例如某些正则化拟合——就是用这个异常表示"这次拟合没有
+    协方差矩阵"，这是它们自己声明的、明确的"不可用"信号）。
+
+    除此之外的任何异常——协方差矩阵形状与参数维度不匹配、含 NaN、
+    不是数值等——都不是"协方差不可用"，而是调用方传入的模型本身有
+    问题，必须原样向上抛出，绝不能在这里被吞掉后让 `average_marginal_
+    effect` 悄悄退化成一个更窄但错误的区间。这正是本函数只窄窄地捕获
+    `NotImplementedError`、不用 `except Exception` 的原因。
+    """
+    cov_params_fn = getattr(model_result, "cov_params", None)
+    if cov_params_fn is None:
+        return None
+    try:
+        cov = cov_params_fn()
+    except NotImplementedError:
+        return None
+    return np.asarray(cov, dtype=float)
+
+
 def average_marginal_effect(model_result, focal_var, data, confidence=_DEFAULT_CONFIDENCE,
-                             n_boot=1000, seed=0, cluster=None, delta_eps=1e-6):
+                             delta_eps=1e-6):
     """二值 focal 变量的平均边际效应（AME），反事实预测法
 
     做法（必须是这三步，不能替换成读系数或替换成在协变量均值处求边际
@@ -344,24 +395,31 @@ def average_marginal_effect(model_result, focal_var, data, confidence=_DEFAULT_C
     这就是 AME 的定义：对样本里每个个体分别问"如果 ta 是 1 组/0 组，
     模型预测的结果会是多少"，再把差值平均——而不是先对协变量取平均、
     只算一个"代表性个体"的边际效应（那是 MEM，在非线性模型里与 AME
-    不是同一个数），也不是直接读回归系数（系数是 log-odds 尺度，本研究
-    一律报告概率/比例尺度，两者不可以互相替代）。
+    不是同一个数：模型是非线性的，"先平均协变量再算一次" 和 "先逐行算
+    再平均结果" 一般不可交换），也不是直接读回归系数（系数是 log-odds
+    尺度，本研究一律报告概率/比例尺度，两者不可以互相替代）。
 
-    标准误优先用 delta method：把 AME 看作模型参数 beta 的函数
-    g(beta)，在 `model_result.params` 处用中心差分数值求梯度
-    （对每个参数分量单独扰动 ±delta_eps*max(1,|beta_j|)），再用
+    标准误用 delta method：把 AME 看作模型参数 beta 的函数 g(beta)，
+    在 `model_result.params` 处用中心差分数值求梯度（对每个参数分量
+    单独扰动 ±delta_eps*max(1,|beta_j|)），再用
     Var(AME) = grad' * cov_params() * grad 得到方差。之所以用数值梯度
     而不是针对某一种 link function 手写解析梯度，是因为本模块要同时
     服务 logit/probit/分数 logit 等多种模型，数值梯度对 link function
     不敏感，换模型不用重写这段代码。
 
-    如果 `model_result.cov_params()` 不可用（少数拟合方式不提供协方差
-    矩阵），退化为对 `data` 的行（或给定 `cluster` 时对簇）做 bootstrap，
-    每次重抽样后用**同一组已拟合参数**重新计算 AME 并汇总成百分位区间。
-    这个退化路径不重新拟合模型，因此不能反映参数估计本身的不确定性，
-    只是在没有协方差矩阵可用时的一个保底选项；只要模型来自标准的
-    statsmodels 拟合（GLM/Logit/GEE 等都提供 cov_params()），实际上
-    走不到这条退化路径。
+    如果协方差矩阵确实不可用（见 `_get_cov_params_or_none` 的严格判定），
+    本函数**不会**退化成任何形式的区间——之前的版本在协方差不可用时
+    用"固定参数、只重抽样预测数据"的 bootstrap 顶替，那个区间完全不
+    反映参数估计的不确定性（只重抽样了协变量分布，参数本身纹丝不动），
+    实测比真实 delta method 区间窄一个数量级以上，这比"没有区间"更
+    危险：一个缺失的区间在论文里可以如实说明原因，一个自信但错误的
+    窄区间会被当真。因此这种情况下 se/ci_low/ci_high 一律返回 NaN，
+    只保留可以独立算出的点估计 ame，并打印中文警告说明原因。真正需要
+    在这种模型上拿到有效区间，唯一正确的路径是对估计数据重新拟合模型
+    做 cluster bootstrap（即在每次重抽样上重新 `.fit()`，而不是复用
+    这里已经点估计好的参数）——那需要知道具体的拟合方式（公式、
+    family、cluster 结构等），因人而异，不属于本共享工具函数的职责，
+    留给各个 models_*.py 在拟合模型的地方自己实现。
 
     Args:
         model_result: 已拟合的 statsmodels 结果对象（或提供同样接口的
@@ -372,47 +430,46 @@ def average_marginal_effect(model_result, focal_var, data, confidence=_DEFAULT_C
             但列必须能通过模型的 design_info 或 exog_names 对齐）
 
     Returns:
-        (ame, se, low, high)；退化到 bootstrap 时 se 由百分位区间
-        近似换算（(high-low)/(2z)），仅供参考，区间本身以百分位为准
+        (ame, se, low, high)；协方差不可用时 se/low/high 为 NaN
     """
     exog1, exog0 = _design_matrices(model_result, focal_var, data)
     params = np.asarray(model_result.params, dtype=float)
     ame = _ame_at_params(model_result, params, exog1, exog0)
 
-    try:
-        cov = np.asarray(model_result.cov_params())
-        grad = np.zeros_like(params)
-        for j in range(len(params)):
-            step = delta_eps * max(1.0, abs(params[j]))
-            p_plus = params.copy()
-            p_plus[j] += step
-            p_minus = params.copy()
-            p_minus[j] -= step
-            grad[j] = (
-                _ame_at_params(model_result, p_plus, exog1, exog0)
-                - _ame_at_params(model_result, p_minus, exog1, exog0)
-            ) / (2 * step)
-        var = float(grad @ cov @ grad)
-        if not np.isfinite(var) or var < 0:
-            raise ValueError("delta method 方差计算结果无效")
-        se = float(np.sqrt(var))
-        z = _z_value(confidence)
-        low, high = ame - z * se, ame + z * se
-        return ame, se, low, high
-    except Exception:
-        # 退化路径：cov_params 不可用时，对 data 的行/簇做 bootstrap，
-        # 用同一组已拟合参数重新计算 AME（见函数文档的说明与限制）
-        idx_all = np.arange(len(data))
-
-        def statistic(idx):
-            sub = _take_rows(data, np.asarray(idx))
-            sub_exog1, sub_exog0 = _design_matrices(model_result, focal_var, sub)
-            return _ame_at_params(model_result, params, sub_exog1, sub_exog0)
-
-        _, low, high = bootstrap_ci(
-            idx_all, statistic, n_boot=n_boot, seed=seed, cluster=cluster,
-            confidence=confidence,
+    cov = _get_cov_params_or_none(model_result)
+    if cov is None:
+        print(
+            "警告: average_marginal_effect 未能取得 cov_params()"
+            "（模型没有该方法，或拟合方式明确声明协方差不可用），"
+            "delta method 无法计算。为避免返回一个低估不确定性的区间，"
+            "se/ci_low/ci_high 一律记为 NaN，只保留点估计 ame——"
+            "下游写结果表时必须把这种情况当作缺置信区间处理，"
+            "不能自己用别的公式补一个数字上去。"
         )
-        z = _z_value(confidence)
-        se = (high - low) / (2 * z) if np.isfinite(high - low) else np.nan
-        return ame, se, low, high
+        return ame, np.nan, np.nan, np.nan
+
+    grad = np.zeros_like(params)
+    for j in range(len(params)):
+        step = delta_eps * max(1.0, abs(params[j]))
+        p_plus = params.copy()
+        p_plus[j] += step
+        p_minus = params.copy()
+        p_minus[j] -= step
+        grad[j] = (
+            _ame_at_params(model_result, p_plus, exog1, exog0)
+            - _ame_at_params(model_result, p_minus, exog1, exog0)
+        ) / (2 * step)
+    # grad @ cov @ grad：cov 形状与 grad 维度不匹配时 numpy 会直接抛
+    # ValueError——不捕获，原样向上抛出，这就是"形状错误必须暴露"的
+    # 实现方式，不允许被更外层的 except 悄悄吞掉
+    var = float(grad @ cov @ grad)
+    if not np.isfinite(var) or var < 0:
+        raise ValueError(
+            f"delta method 得到无效方差 var={var!r}：cov_params() 返回的协方差"
+            "矩阵可能含 NaN、不是半正定矩阵，这是调用方传入的模型本身有问题，"
+            "必须先修好模型的协方差矩阵，不允许静默退化成别的区间来掩盖。"
+        )
+    se = float(np.sqrt(var))
+    z = _z_value(confidence)
+    low, high = ame - z * se, ame + z * se
+    return ame, se, low, high
