@@ -79,6 +79,35 @@ def test_aggregate_posts_counts_activity():
     assert out.loc["2", "n_active_days"] == 1
 
 
+def test_missing_province_column_fills_province_and_region_as_missing():
+    """旧夹具/旧分片没有 province 列时，province/region 都填缺失，不报错"""
+    out = but.aggregate_posts(_posts()).set_index("user_id")
+    assert "province" in out.columns
+    assert "region" in out.columns
+    assert out["province"].isna().all()
+    assert out["region"].isna().all()
+
+
+def test_region_is_derived_from_province_code_and_uses_first_observed_value():
+    """region 按国家统计局四区域方案从 province 现场推导；province/region
+    都取该用户在表 A 里首次出现的取值，不是众数——用户 1 先出现在
+    province "11"（东部）、后面一条改成 "44"（同属东部但不同省），首值
+    "11" 才是应该被采用的取值。
+    """
+    posts = _posts().copy()
+    posts["province"] = ["11", "11", "44", "21", "21", "44", "44"]
+    out = but.aggregate_posts(posts).set_index("user_id")
+    # 用户 1（w1/w2/w3）首条是 "11"，即便后面出现 "44" 也不改变首值
+    assert out.loc["1", "province"] == "11"
+    assert out.loc["1", "region"] == "East"
+    # 用户 2（w4/w5）全部是 "21"（东北）
+    assert out.loc["2", "province"] == "21"
+    assert out.loc["2", "region"] == "Northeast"
+    # 用户 4（w7/w8）全部是 "44"（东部）
+    assert out.loc["4", "province"] == "44"
+    assert out.loc["4", "region"] == "East"
+
+
 def test_topical_share_uses_expressive_posts_as_denominator():
     out = but.aggregate_posts(_posts()).set_index("user_id")
     # 用户1有3帖，其中w2是纯转发，表达帖为2

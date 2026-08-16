@@ -29,6 +29,14 @@ EXPRESSIVE_TYPES = tr.EXPRESSIVE_TYPES
 # 表 A 分片里表 C/表 D 真正用到的列。parquet 必须显式指定 columns：
 # 表 A 还带着 public_terms / celebrity_terms 两列竖线拼接的命中词字符串，
 # 全年一次性读进内存却一次都用不到，是纯粹的浪费。
+#
+# province：表 A 已经透传的省级行政区划代码列（见 build_post_table.py），
+# 这里显式读入供 aggregate_posts 聚合到表 C。region 不在这份列表里——
+# 表 A 目前并不写出 region 列（上游 cleaned_weibo_cov 合并画像时其实已经
+# 带了这个字段，但 build_post_table.py 尚未透传），所以 region 由
+# aggregate_posts 在聚合前从 province 现场推导，不作为要从 parquet 读取
+# 的原始列；一旦表 A 补上 region 直传，_ensure_province_region 会优先
+# 采用表 A 自带的取值，不会重复推导。
 POST_SHARD_COLUMNS = [
     "weibo_id",
     "user_id",
@@ -38,6 +46,7 @@ POST_SHARD_COLUMNS = [
     "post_type",
     "n_chars",
     "is_expressive",
+    "province",
 ] + [
     f"{domain}_{suffix}"
     for domain in DOMAINS
@@ -59,6 +68,46 @@ def _safe_divide(numerator, denominator):
     """分母为 0 时返回 NaN，避免把"没有分母"写成 0"""
     denominator = denominator.replace(0, np.nan)
     return numerator / denominator
+
+
+# 国家统计局四大区域划分（东部/中部/西部/东北），键为两位省级行政区划
+# 代码（GB/T 2260），与本仓库 word_frequency_analysis.py / data_analysis.py /
+# user_profile_analysis.py 里以中文省份名为键的 province_to_region 使用
+# 同一套四区域方案，只是换成表 A province 列本身的编码格式，避免再多
+# 维护一份中文省份名映射、也避免两处方案不一致。
+PROVINCE_CODE_TO_REGION = {
+    # East 东部
+    "11": "East", "12": "East", "13": "East", "31": "East", "32": "East",
+    "33": "East", "35": "East", "37": "East", "44": "East", "46": "East",
+    # Central 中部
+    "14": "Central", "34": "Central", "36": "Central", "41": "Central",
+    "42": "Central", "43": "Central",
+    # West 西部
+    "15": "West", "45": "West", "50": "West", "51": "West", "52": "West",
+    "53": "West", "54": "West", "61": "West", "62": "West", "63": "West",
+    "64": "West", "65": "West",
+    # Northeast 东北
+    "21": "Northeast", "22": "Northeast", "23": "Northeast",
+}
+
+
+def _ensure_province_region(df):
+    """保证聚合前的帖子表带有 province 与 region 两列（就地补齐并返回同一个 df）
+
+    - province 缺失（旧夹具/旧分片没有这一列）：两列都填缺失并打印警告，
+      不阻断聚合——与 _ensure_is_expressive 处理旧分片的方式一致。
+    - province 存在、region 缺失（表 A 当前的真实状态）：按
+      PROVINCE_CODE_TO_REGION 从 province 现场推导 region。
+    - region 已经存在（表 A 未来某天补上直传的 region 列）：直接采用表 A
+      自带的取值，不重复推导，避免两处方案不一致时被这里的映射覆盖。
+    未匹配到映射表的省份代码（如港澳台或异常代码）留空为 NaN，不强行归类。
+    """
+    if "province" not in df.columns:
+        print("警告: 帖子表缺少 province 列，province/region 填为缺失（可能是旧夹具或旧分片）")
+        df["province"] = np.nan
+    if "region" not in df.columns:
+        df["region"] = df["province"].map(PROVINCE_CODE_TO_REGION)
+    return df
 
 
 def _ensure_is_expressive(df):
@@ -95,6 +144,7 @@ def aggregate_posts(post_df):
     # 与表 B 聚合结果 join 时静默对不上（见 id_rules.py 顶部说明）。
     df["user_id"] = ir.normalize_id_series(df["user_id"])
     df = _ensure_is_expressive(df)
+    df = _ensure_province_region(df)
     df["is_retweet_post"] = df["post_type"].isin(("retweet_plain", "retweet_comment"))
 
     base = df.groupby("user_id").agg(
@@ -104,6 +154,13 @@ def aggregate_posts(post_df):
         n_expressive_posts=("is_expressive", "sum"),
         n_active_days=("date", "nunique"),
         n_active_months=("month", "nunique"),
+        # province/region 取该用户在表 A 里首次出现的取值，不取众数：
+        # 众数在票数相同时不确定、计算成本也更高，而绝大多数用户全年
+        # 地理位置不变，首值已经足够代表；少数确有搬家的用户，取首值
+        # 而非众数是刻意的简化，认领归属期外的偏差留给后续按需评估，
+        # 不在这里用众数悄悄"多数表决"掉搬家这件事。
+        province=("province", "first"),
+        region=("region", "first"),
     )
 
     expressive = df[df["is_expressive"]]
