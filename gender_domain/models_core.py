@@ -40,6 +40,11 @@
    报告发生率比（IRR）。log(1+x) 的 OLS 只作为稳健性行给出
    （note="log1p_ols"），它的系数不是 IRR，尺度另记为 log1p_count，
    刻意不与 IRR 混在同一个 scale 里被下游当成同一种量。
+   **IRR 的口径必须读准**：零截断负二项的 IRR 是"潜在未截断均值之比"，
+   不是"参与者条件均值 E[y|y>0] 之比"。模拟核对：真实潜在比 2.0 时本
+   模块估出 1.989，而观测到的 E[y|y>0] 之比只有 1.783。读者很容易把
+   表里的 2.0 读成"参与的男性转发量是女性的两倍"，所以每一行 IRR 的
+   note 都带上 NOTE_IRR_LATENT，让结果表自证口径。
 
 5. **占比型结果变量用分数 logit（fractional logit）。**
    statsmodels 没有独立的 QuasiBinomial family；Papke–Wooldridge 的
@@ -47,7 +52,20 @@
    稳健协方差"，所以这里用 GLM(Binomial) 配 cov_type="HC1"，
    这就是准二项（quasi-binomial）的正确实现，不是退而求其次的近似。
    持续性模型的分母是活跃月数（每个用户的"试验次数"不同），因此额外
-   传 var_weights=活跃月数，让月数多的用户在似然里权重更大。
+   传 var_weights=活跃月数——但**权重只作用于拟合，不改变报告口径**：
+   报告的 AME 依然在用户上等权平均，与表 2 的用户层面均值同一个总体
+   单位（详见 fit_persistence_models 的 docstring）。
+   GLM 的代价是它的 IRLS 在（准）完全分离时会照样报告 converged=True，
+   参数飙到 20~30 也自称收敛、标准误还异常地小——进入模型改用 Logit
+   正是为了避开这一点，占比/持续性没得选，因此补了 _glm_separation_note
+   这道事后检查（系数量级 / 拟合值贴边），命中就在 note 里点名，
+   但不删除该行。
+
+5b. **n_obs 记的是真正进入拟合的观测数**（result.nobs），不是我们挑出来
+   的子样本行数：patsy 会静默丢掉任何一个协变量为 NaN 的行。两者不一致
+   时差额补进 n_dropped 并追加 missing_covariate 原因，_reconcile_nobs
+   还会断言 n_obs + n_dropped 恒等于输入用户数——结果表的样本量记账
+   不应该依赖上游模块的内部约定才成立。
 
 6. **NaN 不是 0。** 分母为 0 的用户（没有转发 / 没有表达帖 / 没有活跃月）
    结果变量是 NaN，一律剔除并计入 n_dropped，绝不 fillna(0)。
@@ -107,6 +125,11 @@ TERM_LOG1P = "gender_male_log1p_coef"
 NOTE_PART1 = "two_part_part1"
 NOTE_LOG1P_OLS = "log1p_ols"
 NOTE_LOG_SCALE = "log_scale"
+# 零截断负二项的 IRR 是"潜在未截断均值之比"，不是"参与者条件均值之比"。
+# 模拟核对过：真实潜在比 2.0 时本模块估出 1.989，而观测到的
+# E[y|y>0] 之比只有 1.783。读者很容易把表里的 2.0 读成"参与的男性转发
+# 量是女性的两倍"，所以这一条必须写在行内的 note 里，让结果表自证口径。
+NOTE_IRR_LATENT = "irr_of_latent_untruncated_mean"
 
 # 占比型结果变量 -> 分母为 0 时的缺失原因（写进 drop_reason）。
 # 两个结果变量的分母不同（全部转发 / 全部表达帖），所以缺失原因也必须
@@ -117,8 +140,23 @@ SHARE_DROP_REASONS = {
     "topical_share": "no_expressive_posts",
 }
 
-# 零截断负二项的优化器重试顺序，见 _fit_ztnb 的说明
-ZTNB_METHODS = ("newton", "nm", "bfgs")
+# 零截断负二项的优化器重试顺序，见 _fit_ztnb 的说明。
+# 刻意不含 "nm"（Nelder–Mead）：实测在 44 参数的 M2 上跑满 1000 次迭代
+# 要 25 秒且仍然 converged=False，救不回任何一层；更要命的是 NM 的收敛
+# 标志判定的是"单纯形塌缩"而不是"梯度为零"，它报告的 converged=True
+# 可能落在一个非驻点上——一个救不了场、又会给出虚假收敛信号的档位，
+# 留着只有坏处。
+ZTNB_METHODS = ("newton", "bfgs")
+# 非首选优化器的结果必须额外过一道梯度检验：max|score| / nobs 低于此值
+# 才承认它落在驻点上（score 是对数似然的梯度，MLE 处应为 0）
+ZTNB_SCORE_TOL = 1e-3
+
+# GLM（分数 logit）的准分离告警阈值，见 _glm_separation_note。
+# 15 是 logit 尺度上的"荒谬大"：exp(15) ≈ 3.3e6 的发生比，真实社会数据
+# 里不会出现，出现了就是设计矩阵把某些观测完美预测掉了。
+GLM_EXTREME_COEF = 15.0
+GLM_BOUNDARY_EPS = 1e-6
+GLM_BOUNDARY_SHARE = 0.01
 
 _CONFIDENCE = 0.95
 _Z = float(norm.ppf(1 - (1 - _CONFIDENCE) / 2))
@@ -315,16 +353,88 @@ def _safe_fit(fit_callable, label):
     return result, None
 
 
-def _blocked_note(sample, covariates):
+def _design_width(terms, sample):
+    """估算设计矩阵的列数（含截距）
+
+    不能用 len(covariates)+1：C(region) 一项在真实数据里会展开成 30+ 个
+    哑变量，用协变量个数当参数个数会把 M2 的参数量少算约 30，
+    "观测数够不够估"这个判断因此形同虚设。这里按分类变量的水平数
+    （减去参照水平）逐项累加。
+    """
+    width = 1
+    for term in terms:
+        if term.startswith("C(") and term.endswith(")"):
+            name = term[2:-1]
+            width += max(int(sample[name].nunique(dropna=True)) - 1, 0)
+        else:
+            width += 1
+    return width
+
+
+def _blocked_note(sample, terms):
     """拟合之前就能判定"这层没法估"的情形，返回原因字符串，否则 None"""
     if len(sample) == 0:
         return "empty_sample"
     if sample[FOCAL_COLUMN].nunique() < 2:
         return "no_gender_variation"
-    n_terms = len(covariates) + 1
-    if len(sample) <= n_terms:
+    if len(sample) <= _design_width(terms, sample):
         return "insufficient_observations"
     return None
+
+
+def _glm_separation_note(result):
+    """分数 logit 的准分离/完全分离告警，返回 note 片段或 None
+
+    GLM 的 IRLS 在（准）完全分离时会照样报告 converged=True，参数飙到
+    20~30 也自称收敛，标准误还异常地小——实测系数 27.79、se 0.0045、
+    note 干净，在结果表里看起来和一行正常估计毫无区别。进入模型选用
+    Logit 而非 GLM 正是为了避开这一点，但占比/持续性模型必须用 GLM
+    （分数 logit 只能这么实现），所以这里补一道便宜的事后检查：
+    - logit 尺度上出现 |系数| > GLM_EXTREME_COEF 的项；或
+    - 超过 GLM_BOUNDARY_SHARE 比例的拟合值贴在 0/1 边界上。
+    命中任一条就在 note 里写明，**不删除这一行**——把估计连同告警一起
+    交给读者，比悄悄丢掉或悄悄放行都更诚实。
+    """
+    parts = []
+    params = np.asarray(result.params, dtype=float)
+    max_abs = float(np.max(np.abs(params))) if params.size else 0.0
+    if max_abs > GLM_EXTREME_COEF:
+        parts.append("max_coef={:.1f}".format(max_abs))
+    fitted = np.asarray(getattr(result, "fittedvalues", np.array([])), dtype=float)
+    if fitted.size:
+        boundary = np.mean((fitted < GLM_BOUNDARY_EPS) | (fitted > 1 - GLM_BOUNDARY_EPS))
+        if boundary > GLM_BOUNDARY_SHARE:
+            parts.append("boundary_share={:.3f}".format(float(boundary)))
+    if not parts:
+        return None
+    return "possible_separation:" + ",".join(parts)
+
+
+def _reconcile_nobs(result, n_input, n_obs, n_dropped, drop_reason):
+    """用真正进入拟合的观测数覆盖 n_obs，并守住样本量恒等式
+
+    此前 n_obs 记的是"我们挑出来的子样本行数"，而 patsy 会在拟合时静默
+    丢掉任何一个协变量为 NaN 的行——两者不一致时，结果表会声称模型用了
+    4000 个观测，实际只用了 3500，而且 n_dropped 还是 0。目前上游
+    profile_join 让 profile_complete 蕴含三项控制变量非缺失，所以这在
+    真实数据上尚未发生，但结果表不该依赖另一个模块的内部约定来保证
+    自己的数字是对的。这里一律以 result.nobs 为准，差额补进 n_dropped
+    并追加 missing_covariate 原因，最后断言 n_obs + n_dropped == n_input。
+    """
+    fitted = int(result.nobs)
+    if fitted != n_obs:
+        reasons = [drop_reason] if drop_reason else []
+        reasons.append("missing_covariate")
+        drop_reason = "+".join(reasons)
+        n_obs = fitted
+        n_dropped = n_input - fitted
+    if n_obs + n_dropped != n_input:
+        raise ValueError(
+            f"样本量记账不自洽: n_obs={n_obs} + n_dropped={n_dropped} "
+            f"!= 输入用户数 {n_input}；结果表的 n_obs/n_dropped 必须始终"
+            "相加等于同一个总数，否则读者无法核对样本流失。"
+        )
+    return n_obs, n_dropped, drop_reason
 
 
 def _nan_row(outcome, domain, model, term, scale, n_obs, n_dropped, drop_reason, note):
@@ -399,8 +509,9 @@ def fit_entry_models(user_df, domain, note_prefix=None):
     for model, covariates in MODEL_LAYERS:
         sample, n_obs, n_dropped, drop_reason = _layer_sample(frame, model, n_input)
         base_note = note_prefix
+        terms, dropped = _formula_terms(covariates, sample)
 
-        blocked = _blocked_note(sample, covariates)
+        blocked = _blocked_note(sample, terms)
         if blocked is None and sample[outcome_col].nunique() < 2:
             blocked = "no_outcome_variation"
         if blocked is not None:
@@ -411,7 +522,6 @@ def fit_entry_models(user_df, domain, note_prefix=None):
                                  n_obs, n_dropped, drop_reason, note))
             continue
 
-        terms, dropped = _formula_terms(covariates, sample)
         formula = "{} ~ {}".format(outcome_col, " + ".join(terms))
         label = f"{outcome}/{domain}/{model}"
         result, fail = _safe_fit(
@@ -432,6 +542,9 @@ def fit_entry_models(user_df, domain, note_prefix=None):
                                  n_obs, n_dropped, drop_reason, note))
             continue
 
+        n_obs, n_dropped, drop_reason = _reconcile_nobs(
+            result, n_input, n_obs, n_dropped, drop_reason
+        )
         rows.append(_ame_row(result, sample, outcome, domain, model, "probability",
                              n_obs, n_dropped, drop_reason, note))
         rows.append(_exponentiated_row(result, outcome, domain, model, TERM_ODDS_RATIO,
@@ -443,16 +556,38 @@ def fit_entry_models(user_df, domain, note_prefix=None):
 # §6.3 强度模型（两部分 / hurdle）
 # ---------------------------------------------------------------------------
 
+def _scaled_score_max(result):
+    """max|对数似然梯度| / nobs，用来独立检验参数是否真的落在驻点上
+
+    取不到梯度时返回 NaN（调用方按"没通过检验"处理）——一个拿不到梯度
+    的结果没办法证明自己收敛了，就不该被当作收敛。
+    """
+    try:
+        score = np.asarray(
+            result.model.score(np.asarray(result.params, dtype=float)), dtype=float
+        )
+    except Exception:  # noqa: BLE001 —— 拿不到梯度就是没通过检验
+        return np.nan
+    if score.size == 0 or not np.isfinite(score).all():
+        return np.nan
+    return float(np.max(np.abs(score))) / max(float(result.nobs), 1.0)
+
+
 def _fit_ztnb(formula, sample, label):
     """零截断负二项的拟合，按优化器顺序重试
 
     statsmodels 对这个模型的默认优化器是 bfgs，实测在"计数分布比较平、
     协变量几乎不解释计数"的样本上会停在 warnflag=2（梯度未收敛）——
-    这不是模型不适用，只是这个优化器走不到极值点。因此这里按
-    newton -> nm -> bfgs 依次尝试，任何一个报告收敛就采用它，并把实际
-    用到的优化器写进 note（不是第一顺位时才写，避免正常情况下的噪声）。
-    三个都不收敛，才按"拟合失败"留一行 NaN——重试过哪些优化器这件事
-    对读者是有用信息，不能让"换个优化器就好了"看起来像模型本身不成立。
+    这不是模型不适用，只是这个优化器走不到极值点。因此按 ZTNB_METHODS
+    的顺序（newton -> bfgs）依次尝试，并把实际用到的优化器写进 note
+    （不是第一顺位时才写，避免正常情况下的噪声）。
+
+    **非首选优化器的结果必须额外过一道梯度检验**：不同优化器的
+    converged 标志判定的东西并不一样（Newton 看的是梯度/步长，单纯形类
+    方法看的是单纯形塌缩），一个"自称收敛"的备用档位完全可能停在非驻点
+    上，而结果表里只会留下一句"换了个优化器"。因此这里对第二顺位以后的
+    结果独立计算 max|score|/nobs，超过 ZTNB_SCORE_TOL 就当作没收敛，
+    并把实测值写进 note，让"为什么这一层是 NaN"可以追溯。
 
     Returns:
         (result, method_note, fail_note)；成功时 fail_note 为 None
@@ -466,9 +601,17 @@ def _fit_ztnb(formula, sample, label):
             lambda: model.fit(method=method, cov_type="HC1", disp=False, maxiter=1000),
             f"{label}[{method}]",
         )
-        if result is not None:
-            return result, (None if i == 0 else f"ztnb_method:{method}"), None
-        last_fail = fail
+        if result is None:
+            last_fail = fail
+            continue
+        if i == 0:
+            return result, None, None
+        score_max = _scaled_score_max(result)
+        if np.isnan(score_max) or score_max > ZTNB_SCORE_TOL:
+            last_fail = "score_not_stationary:{:.2e}".format(score_max)
+            print(f"警告: {label}[{method}] 自称收敛但梯度检验未通过（{last_fail}），不予采信")
+            continue
+        return result, "ztnb_method:{}+score_max:{:.1e}".format(method, score_max), None
     return None, f"ztnb_methods_tried:{','.join(ZTNB_METHODS)}", last_fail
 
 
@@ -497,16 +640,17 @@ def fit_intensity_models(user_df, domain):
             frame, model, n_input, base_mask=participants,
             base_reason="no_source_retweets",
         )
-        blocked = _blocked_note(sample, covariates)
+        terms, dropped = _formula_terms(covariates, sample)
+        blocked = _blocked_note(sample, terms)
         if blocked is not None:
             rows.append(_nan_row(outcome, domain, model, TERM_IRR, "irr",
-                                 n_obs, n_dropped, drop_reason, blocked))
+                                 n_obs, n_dropped, drop_reason,
+                                 _join_notes(NOTE_IRR_LATENT, blocked)))
             rows.append(_nan_row(outcome, domain, model, TERM_LOG1P, "log1p_count",
                                  n_obs, n_dropped, drop_reason,
                                  _join_notes(NOTE_LOG1P_OLS, blocked)))
             continue
 
-        terms, dropped = _formula_terms(covariates, sample)
         dropped_note = "dropped_constant:" + ",".join(dropped) if dropped else None
 
         # --- 第二部分：零截断负二项（NB2），报告 IRR ---
@@ -514,13 +658,16 @@ def fit_intensity_models(user_df, domain):
         result, method_note, fail = _fit_ztnb(
             formula, sample, f"{outcome}/{domain}/{model}/ztnb"
         )
-        note = _join_notes("ztnb", method_note, dropped_note, fail)
+        note = _join_notes("ztnb", NOTE_IRR_LATENT, method_note, dropped_note, fail)
         if result is None:
             rows.append(_nan_row(outcome, domain, model, TERM_IRR, "irr",
                                  n_obs, n_dropped, drop_reason, note))
         else:
+            irr_obs, irr_dropped, irr_reason = _reconcile_nobs(
+                result, n_input, n_obs, n_dropped, drop_reason
+            )
             rows.append(_exponentiated_row(result, outcome, domain, model, TERM_IRR,
-                                           "irr", n_obs, n_dropped, drop_reason, note))
+                                           "irr", irr_obs, irr_dropped, irr_reason, note))
 
         # --- 稳健性：log(1+x) OLS，报告 log1p 尺度上的系数 ---
         ols_formula = "{} ~ {}".format(log_col, " + ".join(terms))
@@ -535,11 +682,14 @@ def fit_intensity_models(user_df, domain):
         else:
             coef = float(ols_result.params[FOCAL_COLUMN])
             bse = float(ols_result.bse[FOCAL_COLUMN])
+            ols_obs, ols_dropped, ols_reason = _reconcile_nobs(
+                ols_result, n_input, n_obs, n_dropped, drop_reason
+            )
             rows.append(su.tidy_result(
                 outcome=outcome, domain=domain, model=model, term=TERM_LOG1P,
                 estimate=coef, se=bse, ci_low=coef - _Z * bse, ci_high=coef + _Z * bse,
-                scale="log1p_count", n_obs=n_obs, n_dropped=n_dropped,
-                drop_reason=drop_reason,
+                scale="log1p_count", n_obs=ols_obs, n_dropped=ols_dropped,
+                drop_reason=ols_reason,
                 # 稳健性行的 note 必须恰好是 log1p_ols（下游按它筛行），
                 # 额外信息追加在后面
                 note=_join_notes(NOTE_LOG1P_OLS, dropped_note) if dropped_note
@@ -589,13 +739,13 @@ def fit_share_models(user_df, domain, outcome):
             frame, model, n_input, base_mask=defined,
             base_reason=SHARE_DROP_REASONS[outcome],
         )
-        blocked = _blocked_note(sample, covariates)
+        terms, dropped = _formula_terms(covariates, sample)
+        blocked = _blocked_note(sample, terms)
         if blocked is not None:
             rows.append(_nan_row(outcome, domain, model, TERM_AME, "proportion",
                                  n_obs, n_dropped, drop_reason, blocked))
             continue
 
-        terms, dropped = _formula_terms(covariates, sample)
         result, fail = _fit_fractional_logit(
             sample, outcome_col, terms, f"{outcome}/{domain}/{model}"
         )
@@ -606,6 +756,10 @@ def fit_share_models(user_df, domain, outcome):
             rows.append(_nan_row(outcome, domain, model, TERM_AME, "proportion",
                                  n_obs, n_dropped, drop_reason, note))
             continue
+        note = _join_notes(note, _glm_separation_note(result))
+        n_obs, n_dropped, drop_reason = _reconcile_nobs(
+            result, n_input, n_obs, n_dropped, drop_reason
+        )
         rows.append(_ame_row(result, sample, outcome, domain, model, "proportion",
                              n_obs, n_dropped, drop_reason, note))
     return pd.DataFrame(rows, columns=list(su.RESULT_SCHEMA))
@@ -618,9 +772,28 @@ def fit_share_models(user_df, domain, outcome):
 def fit_persistence_models(user_df, domain):
     """§6.4 参与月数 ÷ 活跃月数：分数 logit + 以活跃月数为 var_weights
 
-    每个用户的"试验次数"（活跃月数）不同，直接对比例做无权重的分数
-    logit 会把只活跃 1 个月的用户和活跃 12 个月的用户当成同等信息量。
-    var_weights=活跃月数 正是二项比例数据的标准权重设定。
+    **估计量（estimand）与权重是两件事，这里必须说清楚，否则读者会读错
+    这一行。**
+
+    - 拟合用 var_weights=活跃月数：每个用户的"试验次数"不同，只活跃
+      1 个月的用户对自己那个比例的信息量确实比活跃 12 个月的用户少，
+      var_weights 是二项比例数据的标准权重设定，解决的是估计效率与
+      异方差问题。
+    - 报告的 AME 则是**在用户上等权平均**的（每个用户算一次反事实
+      差值，再取算术平均，见 stats_utils.average_marginal_effect）。
+      也就是说本行回答的是"随机抽一个用户，ta 是男性而不是女性会让
+      ta 的参与月份占比变化多少"，单位是人，不是人月。
+
+    选这个估计量的理由：表 2 的 source_month_share 报的就是用户层面
+    比例的均值（每个用户一票），模型表与描述表必须回答同一个总体上的
+    同一个问题，否则读者拿两张表对照时会得到两个不同的"性别差距"却
+    找不到原因。若改成月加权 AME，本行就变成"随机抽一个活跃人月"的
+    效应，与表 2 不可比。
+
+    注意 M0 层两种平均恰好相等（M0 的拟合值在性别内是常数，逐用户差值
+    处处相同，怎么平均都一样），所以 M0 的精确性测试无法区分这两种口径
+    ——区分它们的是 test_persistence_ame_averages_over_users_not_over_months
+    里的 M1 fixture。
     """
     outcome = "source_month_share"
     outcome_col = f"{domain}_source_month_share"
@@ -634,20 +807,23 @@ def fit_persistence_models(user_df, domain):
         sample, n_obs, n_dropped, drop_reason = _layer_sample(
             frame, model, n_input, base_mask=defined, base_reason="no_active_months",
         )
-        blocked = _blocked_note(sample, covariates)
+        terms, dropped = _formula_terms(covariates, sample)
+        blocked = _blocked_note(sample, terms)
         if blocked is not None:
             rows.append(_nan_row(outcome, domain, model, TERM_AME, "proportion",
                                  n_obs, n_dropped, drop_reason, blocked))
             continue
 
-        terms, dropped = _formula_terms(covariates, sample)
         weights = sample[months_col].astype(float).to_numpy()
         result, fail = _fit_fractional_logit(
             sample, outcome_col, terms, f"{outcome}/{domain}/{model}",
             var_weights=weights,
         )
+        # note 同时写明拟合权重与报告口径：拟合是月加权的，报告的 AME
+        # 是在用户上等权平均的，两者不是同一件事（见函数 docstring）
         note = _join_notes(
-            "months_weighted",
+            "months_weighted_fit",
+            "ame_averaged_over_users",
             "dropped_constant:" + ",".join(dropped) if dropped else None,
             fail,
         )
@@ -655,6 +831,10 @@ def fit_persistence_models(user_df, domain):
             rows.append(_nan_row(outcome, domain, model, TERM_AME, "proportion",
                                  n_obs, n_dropped, drop_reason, note))
             continue
+        note = _join_notes(note, _glm_separation_note(result))
+        n_obs, n_dropped, drop_reason = _reconcile_nobs(
+            result, n_input, n_obs, n_dropped, drop_reason
+        )
         rows.append(_ame_row(result, sample, outcome, domain, model, "proportion",
                              n_obs, n_dropped, drop_reason, note))
     return pd.DataFrame(rows, columns=list(su.RESULT_SCHEMA))

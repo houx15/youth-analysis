@@ -244,6 +244,71 @@ def test_missing_profile_columns_degrade_only_m2():
     assert np.isfinite(_row(out, "M1")["estimate"])
 
 
+def test_n_obs_is_the_rows_actually_fitted_not_the_rows_we_selected():
+    """patsy 会静默丢掉协变量为 NaN 的行，n_obs 必须跟着真实拟合行数走
+
+    上游 profile_join 目前保证 profile_complete 蕴含三项控制变量非缺失，
+    所以真实数据上不会出现这种情况；但结果表的数字不该依赖另一个模块的
+    内部约定才正确。这里刻意造出"画像标记完整、log_fans 却是 NaN"的
+    500 个用户，断言 M2 行报的是 3500 而不是 4000，并且
+    n_obs + n_dropped 始终等于输入用户数。
+    """
+    df = _simulate_users(n_male=2000, n_female=2000, seed=22)
+    df.loc[df.index[:500], "log_fans"] = np.nan          # profile_complete 仍为 True
+    out = mc.fit_entry_models(df, "public")
+
+    m2 = _row(out, "M2")
+    assert m2["n_obs"] == len(df) - 500
+    assert m2["n_dropped"] == 500
+    assert "missing_covariate" in m2["drop_reason"]
+    for _, row in out.iterrows():
+        assert row["n_obs"] + row["n_dropped"] == len(df), row.to_dict()
+
+
+def test_fractional_logit_separation_is_flagged_in_the_note():
+    """GLM 的 IRLS 在（准）完全分离时照样自称收敛，必须在 note 里点名
+
+    进入模型用 Logit 就是为了避开这一点，但占比/持续性只能用 GLM，
+    所以补了系数量级 / 拟合值贴边两道便宜的事后检查。这里让 source_share
+    被 n_posts 完全决定（0 或 1），断言这一行仍然产出（不静默丢弃），
+    但 note 里带上 possible_separation。
+    """
+    df = _simulate_users(n_male=1000, n_female=1000, seed=23)
+    # 准分离：占比几乎完全由 log_posts 决定，logit 尺度上的真实系数极大，
+    # 拟合值大批贴在 0/1 边界，但标准误仍然有限——正是那种"看起来干净"
+    # 的危险情形（完全分离反而会被 non_finite_se 直接拦下）
+    logp = np.log1p(df["n_posts"].astype(float))
+    df["public_source_share"] = 1 / (1 + np.exp(-(-40.0 + 10.0 * logp)))
+    out = mc.fit_share_models(df, "public", "source_share")
+    m1 = _row(out, "M1")
+    assert np.isfinite(m1["estimate"]), "告警不应该把这一行删掉，估计要照常给出"
+    assert isinstance(m1["note"], str) and "possible_separation" in m1["note"]
+
+
+def test_design_width_counts_categorical_dummies():
+    """参数个数必须按哑变量展开后算，否则 M2 会少算 30 个参数"""
+    sample = pd.DataFrame({
+        "male": [0, 1] * 5,
+        "log_posts": np.arange(10, dtype=float),
+        "region": ["a", "b", "c", "d", "e"] * 2,
+    })
+    # 截距 1 + male 1 + log_posts 1 + region 5 个水平取 4 个哑变量 = 7
+    assert mc._design_width(["male", "log_posts", "C(region)"], sample) == 7
+
+
+def test_ztnb_retry_chain_has_no_nelder_mead():
+    """Nelder–Mead 救不回 M1/M2，而且它的收敛标志不是梯度检验"""
+    assert "nm" not in mc.ZTNB_METHODS
+    assert mc.ZTNB_METHODS[0] == "newton"
+
+
+def test_ztnb_irr_note_says_it_is_the_latent_untruncated_mean():
+    """IRR 是潜在未截断均值之比，不是"参与者条件均值"之比，结果表要自证"""
+    df = _simulate_users(n_male=800, n_female=800, seed=24)
+    row = _row(mc.fit_intensity_models(df, "public"), "M0", term=mc.TERM_IRR)
+    assert mc.NOTE_IRR_LATENT in row["note"]
+
+
 def test_non_converging_model_emits_nan_row_with_note():
     """完全分离的 M1：必须留下一行 NaN + note，不抛异常、更不能少这一行"""
     df = _simulate_users(n_male=400, n_female=400, seed=9)
@@ -387,8 +452,12 @@ def test_topical_share_uses_its_own_drop_reason():
 # §6.4 持续性模型
 # ---------------------------------------------------------------------------
 
-def test_persistence_ame_equals_month_weighted_mean_difference():
-    """分母是活跃月数，因此 M0 的 AME 是以活跃月数为权重的均值差"""
+def test_persistence_m0_ame_equals_month_weighted_mean_difference():
+    """M0 层：拟合是月加权的，而 M0 的拟合值在性别内是常数，于是逐用户
+    平均与逐月平均恰好相同，AME 等于月加权均值差——这条恒等式能钉住
+    "AME 确实来自模型的反事实预测"，但**区分不了**报告口径是按用户平均
+    还是按月平均（见下一个测试）。
+    """
     df = _simulate_users(n_male=2000, n_female=2000, seed=17)
     out = mc.fit_persistence_models(df, "public")
     assert list(out.columns) == list(su.RESULT_SCHEMA)
@@ -403,6 +472,81 @@ def test_persistence_ame_equals_month_weighted_mean_difference():
     assert row["estimate"] == pytest.approx(truth, abs=1e-8)
     assert row["outcome"] == "source_month_share"
     assert row["scale"] == "proportion"
+
+
+def test_persistence_ame_averages_over_users_not_over_months():
+    """M1 层：钉住"报告的 AME 在用户上等权平均"这个估计量选择
+
+    构造一份活跃月数与协变量强相关的数据，使得逐用户等权平均与以活跃
+    月数为权重的平均**明显不同**；断言输出等于前者、且与后者相差远超
+    容差。月加权拟合（var_weights）只影响估计效率，不改变报告单位——
+    这一点在 fit_persistence_models 的 docstring 里写明，这里用测试锁死。
+    """
+    import statsmodels.api as sm
+    import statsmodels.formula.api as smf
+
+    rng = np.random.default_rng(31)
+    n_each = 1500
+    n = 2 * n_each
+    gender = np.array(["m"] * n_each + ["f"] * n_each)
+    male = (gender == "m").astype(int)
+    # 活跃月数与"参与倾向"强相关：活跃月数多的用户比例接近 0.5（边际
+    # 效应最大），活跃月数少的用户比例贴近 0（边际效应很小）
+    months = rng.integers(1, 13, n)
+    latent = -4.0 + 0.45 * months + 0.9 * male
+    share = 1 / (1 + np.exp(-latent))
+    share = np.clip(share + rng.normal(0, 0.02, n), 0.0, 1.0)
+
+    df = pd.DataFrame({
+        "user_id": [str(i) for i in range(n)],
+        "gender": gender,
+        "n_posts": (months * 20 + rng.integers(1, 200, n)),
+        "n_retweets": rng.integers(1, 100, n),
+        "n_expressive_posts": rng.integers(1, 50, n),
+        # 活跃天数不能恰好是活跃月数的整数倍，否则设计矩阵奇异
+        "n_active_days": months * 20 + rng.integers(1, 20, n),
+        "n_active_months": months,
+        "n_active_months_panel": months,
+        "region": rng.choice(["north", "south"], n),
+        "verified_flag": rng.integers(0, 2, n).astype(float),
+        "log_fans": rng.normal(5, 1, n),
+        "log_friends": rng.normal(4, 1, n),
+        "profile_complete": True,
+    })
+    for d in ("public", "celebrity"):
+        df[f"{d}_source_count"] = rng.integers(0, 10, n)
+        df[f"{d}_source_entered"] = df[f"{d}_source_count"] > 0
+        df[f"{d}_source_months"] = np.minimum(
+            np.round(share * months).astype(int), months
+        )
+        df[f"{d}_source_share"] = df[f"{d}_source_count"] / df["n_retweets"]
+        df[f"{d}_topical_share"] = rng.random(n) * 0.4
+        df[f"{d}_source_month_share"] = share
+
+    row = _row(mc.fit_persistence_models(df, "public"), "M1")
+
+    # 独立复刻同一个模型，自己算两种平均，看输出对上的是哪一种
+    frame = mc.prepare_model_frame(df)
+    terms, _ = mc._formula_terms(mc.M1, frame)
+    fitted = smf.glm(
+        "public_source_month_share ~ " + " + ".join(terms), data=frame,
+        family=sm.families.Binomial(),
+        var_weights=frame["n_active_months_panel"].astype(float).to_numpy(),
+    ).fit(cov_type="HC1")
+    d1 = fitted.predict(frame.assign(**{mc.FOCAL_COLUMN: 1})).to_numpy()
+    d0 = fitted.predict(frame.assign(**{mc.FOCAL_COLUMN: 0})).to_numpy()
+    per_user_diff = d1 - d0
+    over_users = float(np.mean(per_user_diff))
+    over_months = float(np.average(
+        per_user_diff, weights=frame["n_active_months_panel"].astype(float)
+    ))
+
+    # fixture 必须真的能区分两种口径，否则这个测试什么也没钉住
+    assert abs(over_users - over_months) > 1e-3, (over_users, over_months)
+    assert row["estimate"] == pytest.approx(over_users, abs=1e-8)
+    assert abs(row["estimate"] - over_months) > 1e-3
+    assert "ame_averaged_over_users" in row["note"]
+    assert "months_weighted_fit" in row["note"]
 
 
 # ---------------------------------------------------------------------------
