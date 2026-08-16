@@ -105,18 +105,20 @@ def _verified_flag_series(verified_type):
 def _build_loss_report(merged, matched):
     """构造按性别拆分的样本损失报告
 
-    注意两个容易混淆的字段：
-    - "profile_complete"：该用户是否在画像表里匹配到了记录（左连接是否
-      命中），不代表这条画像记录里每个字段都是干净可用的数值——用户
-      即使匹配到画像，其中某个数值字段（比如 friends_count 为负）异常
-      时仍然算"匹配到"，因为我们确实拿到了这个用户的画像行，只是其中
-      一项数值不可信。
-    - "m2_ready"：更严格的判定，要求 verified_flag/log_fans/log_friends
-      三项 M2 控制变量全部非缺失（M2_PROFILE_CONTROLS），即这一行是否
-      真的能被 M2 回归使用。研究协议 §11.4 要求报告的"因收窄而损失的
-      样本量"依据的是这一列，不是前一列——只看 profile_complete 会低估
-      M2 的实际损失（有画像但数值异常的用户，profile_complete 是"匹配"，
-      m2_ready 才会正确地把它算作不可用）。
+    两个字段名不能弄混，这正是本报告存在的意义（§11.4 要求的归因报告）：
+    - "profile_matched"：该用户是否在画像表里匹配到了记录（左连接是否
+      命中），刻意取一个宽松的名字——不代表这条画像记录里每个字段都是
+      干净可用的数值。用户即使匹配到画像，其中某个数值字段（比如
+      friends_count 为负）异常时仍然算"matched"，因为我们确实拿到了这个
+      用户的画像行，只是其中一项数值不可信、不能直接进回归。
+    - "m2_ready"：严格判定，要求 verified_flag/log_fans/log_friends 三项
+      M2 控制变量全部非缺失（M2_PROFILE_CONTROLS），即这一行是否真的能
+      被 M2 回归使用，与 DataFrame 行级 profile_complete 列共用同一个
+      严格定义。研究协议 §11.4 要求报告的"因收窄而损失的样本量"必须
+      引用这一列，不能引用 profile_matched——后者会低估 M2 的实际损失
+      （有画像但数值异常的用户，profile_matched 算"匹配"，只有 m2_ready
+      会正确地把它算作不可用；写论文缺失数据小节时，"profile_matched: 1"
+      不能被误读成"1 个用户可用于校正后的模型"）。
     """
     matched = pd.Series(matched, index=merged.index)
     m2_ready = merged["profile_complete"]
@@ -124,7 +126,7 @@ def _build_loss_report(merged, matched):
     def _stats_for(frame, frame_matched, frame_m2_ready):
         return {
             "users_total": int(len(frame)),
-            "profile_complete": int(frame_matched.sum()),
+            "profile_matched": int(frame_matched.sum()),
             "controls_present": {
                 ctrl: int(frame[ctrl].notna().sum()) for ctrl in _CONTROLS_FOR_PRESENCE_REPORT
             },
@@ -176,10 +178,12 @@ def attach_profile_controls(user_df, profile_df):
     merged["log_friends"] = np.log1p(merged["friends_count"])
     merged["verified_flag"] = _verified_flag_series(merged.get("verified_type"))
 
-    # profile_complete（表内这一列，不要与 loss report 里同名字段混淆，
-    # 见 _build_loss_report 的说明）：M2 三项画像控制变量全部非缺失，
-    # 且这条记录必须真的在画像表里匹配到（未匹配的用户三项自然全是
+    # profile_complete（这一列是严格定义：M2 三项画像控制变量全部非缺失，
+    # 且这条记录必须真的在画像表里匹配到——未匹配的用户三项自然全是
     # 缺失，这里的 matched 检查是双保险，不依赖三项 NaN 判断本身）。
+    # 这一列与下面 loss report 里的 "m2_ready" 共用同一个严格定义；loss
+    # report 里另一个字段 "profile_matched" 是刻意更宽松的"是否匹配到
+    # 画像行"，二者不是同一件事，见 _build_loss_report 的说明。
     complete = pd.Series(True, index=merged.index)
     for ctrl in M2_PROFILE_CONTROLS:
         complete &= merged[ctrl].notna()
@@ -215,7 +219,7 @@ def build(year=config.YEAR):
     out.to_parquet(out_path, engine="pyarrow", index=False)
     print(f"已保存: {out_path}（{len(out):,} 用户）")
     print(
-        f"画像匹配 {report['profile_complete']:,} / {report['users_total']:,}，"
+        f"画像匹配 {report['profile_matched']:,} / {report['users_total']:,}，"
         f"M2 可用 {report['m2_ready']:,} / {report['users_total']:,}"
     )
 

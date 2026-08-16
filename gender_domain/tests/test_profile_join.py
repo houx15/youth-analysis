@@ -61,5 +61,16 @@ def test_loss_report_is_per_gender_and_complete():
     _, report = pj.attach_profile_controls(_users(), _profiles())
     assert report["users_total"] == 3
     assert report["by_gender"]["f"]["users_total"] == 2
-    assert report["by_gender"]["f"]["profile_complete"] == 1
-    assert report["by_gender"]["m"]["profile_complete"] == 1
+    assert report["by_gender"]["f"]["profile_matched"] == 1
+    assert report["by_gender"]["m"]["profile_matched"] == 1
+
+
+def test_loss_report_distinguishes_matched_from_m2_ready():
+    """匹配到画像 ≠ 满足 M2 全部控制变量：用户 "2" 匹配到了画像行，但
+    friends_count 是 -1（异常值，清洗后为 NaN），M2 不能用这一行。
+    profile_matched 和 m2_ready 必须能看出这个差别，否则读报告的人会把
+    "匹配到 1 个女性用户" 误当成 "1 个女性用户可用于 M2 校正后的模型"。
+    """
+    _, report = pj.attach_profile_controls(_users(), _profiles())
+    assert report["by_gender"]["f"]["profile_matched"] == 1
+    assert report["by_gender"]["f"]["m2_ready"] == 0
