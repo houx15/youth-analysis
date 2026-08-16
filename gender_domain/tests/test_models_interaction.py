@@ -587,11 +587,80 @@ def test_every_layer_emits_the_shared_schema():
         assert mi.NOTE_GEE in did["note"]
 
 
+def test_predicted_cells_reproduce_the_gaps_and_the_did():
+    """四个预测格子与已有的差值行必须来自同一次拟合
+
+    这是证明"图 3 的四根柱子"和"标注在图上的差中差"自洽的检查：
+        pred_male_public - pred_female_public == 公共事务域的性别差
+        pred_male_celebrity - pred_female_celebrity == 娱乐域的性别差
+        两者相减 == 头条 DiD
+    三条都必须成立到浮点精度，而不是"大致相等"。
+    """
+    wide = _simulate_wide(n_male=400, n_female=400, seed=34)
+    for outcome_kind in ("source_entry", "topical_share"):
+        long_df = mi.to_long_format(wide, outcome_kind)
+        for layer in ("M0", "M1", "M2"):
+            frame = mi.fit_interaction(long_df, layer)
+            cell = dict(
+                (term, _row(frame, layer, term)["estimate"]) for term in mi.TERM_PRED
+            )
+            gap_pub = _row(frame, layer, mi.TERM_GAP_PUBLIC)["estimate"]
+            gap_cel = _row(frame, layer, mi.TERM_GAP_CELEBRITY)["estimate"]
+            did = _row(frame, layer, mi.TERM_DID)["estimate"]
+
+            assert cell["pred_male_public"] - cell["pred_female_public"] == pytest.approx(
+                gap_pub, abs=1e-10
+            )
+            assert (
+                cell["pred_male_celebrity"] - cell["pred_female_celebrity"]
+            ) == pytest.approx(gap_cel, abs=1e-10)
+            assert (
+                (cell["pred_male_public"] - cell["pred_female_public"])
+                - (cell["pred_male_celebrity"] - cell["pred_female_celebrity"])
+            ) == pytest.approx(did, abs=1e-10)
+
+
+def test_predicted_cells_are_levels_with_intervals_inside_the_unit_interval():
+    wide = _simulate_wide(n_male=400, n_female=400, seed=35)
+    frame = mi.fit_interaction(mi.to_long_format(wide, "source_entry"), "M0")
+    for term in mi.TERM_PRED:
+        row = _row(frame, "M0", term)
+        assert row["scale"] == "probability"
+        assert row["domain"] in ("public", "celebrity")   # 域内量，不是 "both"
+        assert 0.0 <= row["estimate"] <= 1.0
+        assert np.isfinite(row["se"])
+        assert 0.0 <= row["ci_low"] <= row["estimate"] <= row["ci_high"] <= 1.0
+        assert "counterfactual_cell" in row["note"]
+
+
+def test_predicted_cells_recover_the_simulated_cell_means():
+    # 真值：公共事务域 男 0.55 / 女 0.45，娱乐域 男 0.35 / 女 0.45
+    wide = _simulate_wide(n_male=2000, n_female=2000, seed=36)
+    frame = mi.fit_interaction(mi.to_long_format(wide, "source_entry"), "M0")
+    truth = {
+        "pred_male_public": 0.55, "pred_female_public": 0.45,
+        "pred_male_celebrity": 0.35, "pred_female_celebrity": 0.45,
+    }
+    for term, expected in truth.items():
+        assert _row(frame, "M0", term)["estimate"] == pytest.approx(expected, abs=0.03)
+
+
+def test_result_key_is_unique_across_the_whole_table():
+    wide = _simulate_wide(n_male=250, n_female=250, seed=37)
+    frame = mi.interaction_table(wide)
+    key = ["outcome", "domain", "model", "term"]
+    assert not frame.duplicated(subset=key).any()
+    # 每层 8 行 × 3 层 × 2 个结果变量
+    assert len(frame) == 8 * 3 * 2
+
+
 def test_failed_layer_leaves_nan_rows_instead_of_disappearing():
     wide = _simulate_wide(n_male=0, n_female=200, seed=25)   # 没有性别变异
     long_df = mi.to_long_format(wide, "source_entry")
     frame = mi.fit_interaction(long_df, "M0")
-    assert len(frame) == 4
+    # 四个预测格子同样要留痕，否则读者会以为这几个量没人算过
+    assert len(frame) == 8
+    assert set(frame["term"]) >= set(mi.TERM_PRED)
     assert frame["estimate"].isna().all()
     assert frame["note"].str.contains("no_gender_variation").all()
 

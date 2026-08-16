@@ -124,6 +124,19 @@ TERM_GAP_PUBLIC = "gender_male_gap_public"
 TERM_GAP_CELEBRITY = "gender_male_gap_celebrity"
 TERM_COEF = "gender_male_x_public_coef"
 
+# §12.3 图 3 要画的四个 gender × domain 反事实格子的预测水平。
+# 它们必须由模型直接给出，不能用"观察到的女性水平 + 调整后的性别差"拼：
+# 那是把一个观察量和一个模型调整量相加，得到的数字不对应任何一个估计量。
+# term 里带上域名、domain 列填真实的域（不是 DOMAIN_BOTH——这四个是域内
+# 的量），(outcome, domain, model, term) 四元组因此仍然唯一。
+PRED_CELLS = (
+    (1, 1, "pred_male_public", "public"),
+    (0, 1, "pred_female_public", "public"),
+    (1, 0, "pred_male_celebrity", "celebrity"),
+    (0, 0, "pred_female_celebrity", "celebrity"),
+)
+TERM_PRED = tuple(term for _, _, term, _ in PRED_CELLS)
+
 NOTE_GEE = "gee_exchangeable_cluster_user_2rows_per_user"
 METHOD_DELTA = "delta"
 METHOD_BOOTSTRAP = "cluster_bootstrap"
@@ -491,6 +504,63 @@ def _did_at_params(fit, params, exogs):
     return gap_public - gap_celebrity, gap_public, gap_celebrity, preds
 
 
+def _parameter_gradients(fit, params, exogs):
+    """对 DiD 与四个格子的预测均值同时求数值梯度（共用一轮参数扰动）
+
+    每个参数分量做一次中心差分，扰动后的四格预测均值同时供两处使用：
+    DiD 的梯度和每个格子自身的梯度。分成两轮循环会把最贵的那部分
+    （M2 上约 40 个参数 × 4 个格子 × 45 万行的预测）白跑一遍。
+
+    Returns:
+        (grad_did, {cell_key: grad_cell})
+    """
+    grad_did = np.zeros_like(params)
+    cell_grads = {key: np.zeros_like(params) for key in exogs}
+    for j in range(len(params)):
+        step = 1e-6 * max(1.0, abs(params[j]))
+        p_plus = params.copy()
+        p_plus[j] += step
+        p_minus = params.copy()
+        p_minus[j] -= step
+        did_plus, _, _, preds_plus = _did_at_params(fit, p_plus, exogs)
+        did_minus, _, _, preds_minus = _did_at_params(fit, p_minus, exogs)
+        grad_did[j] = (did_plus - did_minus) / (2 * step)
+        for key in exogs:
+            cell_grads[key][j] = (preds_plus[key] - preds_minus[key]) / (2 * step)
+    return grad_did, cell_grads
+
+
+def _cell_stats(cells, cell_grads, cov, confidence=_CONFIDENCE):
+    """四个 gender × domain 反事实格子各自的 delta method 区间
+
+    与 DiD、与两个域内性别 AME 完全同一套做法（数值梯度 + 稳健协方差），
+    因此四个格子和它们的差是同一次拟合、同一个协方差矩阵下的量，图 3 里
+    "四根柱子"与"标注的差中差"必然自洽——这正是 fit_interaction 里那条
+    恒等式测试要守的东西。
+
+    这里报告的是**水平**（概率/比例）而不是差值，正态近似区间原则上可能
+    越过 [0,1]。本项目的规则是"区间绝不越界"（stats_utils 模块文档第 2
+    条），所以显式 clip 一次，并在真的发生截断时返回一个标记——截断意味着
+    该格子的估计贴近边界、正态近似已经不合适，读者需要知道，而不是看到一个
+    悄悄被修整过的区间。
+
+    Returns:
+        {cell_key: (est, se, low, high, clipped)}
+    """
+    z = float(norm.ppf(1 - (1 - confidence) / 2))
+    stats = {}
+    for key, est in cells.items():
+        var = float(cell_grads[key] @ cov @ cell_grads[key])
+        if not np.isfinite(var) or var < 0:
+            stats[key] = (est, np.nan, np.nan, np.nan, False)
+            continue
+        se = float(np.sqrt(var))
+        raw_low, raw_high = est - z * se, est + z * se
+        low, high = float(np.clip(raw_low, 0.0, 1.0)), float(np.clip(raw_high, 0.0, 1.0))
+        stats[key] = (est, se, low, high, (low != raw_low) or (high != raw_high))
+    return stats
+
+
 def _cov_params_or_none(fit):
     """取参数协方差矩阵；只有"确实不可用"时返回 None
 
@@ -625,7 +695,11 @@ def difference_in_differences(fit, long_df, fit_fn=None, method="auto",
 
     Returns:
         dict：did / se / ci_low / ci_high / method / gap_public /
-        gap_celebrity / cells / n_users / n_boot_failed
+        gap_celebrity / cells / cell_stats / n_users / n_boot_failed。
+        `cells` 是四格预测均值（点估计），`cell_stats` 是同样四个格子的
+        (est, se, low, high)——§12.3 的图 3 要画的就是这四个格子本身，
+        不能由"观察到的女性水平 + 调整后的性别差"拼出来（那会把一个观察量
+        和一个模型调整量混在一起，得到的数字不对应任何一个估计量）。
     """
     if method not in ("auto", METHOD_DELTA, METHOD_BOOTSTRAP):
         raise ValueError(f"未知的区间方法: {method!r}")
@@ -642,23 +716,19 @@ def difference_in_differences(fit, long_df, fit_fn=None, method="auto",
         "gap_public": gap_public,
         "gap_celebrity": gap_celebrity,
         "cells": cells,
+        # 默认（协方差不可用 / 走 bootstrap 分支）只有点估计，区间记 NaN：
+        # 宁可没有区间，也不给一个算不出来又硬凑的区间
+        "cell_stats": {k: (v, np.nan, np.nan, np.nan, False) for k, v in cells.items()},
         "n_users": int(long_df[USER_COLUMN].nunique()),
         "n_boot_failed": 0,
     }
 
     cov = None if method == METHOD_BOOTSTRAP else _cov_params_or_none(fit)
     if cov is not None:
-        grad = np.zeros_like(params)
-        for j in range(len(params)):
-            step = 1e-6 * max(1.0, abs(params[j]))
-            p_plus = params.copy()
-            p_plus[j] += step
-            p_minus = params.copy()
-            p_minus[j] -= step
-            grad[j] = (
-                _did_at_params(fit, p_plus, exogs)[0]
-                - _did_at_params(fit, p_minus, exogs)[0]
-            ) / (2 * step)
+        # DiD 与四个格子共用同一轮参数扰动：两者的梯度都只需要每次扰动后的
+        # 四格预测均值，分开算会把这段（M2 上约 40 个参数 × 45 万行）跑两遍
+        grad, cell_grads = _parameter_gradients(fit, params, exogs)
+        out["cell_stats"] = _cell_stats(cells, cell_grads, cov, confidence)
         var = float(grad @ cov @ grad)
         if np.isfinite(var) and var >= 0:
             se = float(np.sqrt(var))
@@ -729,12 +799,16 @@ def difference_in_differences(fit, long_df, fit_fn=None, method="auto",
 def _nan_rows(outcome, model, scale, n_obs, n_dropped, drop_reason, note):
     """一层拟合不成立时的四行留痕（与 models_core 第 7 条同一原则）"""
     rows = []
-    for term, domain, row_scale in (
+    specs = [
         (TERM_DID, DOMAIN_BOTH, scale),
         (TERM_GAP_PUBLIC, "public", scale),
         (TERM_GAP_CELEBRITY, "celebrity", scale),
         (TERM_COEF, DOMAIN_BOTH, "log_odds"),
-    ):
+    ]
+    # 四个预测格子同样要留痕：一层失败时结果表里少几行，读者会理解成
+    # "这几个量没人算过"，而不是"这一层没估出来"
+    specs += [(term, domain, scale) for _, _, term, domain in PRED_CELLS]
+    for term, domain, row_scale in specs:
         rows.append(mc._nan_row(outcome, domain, model, term, row_scale,
                                 n_obs, n_dropped, drop_reason, note))
     return rows
@@ -744,11 +818,19 @@ def fit_interaction(long_df, model_layer, outcome_kind=None, did_method="auto",
                     n_boot=_N_BOOT, seed=_SEED):
     """某一层协变量下的 Gender × Domain 交互，返回共享 schema 的结果行
 
-    每层四行：
+    每层八行：
         TERM_DID           跨域（domain=DOMAIN_BOTH）——**头条**，概率/比例尺度
         TERM_GAP_PUBLIC    公共事务域内的性别 AME
         TERM_GAP_CELEBRITY 娱乐域内的性别 AME
         TERM_COEF          交互项系数（log_odds 尺度，附加参考，不是头条）
+        PRED_CELLS 的四行  四个 gender × domain 反事实格子的预测水平，
+                           domain 填真实的域（不是 DOMAIN_BOTH）。§12.3 的
+                           图 3 画的就是这四根柱子加一个 DiD 标注；它们必须
+                           由模型直接给出，不能由"观察到的女性水平 + 调整后
+                           的性别差"拼出来——那会把一个观察量与一个模型调整
+                           量相加，得到的数字不对应任何一个估计量。
+    (outcome, domain, model, term) 四元组在整张表里唯一，下游按它取行永远
+    只会拿到一行。
 
     两个域内的性别 AME 直接调用 stats_utils.average_marginal_effect（把
     is_public 强制成该域后对 male 做反事实预测），因此它们与 models_core
@@ -843,6 +925,25 @@ def fit_interaction(long_df, model_layer, outcome_kind=None, did_method="auto",
         scale="log_odds", n_obs=n_obs, n_dropped=n_dropped, drop_reason=drop_reason,
         note=mc._join_notes(note, "not_the_headline"),
     ))
+
+    # 四个 gender × domain 反事实格子的预测水平（§12.3 图 3 的四根柱子）。
+    # 与上面的差值行来自同一次拟合、同一批反事实设计矩阵，因此
+    # pred_male_public - pred_female_public 恒等于 TERM_GAP_PUBLIC 那一行，
+    # 两个域的差再相减恒等于 TERM_DID——这条恒等式由
+    # test_predicted_cells_reproduce_the_gaps_and_the_did 守着。
+    for male, is_public, term, domain in PRED_CELLS:
+        est, se, low, high, clipped = did["cell_stats"][(male, is_public)]
+        rows.append(su.tidy_result(
+            outcome=outcome, domain=domain, model=model_layer, term=term,
+            estimate=est, se=se, ci_low=low, ci_high=high, scale=scale,
+            n_obs=n_obs, n_dropped=n_dropped, drop_reason=drop_reason,
+            note=mc._join_notes(
+                note, "counterfactual_cell",
+                # 区间算不出来时如实标注，而不是留一个看不出原因的空白
+                "pred_ci_unavailable" if not np.isfinite(se) else None,
+                "pred_ci_clipped_to_unit_interval" if clipped else None,
+            ),
+        ))
     return pd.DataFrame(rows, columns=list(su.RESULT_SCHEMA))
 
 
