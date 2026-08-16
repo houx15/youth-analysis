@@ -148,11 +148,38 @@ def test_row_count_invariant_holds_when_a_fit_is_forced_to_fail():
     assert untouched["estimate"].notna().all()
 
 
+def test_row_count_invariant_holds_when_a_layer_is_blocked_without_raising():
+    """空样本是另一种失败模式，且**不抛异常**：mc._blocked_note /
+    mi._blocked_note_users 会在拟合之前就判定"空样本没法估"，返回一行
+    note="empty_sample" 的 NaN 行，函数本身正常返回、不触发 harness 的
+    _safe_call。这条路径与"缺列导致 KeyError"是两种不同的失败模式，
+    必须分别测：前一条测试只证明了"调用炸了"时行数不变，这条测试证明
+    "调用没炸、但里面判定拟合不成立"时行数同样不变——两者共同覆盖了
+    models_core / models_interaction 自己文档里写明的两类失败留痕。
+    """
+    empty = _simulate_frame(seed=42, n_male=1, n_female=1).iloc[0:0]
+    assert len(empty) == 0
+
+    out = harness.estimate_all(empty, "empty_variant", "zero_users")
+
+    assert len(out) == len(harness.QUANTITIES) * 2
+    assert out["estimate"].isna().all()
+    assert out["note"].notna().all()
+    # 这条路径必须是"empty_sample"这一类判定失败，不是异常留痕
+    # （harness_call_failed 只在 _safe_call 真的捕获到异常时才会出现）
+    assert not out["note"].str.contains("harness_call_failed").any()
+
+
 # ---------------------------------------------------------------------------
 # 与直接调用底层拟合函数完全一致
 # ---------------------------------------------------------------------------
 
 def test_estimate_all_recovers_the_six_quantities_via_direct_calls():
+    """精确相等，不是"接近"：两边调用的是同一个确定性拟合函数，同一批
+    输入数据必然得到逐位相同的浮点数。用 pytest.approx 只能守住"数量级
+    差不多"，如果 harness 有一天悄悄长出了自己的一套算法（哪怕只改了
+    一处极小的浮点运算顺序），近似断言会放过它；精确相等断言不会。
+    """
     df = _simulate_frame(seed=3)
     out = harness.estimate_all(df, "baseline", "baseline", layers=("M0", "M1"))
 
@@ -165,31 +192,27 @@ def test_estimate_all_recovers_the_six_quantities_via_direct_calls():
 
     for model in ("M0", "M1"):
         assert _row(out, model, mc.TERM_AME, domain="public",
-                    outcome="source_entered")["estimate"] == pytest.approx(
+                    outcome="source_entered")["estimate"] == \
             _row(entry_public, model, mc.TERM_AME)["estimate"]
-        )
         assert _row(out, model, mc.TERM_AME, domain="celebrity",
-                    outcome="source_entered")["estimate"] == pytest.approx(
+                    outcome="source_entered")["estimate"] == \
             _row(entry_celebrity, model, mc.TERM_AME)["estimate"]
-        )
 
         out_topical_public = out[
             (out["model"] == model) & (out["term"] == mc.TERM_AME) &
             (out["domain"] == "public") & (out["outcome"] == "topical_share")
         ]
         assert len(out_topical_public) == 1
-        assert out_topical_public.iloc[0]["estimate"] == pytest.approx(
+        assert out_topical_public.iloc[0]["estimate"] == \
             _row(topical_public, model, mc.TERM_AME)["estimate"]
-        )
 
         out_topical_celebrity = out[
             (out["model"] == model) & (out["term"] == mc.TERM_AME) &
             (out["domain"] == "celebrity") & (out["outcome"] == "topical_share")
         ]
         assert len(out_topical_celebrity) == 1
-        assert out_topical_celebrity.iloc[0]["estimate"] == pytest.approx(
+        assert out_topical_celebrity.iloc[0]["estimate"] == \
             _row(topical_celebrity, model, mc.TERM_AME)["estimate"]
-        )
 
         did_entry_fit = mi.fit_interaction(did_entry_long, model, outcome_kind="source_entry")
         did_topical_fit = mi.fit_interaction(did_topical_long, model, outcome_kind="topical_share")
@@ -199,18 +222,16 @@ def test_estimate_all_recovers_the_six_quantities_via_direct_calls():
             (out["outcome"] == "source_entered")
         ]
         assert len(out_did_entry) == 1
-        assert out_did_entry.iloc[0]["estimate"] == pytest.approx(
+        assert out_did_entry.iloc[0]["estimate"] == \
             _row(did_entry_fit, model, mi.TERM_DID, domain=mi.DOMAIN_BOTH)["estimate"]
-        )
 
         out_did_topical = out[
             (out["model"] == model) & (out["term"] == mi.TERM_DID) &
             (out["outcome"] == "topical_share")
         ]
         assert len(out_did_topical) == 1
-        assert out_did_topical.iloc[0]["estimate"] == pytest.approx(
+        assert out_did_topical.iloc[0]["estimate"] == \
             _row(did_topical_fit, model, mi.TERM_DID, domain=mi.DOMAIN_BOTH)["estimate"]
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -289,3 +310,58 @@ def test_append_rows_twice_yields_both_replicates(tmp_path):
     assert len(combined) == len(first) + len(second)
     assert set(combined["replicate"].unique()) == {0, 1}
     assert list(combined.columns) == list(harness.ROBUSTNESS_SCHEMA)
+
+
+def test_append_rows_writes_atomically_and_leaves_no_temp_file(tmp_path):
+    """append_rows 必须先写临时文件再 os.replace 改名，而不是直接截断
+    目标路径写入——直接写目标路径的话，作业在写入中途被墙钟杀掉会把
+    目标文件截断成读不出来的半成品，"增量落盘保住已完成 replicate"这个
+    目的直接被打反。这里断言正常路径下：目标文件可读、内容正确，且
+    目录里不留下任何 .append_rows_tmp_* 临时文件。
+    """
+    df = _simulate_frame(seed=10, n_male=150, n_female=150)
+    path = os.path.join(str(tmp_path), "atomic_family.parquet")
+
+    rows = harness.estimate_all(df, "atomic_family", "rep0", replicate=0, seed=1)
+    harness.append_rows(rows, path)
+
+    files = sorted(os.listdir(str(tmp_path)))
+    assert files == ["atomic_family.parquet"], (
+        f"目录里不该留下临时文件，实际内容: {files}"
+    )
+    readback = pd.read_parquet(path, engine="pyarrow", columns=list(harness.ROBUSTNESS_SCHEMA))
+    assert len(readback) == len(rows)
+    assert list(readback.columns) == list(harness.ROBUSTNESS_SCHEMA)
+
+
+def test_append_rows_survives_a_crash_between_write_and_replace(tmp_path, monkeypatch):
+    """模拟"临时文件已经写完、但 os.replace 改名之前进程被杀"这个时刻，
+    断言旧文件在磁盘上完整无损——这正是原子写入存在的全部理由：截断
+    发生在临时文件上，从未发生在目标路径上，所以旧内容不可能被破坏。
+    """
+    df = _simulate_frame(seed=11, n_male=150, n_female=150)
+    path = os.path.join(str(tmp_path), "crash_family.parquet")
+
+    first = harness.estimate_all(df, "crash_family", "rep0", replicate=0, seed=1)
+    harness.append_rows(first, path)
+    before_crash = pd.read_parquet(path, engine="pyarrow", columns=list(harness.ROBUSTNESS_SCHEMA))
+
+    def _boom(*args, **kwargs):
+        raise OSError("模拟 os.replace 之前进程被杀")
+
+    monkeypatch.setattr(harness.os, "replace", _boom)
+
+    second = harness.estimate_all(df, "crash_family", "rep1", replicate=1, seed=2)
+    with pytest.raises(OSError):
+        harness.append_rows(second, path)
+
+    # 目标文件必须与崩溃前完全一致——os.replace 从未成功执行，目标路径
+    # 不可能被截断或改动
+    after_crash = pd.read_parquet(path, engine="pyarrow", columns=list(harness.ROBUSTNESS_SCHEMA))
+    pd.testing.assert_frame_equal(
+        after_crash.reset_index(drop=True), before_crash.reset_index(drop=True)
+    )
+
+    # 失败的那次调用留下的临时文件必须被清理掉，不能在目录里越积越多
+    leftovers = [f for f in os.listdir(str(tmp_path)) if f != "crash_family.parquet"]
+    assert leftovers == [], f"崩溃路径必须清理临时文件，实际残留: {leftovers}"

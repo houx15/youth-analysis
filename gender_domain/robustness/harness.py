@@ -51,6 +51,7 @@ variant 自己重新写一遍"怎么拟合 entry / topical / DiD"，两个 varia
 """
 
 import os
+import tempfile
 
 import numpy as np
 import pandas as pd
@@ -229,7 +230,15 @@ def estimate_all(user_df, variant_family, variant_label, replicate=0, seed=None,
         variant_label: 这一类下具体是哪一个变体（例如 "keep0.8_rep3"）
         replicate: 第几次重复（确定性 variant 恒为 0）
         seed: 这个 variant 用的随机种子；确定性 variant 必须显式传 None，
-            不能省略——见模块文档第 4 条
+            不能省略——见模块文档第 4 条。**这个 seed 只写进结果表的
+            seed 列，记录的是"这次 variant 抽样用的种子"（例如词表重
+            抽样、账号 bootstrap），不会被传给
+            models_interaction.fit_interaction 内部的 DiD cluster
+            bootstrap——那条随机数流由该模块自己的 _SEED 常量控制，
+            与 variant 的抽样过程是两个独立的随机性来源，因此这里刻意
+            不把两者混在一起、也不会覆盖对方。如果某个 variant 需要让
+            DiD 的 bootstrap 区间也随这个 seed 变化，必须在调用方显式
+            处理，本函数当前不做这件事。
         layers: 要估计的模型层，默认 ("M0", "M1")；只有 §13.9 画像相关
             的 variant 才应该传入 M2（方案文档 §11.4：M2 会收窄样本，
             混进其它比较会混淆结论）
@@ -261,6 +270,11 @@ def estimate_all(user_df, variant_family, variant_label, replicate=0, seed=None,
     # 与 entry/topical 那种"一次调用拿到全部层"的形状不同，所以只能按需
     # 拟合，但同一个 (outcome_kind, layer) 在六个量里只会被用到一次，
     # 不存在重复拟合的问题。
+    #
+    # 注意：这里没有把 estimate_all 收到的 seed 传给 fit_interaction——
+    # 该函数内部的 DiD cluster bootstrap 用的是 models_interaction 自己
+    # 的 _SEED 常量，与本函数的 seed 参数是两条独立的随机数流（见
+    # estimate_all 的 Args 说明）。
     did_fits = {}
 
     def _did_fit(outcome_kind, model):
@@ -309,23 +323,48 @@ def baseline(user_df):
 def append_rows(df, path):
     """把 df 追加写入 path，增量落盘，避免作业被杀掉时丢失已完成的 replicate
 
-    做法是"读旧的（如果存在）、拼新的、整体覆盖写回"，而不是维护一个真正
-    的追加写 parquet（pyarrow 的追加写要跨进程管理 row group/schema，这里
-    的调用量级——一个 variant family 几百个 replicate、每个几十行——远
-    用不上那套复杂度）。只要每完成一个 replicate 就调用一次本函数，被
-    墙钟杀掉的作业在磁盘上留下的就是"已完成的那些 replicate"，不会因为
-    中途崩溃而整批消失——这与 models_interaction._write_partial 是同一个
-    增量落盘思路，只是这里的调用方是"每个 replicate 一次"而不是"每层
-    模型一次"。
+    做法是"读旧的（如果存在）、拼新的、写到同目录下的临时文件、再
+    os.replace 原子改名覆盖目标"，而不是维护一个真正的追加写 parquet
+    （pyarrow 的追加写要跨进程管理 row group/schema，这里的调用量级——
+    一个 variant family 几百个 replicate、每个几十行——远用不上那套
+    复杂度）。
+
+    **`to_parquet` 直接写目标路径本身不是原子操作**：它打开目标文件时
+    就会先截断，再流式写入内容，如果作业在这中间被墙钟 SIGKILL，目标
+    文件会被截断成一个连 parquet 魔数都读不出来的半成品——不是丢了这一
+    批新行，而是连之前所有已经写盘的 replicate 一起报废，恰好与"增量
+    落盘是为了保住已完成的 replicate"这个目的相反。因此这里改为写到
+    同一目录下的临时文件（`tempfile.mkstemp` 保证文件名不冲突），成功
+    写完后再用 `os.replace` 把临时文件改名覆盖到目标路径——`os.replace`
+    在同一文件系统内是原子的，中途被杀掉时磁盘上永远只会是"改名前的旧
+    文件完整无损"或"改名后的新文件完整无损"两种状态之一，不会有第三种
+    半成品状态。临时文件写失败或改名前抛异常时，显式清理掉这个临时文件，
+    不留垃圾。
+
+    只要每完成一个 replicate 就调用一次本函数，被墙钟杀掉的作业在磁盘上
+    留下的就是"已完成的那些 replicate"——这与 models_interaction.
+    _write_partial 是同一个增量落盘思路，只是这里的调用方是"每个
+    replicate 一次"而不是"每层模型一次"，而且额外补上了后者不需要面对
+    的"目标文件已经存在、必须读旧拼新"这一步的原子性。
     """
-    out_dir = os.path.dirname(path)
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
+    out_dir = os.path.dirname(path) or "."
+    os.makedirs(out_dir, exist_ok=True)
     if os.path.exists(path):
         existing = pd.read_parquet(path, engine="pyarrow", columns=list(ROBUSTNESS_SCHEMA))
         combined = pd.concat([existing, df], ignore_index=True)
     else:
         combined = df.reset_index(drop=True)
-    combined.to_parquet(path, engine="pyarrow", index=False)
+
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".append_rows_tmp_", suffix=".parquet", dir=out_dir
+    )
+    os.close(fd)
+    try:
+        combined.to_parquet(tmp_path, engine="pyarrow", index=False)
+        os.replace(tmp_path, path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
     print(f"已增量写入: {path}（新增 {len(df)} 行，累计 {len(combined)} 行）")
     return path
