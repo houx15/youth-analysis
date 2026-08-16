@@ -560,6 +560,75 @@ def test_shadowing_exposure_counts_the_posts_a_replicate_may_undercount(syntheti
     assert clean["n_expressive_posts_possibly_lost"] == 0
 
 
+def test_at_risk_terms_catch_boundary_overlap_that_substring_nesting_never_sees():
+    """边界重叠：被剔除词与保留词互不包含，重聚合照样漏判
+
+    正文 "疫情防控措施"、词表 {疫情防, 防控措施, 两会}：最左最长在位置 0
+    取 "疫情防"，存量计数只有 {疫情防: 1}。剔除 "疫情防"、保留 "防控措施"
+    后，真正重扫会命中，重聚合会判不命中——而 "防控措施" 既不是 "疫情防"
+    的子串、也不包含它，所以 shadowed_terms / nested_terms 一个都点不出来。
+    这正是只看子串的口径漏掉的那一类。
+    """
+    vocab = ["疫情防", "防控措施", "两会"]
+    subset = ["防控措施", "两会"]
+
+    # 先用生产匹配器确认这个例子是真的（不是构造出来的假象）
+    stored = tr.measure_text("疫情防控措施", tr.VocabMatcher(vocab))["term_counts"]
+    assert stored == {"疫情防": 1}
+    assert tr.measure_text("疫情防控措施", tr.VocabMatcher(subset))["hit"] is True
+
+    # 子串口径：完全看不见
+    assert inc.nested_terms(vocab) == set()
+    assert inc.shadowed_terms(vocab, subset) == set()
+    assert inc.shadowing_dropped_terms(vocab, subset) == set()
+
+    # 完整口径：点得出来
+    assert inc.at_risk_terms(vocab, subset) == {"防控措施"}
+    assert inc.at_risk_dropped_terms(vocab, subset) == {"疫情防"}
+    # 反方向的重叠（被剔除词的前缀接保留词的后缀）同样算
+    assert inc.boundary_overlap("疫情防", "防控措施") is True
+    assert inc.boundary_overlap("防控措施", "疫情防") is False
+
+
+def test_at_risk_definition_is_a_superset_of_substring_shadowing(synthetic_tables):
+    """完整口径必须包含子串口径的全部结论，并给出不小于它的帖子数"""
+    incidence = inc.build_post_term_incidence(YEAR, "public")
+    subset = ["疫情", "复工", "转发", "封城"]
+    narrow = inc.shadowing_exposure(incidence, subset, PUBLIC_VOCAB)
+    full = inc.reaggregation_exposure(incidence, subset, PUBLIC_VOCAB)
+    assert narrow["shadowed_terms"] <= full["shadowed_terms"]
+    assert (full["n_expressive_posts_possibly_lost"]
+            >= narrow["n_expressive_posts_possibly_lost"])
+
+
+def test_at_risk_pairs_on_the_real_vocabularies_dwarf_the_nested_terms():
+    """真实词表上，边界重叠比子串嵌套多一个数量级——这就是只看子串的代价"""
+    public = config.load_public_vocabulary(YEAR)
+    celebrity = config.load_celebrity_vocabulary(YEAR)
+
+    def _overlap_pairs(vocab):
+        terms = inc.normalize_vocabulary(vocab)
+        return sum(
+            1 for a in terms for b in terms
+            if a != b and b not in a and a not in b and inc.boundary_overlap(a, b)
+        )
+
+    assert _overlap_pairs(public) == 1502
+    assert _overlap_pairs(celebrity) == 93
+    assert len(inc.nested_terms(public)) == 112
+    assert len(inc.nested_terms(celebrity)) == 5
+
+
+def test_at_risk_pairs_can_be_precomputed_once_and_reused():
+    """pairs 预算一次传进去，结果必须与每次现算完全一致"""
+    vocab = PUBLIC_VOCAB + ["情防控", "防控措施"]
+    subset = ["疫情", "防控措施", "复工"]
+    pairs = inc.at_risk_pairs(vocab)
+    assert inc.at_risk_terms(vocab, subset, pairs=pairs) == inc.at_risk_terms(vocab, subset)
+    assert (inc.at_risk_dropped_terms(vocab, subset, pairs=pairs)
+            == inc.at_risk_dropped_terms(vocab, subset))
+
+
 def test_dropping_a_shadowing_term_undercounts_the_retained_shorter_term(synthetic_tables):
     """已知局限：剔除长词后，被它遮蔽的短词在存量计数里找不回来
 

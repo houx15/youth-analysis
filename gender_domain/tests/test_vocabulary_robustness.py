@@ -45,10 +45,15 @@ from gender_domain.robustness import vocabulary as voc
 
 YEAR = 2020
 
-# 合成词表。三处嵌套是**故意**的：没有嵌套，重聚合与重扫永远一致，
-# 校准路径就等于没测。"封城" 全年一次都没出现，用来覆盖"词在词表里、
-# 但一列都没进矩阵"（频次为 0）这条分层路径。
-PUBLIC_VOCAB = ["疫情", "疫情防控", "复工", "复工复产", "两会", "口罩", "封城"]
+# 合成词表。两类掩盖关系都是**故意**放进来的，没有它们重聚合与重扫永远
+# 一致，校准路径就等于没测：
+#   子串嵌套：疫情 ⊂ 疫情防控、复工 ⊂ 复工复产、粉丝 ⊂ 粉丝团
+#   边界重叠：两会代表 的后缀 "代表" 接 代表委员 的前缀（互不包含！）
+# "封城" 全年一次都没出现，用来覆盖"词在词表里、但一列都没进矩阵"
+# （频次为 0）这条分层路径。
+PUBLIC_VOCAB = [
+    "疫情", "疫情防控", "复工", "复工复产", "两会代表", "代表委员", "口罩", "封城",
+]
 CELEBRITY_VOCAB = ["顶流", "粉丝", "粉丝团", "综艺", "打榜"]
 
 PUBLIC_ACCOUNTS = {"central_media": {"a1", "a2"}, "local_media": {"a5"}}
@@ -60,7 +65,9 @@ POST_TEMPLATES = [
     "今天疫情防控形势不错",
     "复工复产的第一天",
     "疫情之下的日常生活",
-    "两会开幕了 口罩还得戴",
+    # 全词表下最左最长只记 {两会代表: 1}；剔掉 "两会代表" 后重扫会命中
+    # "代表委员"，而两者互不包含——只看子串的口径完全看不见这一条
+    "两会代表委员都到齐了",
     "粉丝团又在打榜",
     "顶流的综艺真好看",
     "普通的一天没什么可说",
@@ -255,37 +262,86 @@ def test_replicate_seeds_are_distinct_and_reproducible():
 
 
 # ---------------------------------------------------------------------------
-# 遮蔽计数：有嵌套时非零、无嵌套时为零
+# 风险计数：有掩盖关系时非零、没有时为零
 # ---------------------------------------------------------------------------
 
-def test_shadowed_term_count_is_nonzero_when_a_dropped_term_shadows_a_retained_one(context):
+def test_at_risk_term_count_is_nonzero_when_a_dropped_term_can_mask_a_retained_one(context):
     subset = [t for t in PUBLIC_VOCAB if t not in ("疫情防控", "复工复产")]
     diag = voc.diagnostics_row(
         context, "public", subset, variant_label="drop_long", replicate=0, seed=1
     )
-    assert diag["n_shadowed_terms"] >= 2          # 疫情、复工 都被遮蔽
-    assert diag["n_posts_with_shadowing_term"] > 0
+    assert diag["n_at_risk_terms"] >= 2          # 疫情、复工 都被掩盖
+    assert diag["n_posts_with_at_risk_term"] > 0
     assert diag["n_expressive_posts_possibly_lost"] > 0
     assert diag["n_retained_terms"] == len(subset)
     assert diag["retained_fraction"] == pytest.approx(len(subset) / len(PUBLIC_VOCAB))
     assert diag["seed"] == 1
 
 
-def test_shadowed_term_count_is_zero_without_nesting(context):
-    """剔除一个既不含也不被含于其它词的词，遮蔽计数必须是 0"""
+def test_at_risk_count_is_zero_when_the_dropped_term_can_mask_nothing(context):
+    """剔除一个与其它词既不嵌套也不重叠的词，风险计数必须是 0"""
     subset = [t for t in PUBLIC_VOCAB if t != "口罩"]
     assert "口罩" not in inc.nested_terms(PUBLIC_VOCAB)
+    assert inc.at_risk_terms(PUBLIC_VOCAB, subset) == set()
     diag = voc.diagnostics_row(
         context, "public", subset, variant_label="drop_kouzhao", replicate=0, seed=1
     )
+    assert diag["n_at_risk_terms"] == 0
     assert diag["n_shadowed_terms"] == 0
-    assert diag["n_posts_with_shadowing_term"] == 0
+    assert diag["n_posts_with_at_risk_term"] == 0
     assert diag["n_expressive_posts_possibly_lost"] == 0
+
+
+def test_diagnostics_report_the_full_risk_set_beside_the_substring_only_subset(context):
+    """诊断行必须让读者看见"只看子串"比完整口径小多少
+
+    剔掉 "两会代表" 是一次纯边界重叠：它与 "代表委员" 互不包含，只看子串
+    的口径报 0，完整口径报 1。两个数字并排写在同一行上，才可能看出后者
+    大多少——只写一个数字，读者无从判断风险集是不是被低估了。
+    """
+    subset = [t for t in PUBLIC_VOCAB if t != "两会代表"]
+    diag = voc.diagnostics_row(
+        context, "public", subset, variant_label="drop_lianghui", replicate=0, seed=1
+    )
+    assert diag["n_shadowed_terms"] == 0
+    assert diag["n_expressive_posts_possibly_lost_substring_only"] == 0
+    assert diag["n_at_risk_terms"] == 1
+    assert diag["n_expressive_posts_possibly_lost"] > 0
 
 
 # ---------------------------------------------------------------------------
 # 校准：精确重扫 vs 存量重聚合
 # ---------------------------------------------------------------------------
+
+def test_calibration_recovers_a_boundary_overlap_miss_that_substring_nesting_never_sees(
+    context,
+):
+    """纯边界重叠：只看子串的口径一条都不会重扫，完整口径必须找回来
+
+    剔掉 "两会代表"、保留 "代表委员"，两者互不包含：
+    shadowing_dropped_terms 返回空集，按旧口径这条帖子根本不会进重扫名单，
+    校准会报"零偏差"——而真值明明变了。这条测试把那个盲区钉死。
+    """
+    subset = [t for t in PUBLIC_VOCAB if t != "两会代表"]
+    assert inc.shadowing_dropped_terms(PUBLIC_VOCAB, subset) == set()
+    assert inc.at_risk_dropped_terms(PUBLIC_VOCAB, subset) == {"两会代表"}
+
+    reagg, corrected, stats = voc.calibrate_topical(context, "public", subset)
+    truth = _rescan_truth(subset, CELEBRITY_VOCAB)
+    merged = truth[["user_id", "public_topical_posts"]].merge(
+        corrected, on="user_id", how="left"
+    ).merge(
+        reagg[["user_id", "topical_posts"]], on="user_id", how="left",
+        suffixes=("", "_reagg"),
+    )
+    pd.testing.assert_series_equal(
+        merged["topical_posts"].astype("int64"),
+        merged["public_topical_posts"].astype("int64"),
+        check_names=False,
+    )
+    assert (merged["topical_posts_reagg"] < merged["topical_posts"]).any()
+    assert stats["n_expressive_posts_recovered"] > 0
+
 
 def test_calibration_recovers_exactly_the_posts_reaggregation_misses(context):
     """校准后的逐用户命中帖数必须等于真正重扫原文的真值，且真的与重聚合不同
@@ -323,8 +379,8 @@ def test_calibration_recovers_exactly_the_posts_reaggregation_misses(context):
     assert stats["n_expressive_posts_recovered"] <= stats["n_expressive_posts_possibly_lost"]
 
 
-def test_calibration_finds_no_bias_when_no_shadowing_is_involved(context):
-    """没有遮蔽时，校准必须报告零偏差（而不是报告一个凭空的修正）"""
+def test_calibration_finds_no_bias_when_nothing_can_be_masked(context):
+    """没有掩盖关系时，校准必须报告零偏差（而不是报告一个凭空的修正）"""
     subset = [t for t in PUBLIC_VOCAB if t != "口罩"]
     reagg, corrected, stats = voc.calibrate_topical(context, "public", subset)
     pd.testing.assert_frame_equal(
@@ -332,12 +388,53 @@ def test_calibration_finds_no_bias_when_no_shadowing_is_involved(context):
     )
     assert stats["n_expressive_posts_recovered"] == 0
     assert stats["mean_delta_topical_share"] == 0.0
+    # 随机抽样检验同样必须报 0：这一次它确实什么都没漏
+    assert stats["n_probe_flipped"] == 0
+
+
+def test_random_probe_detects_misses_the_risk_set_definition_would_have_hidden(context):
+    """独立检验：把风险集人为置空，随机抽样仍然必须看见漏判
+
+    这是"理论想错了也兜得住"那条证据的测试。把 at_risk_dropped_terms 打成
+    恒返回空集（等价于"我们对匹配失效方式的理解完全错了"），风险集内的
+    重扫会一条都不做、报告零偏差；随机抽样不看词表关系，因此仍然必须抽到
+    翻案帖，并且把它们全部记在"风险集之外"。
+    """
+    subset = [t for t in PUBLIC_VOCAB if t not in ("疫情防控", "复工复产", "两会代表")]
+    honest = voc.calibrate_topical(context, "public", subset, n_probe=10 ** 6)[2]
+    assert honest["n_probe_flipped"] > 0
+    assert honest["n_probe_flipped_outside_at_risk"] == 0    # 理论正确时全在集内
+
+    saved = inc.at_risk_dropped_terms
+    inc.at_risk_dropped_terms = lambda *a, **k: set()
+    try:
+        blind = voc.calibrate_topical(context, "public", subset, n_probe=10 ** 6)[2]
+    finally:
+        inc.at_risk_dropped_terms = saved
+
+    assert blind["n_expressive_posts_recovered"] == 0          # 风险集内什么都没看见
+    assert blind["mean_delta_topical_share"] == 0.0
+    assert blind["n_probe_flipped"] > 0                        # 抽样照样看得见
+    assert blind["n_probe_flipped_outside_at_risk"] == blind["n_probe_flipped"]
+    assert blind["probe_implied_missed_posts"] > 0
+    assert blind["probe_flip_rate_ci_low"] > 0
+
+
+def test_random_probe_reports_a_confidence_interval_not_just_a_point(context):
+    """抽到 0 条翻案不等于漏判率为 0，必须给出区间上限"""
+    subset = [t for t in PUBLIC_VOCAB if t != "口罩"]
+    stats = voc.calibrate_topical(context, "public", subset, n_probe=20)[2]
+    assert stats["n_probe_flipped"] == 0
+    assert stats["probe_flip_rate"] == 0.0
+    assert stats["probe_flip_rate_ci_low"] == 0.0
+    assert 0.0 < stats["probe_flip_rate_ci_high"] < 1.0
+    assert stats["n_probe_sampled"] <= stats["n_nonhit_expressive_posts"]
 
 
 def test_rescan_reads_raw_text_only_for_the_months_it_needs(context, monkeypatch):
     """精确重扫必须只读受影响帖子所在月份的日文件，不是重扫全年"""
     subset = [t for t in PUBLIC_VOCAB if t not in ("疫情防控",)]
-    affected = voc.shadowing_affected_posts(context.incidence["public"], subset, PUBLIC_VOCAB)
+    affected = voc.at_risk_affected_posts(context.incidence["public"], subset, PUBLIC_VOCAB)
     assert len(affected) > 0
     assert set(affected.columns) >= {"weibo_id", "month"}
 
@@ -377,7 +474,8 @@ def test_calibration_reads_the_raw_layer_only_once_for_all_replicates(
 
     monkeypatch.setattr(voc.pd, "read_parquet", _spy)
     voc.run_resampling(
-        YEAR, n_replicates=4, keep=0.6, seed=1, n_calibration=4, context=context,
+        YEAR, n_replicates=4, keep=0.6, seed=1, n_calibration=4, n_probe=20,
+        context=context,
         out_path=str(tmp_path / "vocabulary.parquet"),
         diag_path=str(tmp_path / "diag.parquet"),
     )
@@ -410,7 +508,7 @@ def test_leave_one_category_out_removes_exactly_that_category(context, tmp_path)
     categories = {
         "public": {"epidemic": ["疫情", "疫情防控", "口罩"],
                    "economy": ["复工", "复工复产"],
-                   "politics": ["两会", "封城"]},
+                   "politics": ["两会代表", "代表委员", "封城"]},
         "celebrity": {"person": ["顶流"], "fandom": ["粉丝", "粉丝团"],
                       "works": ["综艺", "打榜"]},
     }
@@ -457,7 +555,7 @@ def test_celebrity_person_only_without_categories_emits_a_single_noted_row(
 def test_drop_short_terms_variant_carries_the_retained_fraction(context, tmp_path):
     out_path = str(tmp_path / "vocabulary.parquet")
     diag_path = str(tmp_path / "vocabulary_diagnostics.parquet")
-    voc.run_drop_short_terms(
+    rows = voc.run_drop_short_terms(
         YEAR, min_len=3, context=context, out_path=out_path, diag_path=diag_path
     )
     diag = pd.read_parquet(diag_path, columns=list(voc.DIAGNOSTIC_SCHEMA))
@@ -465,6 +563,23 @@ def test_drop_short_terms_variant_carries_the_retained_fraction(context, tmp_pat
     assert len(public) == 1
     expected = len(voc.drop_short_terms(PUBLIC_VOCAB, 3)) / len(PUBLIC_VOCAB)
     assert public.iloc[0]["retained_fraction"] == pytest.approx(expected)
+
+    # 结果表自己也要说清这次干预有多大：只拿到 vocabulary.parquet 一张表的
+    # 读者，不该从 "drop_short_terms_min3" 这个标签去猜剔了几个词
+    for note in rows["note"]:
+        assert "min_len=3" in str(note)
+        assert "public_retained={}/{}".format(
+            len(voc.drop_short_terms(PUBLIC_VOCAB, 3)), len(PUBLIC_VOCAB)
+        ) in str(note)
+
+
+def test_note_annotation_never_overwrites_a_failure_note():
+    """追加说明不能盖掉拟合失败的留痕——那是排查问题唯一的线索"""
+    frame = pd.DataFrame({"note": [None, "harness_call_failed", np.nan]})
+    out = voc._annotate_note(frame, "min_len=3")
+    assert list(out["note"]) == [
+        "min_len=3", "harness_call_failed;min_len=3", "min_len=3",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -496,11 +611,16 @@ def test_build_writes_results_diagnostics_and_manifest_incrementally(synthetic_p
     assert any(lab.endswith("_rescanned") for lab in labels)
     assert len(calib) == 2 * len(harness.QUANTITIES) * 2
 
-    # 诊断表逐 replicate 逐领域一行，保留词数与遮蔽数都在
+    # 诊断表逐 (variant, 领域) 一行，保留词数、风险词数、抽样检验都在
     assert set(diag["domain"]) == {"public", "celebrity"}
     assert (diag["n_retained_terms"] > 0).all()
     assert diag["calibrated"].any()
-    assert diag[diag["calibrated"]]["n_expressive_posts_recovered"].notna().all()
+    calibrated = diag[diag["calibrated"]]
+    assert calibrated["n_expressive_posts_recovered"].notna().all()
+    assert calibrated["n_probe_sampled"].notna().all()
+    assert calibrated["probe_flip_rate_ci_high"].notna().all()
+    # 未校准的行必须是 NaN 而不是 0——"没测过"和"测出来是 0"要能分开
+    assert diag[~diag["calibrated"]]["n_probe_sampled"].isna().all()
 
     manifest_path = os.path.join(robust_dir, "vocabulary_{}".format(YEAR), "manifest.json")
     assert os.path.exists(manifest_path)
@@ -509,6 +629,44 @@ def test_build_writes_results_diagnostics_and_manifest_incrementally(synthetic_p
     assert manifest["params"]["n_replicates"] == 3
     assert len(manifest["params"]["seeds"]) == 3
     assert "public" in manifest["fingerprints"]
+    assert "random_probe" in manifest["counts"]
+
+
+def test_every_result_row_that_should_have_diagnostics_can_find_them(synthetic_project):
+    """结果表 -> 诊断表的连接键必须真的连得上
+
+    连接键是 (variant_family, variant_label)。按设计只有两类行没有诊断：
+    做不到的注明行，以及……没有第三类。domain="both" 的差中差行同样连得上
+    该标签下的两行诊断（它本来就同时依赖两个领域）。
+    """
+    out = voc.build(YEAR, n_replicates=2, keep=0.8, seed=0, n_calibration=1)
+    results = pd.read_parquet(out["results_path"], columns=list(harness.ROBUSTNESS_SCHEMA))
+    diag = pd.read_parquet(out["diagnostics_path"], columns=list(voc.DIAGNOSTIC_SCHEMA))
+
+    keys = set(zip(diag["variant_family"], diag["variant_label"]))
+    unmatched = results[[
+        (fam, lab) not in keys
+        for fam, lab in zip(results["variant_family"], results["variant_label"])
+    ]]
+    # 未连上的只能是"做不到"的注明行
+    assert set(unmatched["variant_label"]) == {
+        "public_leave_one_category_out_unavailable",
+        "celebrity_leave_one_category_out_unavailable",
+        "celebrity_person_only_unavailable",
+    }
+    # 论文最可能引用的校准行必须连得上，而且不需要剥掉后缀
+    calib = results[results["variant_family"] == voc.CALIBRATION_FAMILY]
+    assert len(calib) > 0
+    for fam, lab in set(zip(calib["variant_family"], calib["variant_label"])):
+        assert (fam, lab) in keys
+    # 差中差行（domain="both"）也在连接键之内
+    both = results[results["domain"] == "both"]
+    assert len(both) > 0
+    for fam, lab in set(zip(both["variant_family"], both["variant_label"])):
+        assert (fam, lab) in keys
+    # 每个键下恰好两个领域各一行
+    per_key = diag.groupby(["variant_family", "variant_label"])["domain"].nunique()
+    assert set(per_key.unique()) == {2}
 
 
 def test_build_is_resumable_because_rows_are_appended_per_replicate(

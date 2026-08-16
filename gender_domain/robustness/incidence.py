@@ -41,43 +41,54 @@ replicate 都回去重扫全年正文（单进程约 32 分钟一遍）或重新
 填 0/False 即可。
 
 --------------------------------------------------------------------------
-已知局限：嵌套遮蔽会让重新聚合**低估**（不会高估）
+已知局限：被剔除词掩盖保留词时，重新聚合**低估**（不会高估）
 --------------------------------------------------------------------------
 词表匹配是"最左最长、命中区间不重叠"（text_rules.VocabMatcher），表 A 存
 下来的逐词计数是**消解重叠之后**的结果。因此按词表子集重新聚合，只有在
-"被剔除的词都没有遮蔽住任何被保留的更短的词"时才与重扫原文精确相等：
+"被剔除的词都没有掩盖住任何被保留的词"时才与重扫原文精确相等。掩盖有
+**两种**方式，下面第一种（子串嵌套）只是较小的那一种，第二种（边界重叠）
+在真实词表上多一个数量级——完整说明见 at_risk_pairs 上方的注释：
 
     正文 "疫情防控" 在全词表下只记 {疫情防控: 1}，没有 {疫情: 1}。
     若某个 replicate 剔除了 "疫情防控"、保留了 "疫情"，重扫原文会命中
     "疫情"，而按存量重新聚合会判定这条帖子不命中 —— 偏差方向恒为低估。
 
-**发生率**（在真实词表上实测，见 nested_terms 的测试）：公共事务词表
-816 词中有 112 个（13.7%）是另一个词的子串；明星词表 535 词中只有 5 个
-（0.9%）。
+    第二种（边界重叠，子串口径完全看不见）：
+    正文 "疫情防控措施"、词表 {疫情防, 防控措施} 在全词表下只记
+    {疫情防: 1}。剔除 "疫情防"、保留 "防控措施"，重扫会命中、重聚合
+    判不命中，而 "防控措施" 既不是 "疫情防" 的子串也不含它。
+
+**发生率**（在真实词表上实测，见 nested_terms / at_risk_pairs 的测试）：
+
+    子串嵌套词        公共事务 816 词中 112 个（13.7%）；明星 535 词中 5 个
+    边界重叠有序词对  公共事务 1502 对；明星 93 对
 
 **但发生率本身严重低估了这件事的严重性，真正要看的是效应量**（复核时
-实测，公共事务真实词表、6000 帖语料、10 次保留 80% 的重采样）：
+实测，公共事务真实词表、6000 帖语料、10 次保留 80% 的重采样，**只计子串
+嵌套那一类**）：
 
     每个 replicate 被遮蔽的保留词        19-39 个（约占保留词的 4.2%；
                                           明星领域同口径只有 0.79 个）
-    重聚合相对真实重扫丢失的命中帖比例   2.3% - 5.4%（10 次全部为丢失）
+    重聚合相对重扫丢失的命中帖比例       2.3% - 5.4%（10 次全部为丢失）
     逐用户 topical_share 平均偏差        -0.013 至 -0.032
     最差用户                             -0.27
     偏差方向                             10 次全部是低估，一次高估也没有
 
-那份语料每帖只放一个词，所以上面的数字接近上界；但它与 §13.3 本身想要
-检验的效应是同一个数量级——也就是说，**一个未经校正的重聚合偏差完全可能
-被误读成一条稳健性结论**。因此：
+那份语料每帖只放一个词，帖子越稠密进入风险集的帖子越少；但这些数字与
+§13.3 本身想要检验的效应是同一个数量级——也就是说，**一个未经测量的重
+聚合偏差完全可能被误读成一条稳健性结论**。因此：
 
-- `nested_terms(vocab)` 给出词表层面的风险词；
-- `shadowed_terms(vocab, term_subset)` 给出某一次重采样里"被剔除词遮蔽
-  住的保留词"集合；
-- `shadowing_exposure(incidence, term_subset, vocab)` 进一步给出这次
-  重采样受影响的帖子数与可能因此丢失的表达帖数——那是该 replicate
-  重聚合误差的上界。
+- `nested_terms(vocab)` / `shadowed_terms(vocab, subset)` /
+  `shadowing_exposure(...)` 给出**只看子串**的那一部分；
+- `at_risk_pairs(vocab)` / `at_risk_terms(vocab, subset)` /
+  `reaggregation_exposure(...)` 给出**子串 + 边界重叠**的完整风险集，
+  下游估计重聚合误差应当用这一组；
+- 但即使是完整风险集，也只是"按我们理解的匹配失效方式推出来的"，仍然
+  可能漏掉没想到的失效方式。唯一不依赖这层理解的检验，是在"重聚合判为
+  不命中的表达帖"上随机抽样重扫（vocabulary.random_nonhit_probe）。
 
-§13.3 必须逐 replicate 记录这些数字，并对其中一个子样本用精确重扫做校准，
-不能只信重聚合的数字。
+§13.3 必须逐 replicate 记录这些数字，对一个子样本做精确重扫校准，并且
+用上面那个随机抽样兜住风险集之外的部分。
 
 使用方法（本模块不提供 CLI，由 vocabulary.py / accounts.py 等调用）：
     from gender_domain.robustness import incidence as inc
@@ -193,37 +204,107 @@ def shadowing_dropped_terms(vocab, term_subset):
     return {d for d in dropped for t in retained if t != d and t in d}
 
 
-def shadowing_exposure(incidence, term_subset, vocab):
-    """这次重采样的遮蔽暴露面：受影响的词数与帖子数（重聚合误差的上界）
+# ---------------------------------------------------------------------------
+# 更完整的风险定义：子串嵌套只是重聚合失效的一小半
+# ---------------------------------------------------------------------------
+#
+# shadowed_terms / nested_terms 只看"一个词是另一个词的子串"。但最左最长、
+# 命中区间不重叠的匹配还有第二种失效方式，而且它常见得多——**边界重叠**：
+#
+#     正文 "疫情防控措施"，词表 {疫情防, 防控措施}
+#     全词表下最左最长在位置 0 取 "疫情防"，剩下的 "控措施" 不成词，
+#     存量计数只记 {疫情防: 1}。
+#     某个 replicate 剔除 "疫情防"、保留 "防控措施"：重扫原文会命中
+#     "防控措施"，按存量重新聚合却判定这条帖子不命中。
+#
+# 这里 "防控措施" 既不是 "疫情防" 的子串、也不含它，nested_terms 与
+# shadowed_terms 一个都点不出来。实测两份真实词表：
+#
+#     子串嵌套词          公共事务 112 个 / 明星 5 个
+#     边界重叠有序词对    公共事务 1502 对 / 明星 93 对
+#
+# 也就是说只看子串，会漏掉这一类错误里绝大部分的来源。因此**下游估计
+# 重聚合误差时应当用 at_risk_terms / reaggregation_exposure，而不是只看
+# 子串的 shadowed_terms / shadowing_exposure**；后两个保留下来，是因为
+# "被子串嵌套遮蔽"本身仍是一个有意义的、更严格的子类，报告里把两者并列
+# 才能看出"完整风险集比子串子集大多少"。
+#
+# 即便如此，这仍然是一个**基于机制推理**的风险集，不是"实际漏判了多少"
+# 的测量：它假定我们把匹配器的失效方式想全了。真正不依赖这个假定的检验，
+# 是在"重聚合判为不命中的表达帖"上随机抽样重扫（vocabulary.py 的
+# random_nonhit_probe），那一条才能兜住这里还没想到的失效方式。
 
-    Args:
-        incidence: build_post_term_incidence 的返回值
-        term_subset: 这次保留的词
-        vocab: 完整词表（用来确定"被剔除的词"是哪些）
 
-    Returns:
-        dict：
-        - shadowed_terms: 被剔除词遮蔽住的保留词集合（词表层面）
-        - n_shadowed_terms / shadowed_share_of_retained: 上一项的规模
-        - n_posts_with_shadowing_term: 存量计数里含有"遮蔽性剔除词"的帖子数
-        - n_expressive_posts_possibly_lost: 其中"在本子集下判定为不命中、
-          且是表达帖"的帖子数——这些帖子在真正重扫时**可能**重新命中，
-          因此它就是本次 replicate 命中帖数（进而 topical_share）被低估的
-          **上界**。之所以是上界而不是准确值：被遮蔽的短词未必真的落在那条
-          帖子里的那个位置（例如剔除的是 "复工复产"、保留的是 "复工"，
-          那一定会重新命中；但剔除 "北京冬奥"、保留 "冬奥" 时也一样——真正
-          的判定要重扫原文才知道，这正是 §13.3 要对子样本做精确重扫校准的
-          原因）。
+def boundary_overlap(first, second):
+    """first 的某个非空真后缀等于 second 的前缀
 
-    实测量级见模块文档：真实公共事务词表下，每个 replicate 大约有 4.2% 的
-    保留词被遮蔽，重聚合因此丢掉 2.3%-5.4% 的命中帖，方向恒为低估。
+    为真时，正文里 first 的一次命中可以恰好吃掉 second 开头的那几个字，
+    使 second 在全词表下根本没有机会被记进存量计数。
     """
-    shadowed = shadowed_terms(vocab, term_subset)
-    shadowing_dropped = shadowing_dropped_terms(vocab, term_subset)
-    retained = normalize_vocabulary(term_subset)
+    max_k = min(len(first), len(second)) - 1
+    for k in range(1, max_k + 1):
+        if first[-k:] == second[:k]:
+            return True
+    return False
 
+
+def at_risk_pairs(vocab):
+    """{可能掩盖者: {被掩盖的词, ...}}，纯词表运算，一份词表只需算一次
+
+    (a, b) 进入结果的条件：a != b，且下列任意一条成立
+      1) b 是 a 的子串（嵌套遮蔽）；
+      2) a 的后缀接上 b 的前缀（a 的命中吃掉 b 的开头）；
+      3) b 的后缀接上 a 的前缀（a 的命中吃掉 b 的结尾）。
+
+    真实词表 816 / 535 词做两两判断是 O(n^2 · 词长)，约一两秒，建一次
+    传给所有 replicate 复用即可（at_risk_terms / at_risk_dropped_terms /
+    reaggregation_exposure 都接受 pairs 参数）。
+    """
+    cleaned = normalize_vocabulary(vocab)
+    pairs = {}
+    for a in cleaned:
+        related = {
+            b for b in cleaned
+            if b != a and (b in a or boundary_overlap(a, b) or boundary_overlap(b, a))
+        }
+        if related:
+            pairs[a] = related
+    return pairs
+
+
+def at_risk_terms(vocab, term_subset, pairs=None):
+    """这次重采样里，重聚合可能漏掉的保留词（子串嵌套 + 边界重叠）
+
+    是 shadowed_terms 的**超集**：后者只认子串嵌套。
+    """
+    retained = set(normalize_vocabulary(term_subset))
+    dropped = set(normalize_vocabulary(vocab)) - retained
+    pairs = at_risk_pairs(vocab) if pairs is None else pairs
+    return {t for d in dropped for t in pairs.get(d, ()) if t in retained}
+
+
+def at_risk_dropped_terms(vocab, term_subset, pairs=None):
+    """反向的一半：这次剔除的词里，哪些可能掩盖住某个保留词
+
+    这一侧才是能落到帖子上的——一条帖子受不受影响，取决于它的存量计数里
+    有没有这些词。
+    """
+    retained = set(normalize_vocabulary(term_subset))
+    dropped = set(normalize_vocabulary(vocab)) - retained
+    pairs = at_risk_pairs(vocab) if pairs is None else pairs
+    return {d for d in dropped if retained & pairs.get(d, set())}
+
+
+def _exposure(incidence, term_subset, vocab, risk_terms, risk_dropped):
+    """暴露面的公共计算：风险词集合 -> 受影响帖子数
+
+    shadowing_exposure（只看子串）与 reaggregation_exposure（子串 + 边界
+    重叠）只差"风险词是怎么定义的"，落到帖子上的算法完全一样，因此只写
+    一遍，免得两个口径在别处慢慢分叉。
+    """
+    retained = normalize_vocabulary(term_subset)
     shadow_vec = np.zeros(incidence.matrix.shape[1], dtype=np.int32)
-    for term in shadowing_dropped:
+    for term in risk_dropped:
         col = incidence.term_index.get(term)
         if col is not None:
             shadow_vec[col] = 1
@@ -243,15 +324,60 @@ def shadowing_exposure(incidence, term_subset, vocab):
     possibly_lost = post_shadow & (~post_hit) & expressive
 
     return {
-        "shadowed_terms": shadowed,
-        "n_shadowed_terms": len(shadowed),
+        "shadowed_terms": risk_terms,
+        "n_shadowed_terms": len(risk_terms),
         "shadowed_share_of_retained": (
-            len(shadowed) / len(retained) if retained else 0.0
+            len(risk_terms) / len(retained) if retained else 0.0
         ),
-        "n_shadowing_dropped_terms": len(shadowing_dropped),
+        "n_shadowing_dropped_terms": len(risk_dropped),
         "n_posts_with_shadowing_term": int(post_shadow.sum()),
         "n_expressive_posts_possibly_lost": int(possibly_lost.sum()),
     }
+
+
+def reaggregation_exposure(incidence, term_subset, vocab, pairs=None):
+    """完整的重聚合暴露面：子串嵌套 **加上** 边界重叠
+
+    返回的键与 shadowing_exposure 完全相同（方便两者并列比较），但风险词
+    集合是完整的那一个。**估计重聚合误差请用本函数**，shadowing_exposure
+    只覆盖子串那一小半。
+
+    仍然要记住：这是"按我们理解的失效方式推出来的风险集"，不是实测的
+    漏判量。它给出的 n_expressive_posts_possibly_lost 是**在这个风险集
+    之内**的上界，对风险集之外的失效方式一无所知。
+    """
+    risk_terms = at_risk_terms(vocab, term_subset, pairs=pairs)
+    risk_dropped = at_risk_dropped_terms(vocab, term_subset, pairs=pairs)
+    return _exposure(incidence, term_subset, vocab, risk_terms, risk_dropped)
+
+
+def shadowing_exposure(incidence, term_subset, vocab):
+    """**只看子串嵌套**的那一部分暴露面（完整口径见 reaggregation_exposure）
+
+    Args:
+        incidence: build_post_term_incidence 的返回值
+        term_subset: 这次保留的词
+        vocab: 完整词表（用来确定"被剔除的词"是哪些）
+
+    Returns:
+        dict：
+        - shadowed_terms: 被剔除词以子串方式遮蔽住的保留词集合
+        - n_shadowed_terms / shadowed_share_of_retained: 上一项的规模
+        - n_posts_with_shadowing_term: 存量计数里含有"遮蔽性剔除词"的帖子数
+        - n_expressive_posts_possibly_lost: 其中"在本子集下判定为不命中、
+          且是表达帖"的帖子数。
+
+    **重要：这不是重聚合误差的上界，只是其中一部分。** 边界重叠（见上面
+    at_risk_pairs 的说明）同样会让重聚合漏判，而且在真实词表上比子串嵌套
+    多一个数量级（公共事务 1502 对 vs 112 个）。要估计重聚合误差，用
+    reaggregation_exposure；本函数保留下来，是为了让报告能把"子串子集"与
+    "完整风险集"并列，看出后者大多少。
+    """
+    return _exposure(
+        incidence, term_subset, vocab,
+        shadowed_terms(vocab, term_subset),
+        shadowing_dropped_terms(vocab, term_subset),
+    )
 
 
 # ---------------------------------------------------------------------------

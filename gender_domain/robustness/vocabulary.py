@@ -11,35 +11,44 @@
 --------------------------------------------------------------------------
 本模块存在的真正难点：重聚合偏差必须被测量，而不是被继承
 --------------------------------------------------------------------------
-incidence 模块的文档已经说清楚：按存量逐词计数重新聚合，只有在"被剔除的
-词没有遮蔽住任何被保留的短词"时才与重扫原文精确相等，否则**恒为低估**。
-上一步在合成语料上实测过这件事的量级：每个 replicate 丢掉 2.3%-5.4% 的
-命中帖，逐用户 topical_share 平均偏 -0.013 至 -0.032，最差用户 -0.27，
-十次重采样**全部**是低估，一次高估都没有。
+按存量逐词计数重新聚合，只有在"被剔除的词没有掩盖住任何被保留的词"时才
+与重扫原文相等，否则**恒为低估**（方向单向：存量里出现过的保留词一定
+真实出现在正文里，所以重聚合判命中的帖子重扫必然也命中，反过来不然）。
+掩盖有两种方式，见 incidence.at_risk_pairs 上方的说明：子串嵌套（公共
+事务 112 词）与边界重叠（公共事务 1502 对有序词对）。**只看子串会漏掉
+这一类错误里绝大部分的来源**，所以本模块一律用完整口径
+（incidence.reaggregation_exposure / at_risk_terms）。
 
-这与 §13.3 本身想要检验的效应是同一个数量级，而且方向恒定——也就是说，
-一个未经校正的重聚合偏差完全可能被读成"结论对词表敏感"。所以本模块做
-两件事，缺一不可：
+这件事的量级与 §13.3 本身想检验的效应是同一个数量级，而且方向恒定——也
+就是说，一个未经测量的重聚合偏差完全可能被读成"结论对词表敏感"。所以
+本模块做三件事，缺一不可：
 
-- **逐 replicate 记录暴露面**：保留词数、被剔除词遮蔽住的保留词数、
-  受影响帖子数（`incidence.shadowing_exposure` 给的是**上界**，不是实际
-  损失）。这些数字写进 `vocabulary_diagnostics.parquet`，不是只写进报告：
-  一个遮蔽数很高的 replicate 本身就该被少信一点。
-- **对子样本做精确重扫校准**：默认 200 次里抽 20 次（`n_calibration`
-  参数），把"重聚合判为不命中、但存量计数里含有遮蔽性剔除词"的那批帖子
-  回到 `cleaned_weibo_cov` 重扫原文，得到**精确**的命中判定，再与重聚合
+- **逐 replicate 记录暴露面**：保留词数、处于风险中的保留词数（完整口径
+  与只看子串的口径并列写出，让读者看得见后者小多少）、受影响帖子数。
+  这些数字写进 `vocabulary_diagnostics.parquet`，不是只写进报告：一个
+  风险词数很高的 replicate 本身就该被少信一点。
+- **对子样本做重扫校准**：默认 200 次里抽 20 次（`n_calibration` 参数），
+  把"重聚合判为不命中、但存量计数里含有风险剔除词"的那批帖子回到
+  `cleaned_weibo_cov` 重扫原文，得到这批帖子上的真实命中判定，再与重聚合
   的估计配对写进结果表（variant_family="vocabulary_calibration"，
-  variant_label 以 `_reaggregated` / `_rescanned` 结尾）。两者之差就是这
-  个 replicate 的实测偏差。**本模块绝不用校准结果去偷偷修正主结果**：
-  一个被测量、被报告的偏差是一条发现，一个被悄悄调过的数字不是。
+  variant_label 以 `_reaggregated` / `_rescanned` 结尾）。
+- **一个不依赖上面那套推理的独立检验**：从**全部**"重聚合判为不命中的
+  表达帖"里随机抽样重扫（`random_nonhit_probe`），报告它们实际命中的
+  比例。风险集是按"我们理解的匹配失效方式"推出来的，可能仍有没想到的
+  失效方式；随机抽样不看词表关系，因此能兜住风险集之外的部分，是这里
+  唯一一个在"理论想错了"时还站得住的证据。
 
-为什么只重扫那一批帖子就能得到精确值（而不是重扫全年）：重聚合的命中
-判定是真值的**子集**——存量计数里出现过的保留词必然真实出现在正文里，
-所以"重聚合判命中"必然"重扫也命中"；唯一可能出错的方向是"重聚合判不
-命中、重扫却命中"，而这只可能发生在存量计数里含有遮蔽性剔除词的帖子上。
-把这批帖子（`shadowing_affected_posts`）逐条重扫，其余帖子按重聚合的
-结论照单全收，得到的逐用户命中数就是精确的，代价是读几个月的日文件、
-扫几万条正文，而不是重扫三千多万条。
+**本模块绝不用校准结果去偷偷修正主结果**：一个被测量、被报告的偏差是
+一条发现，一个被悄悄调过的数字不是。
+
+为什么只重扫那一批帖子（而不是重扫全年）：唯一可能出错的方向是"重聚合
+判不命中、重扫却命中"，而在风险集之内它只可能发生在存量计数里含有风险
+剔除词的帖子上。把这批帖子（`at_risk_affected_posts`）逐条重扫，其余
+帖子按重聚合的结论照单全收，代价是读几个月的日文件、扫几万条正文，而不是
+重扫三千多万条。**必须说清楚：这样得到的数是"在风险集之内修正过"的值，
+不是精确值**——如果风险集本身漏了某类失效方式，被修正过的那一侧同样偏低，
+于是配对差值只是重聚合误差的**下界**，不是上界。随机抽样检验存在的意义
+正是给这个下界配上一个不依赖风险集定义的量。
 
 --------------------------------------------------------------------------
 两处刻意的"做不到就说做不到"
@@ -54,14 +63,29 @@ incidence 模块的文档已经说清楚：按存量逐词计数重新聚合，�
   会造出一条看起来像结论、实际上是编的结果。
 
 --------------------------------------------------------------------------
-诊断为什么单独一张表
+诊断为什么单独一张表，以及它怎么与结果表对上
 --------------------------------------------------------------------------
 `harness.append_rows` 按 `ROBUSTNESS_SCHEMA` 显式读列，往结果帧上多挂几列
 诊断字段，会在下一次追加读旧文件时被静默丢掉。共享结果 schema 是整套
 稳健性套件的公共契约，不该为了一个 variant family 去改它，所以诊断走
-并排的一张 `vocabulary_diagnostics.parquet`，按
-(variant_family, variant_label, replicate, domain) 与结果表一一对应。
-它是输出的一部分，不是报告里的一段话。
+并排的一张 `vocabulary_diagnostics.parquet`。它是输出的一部分，不是报告
+里的一段话。
+
+**连接键是 (variant_family, variant_label)**，每个键下每个领域一行（因此
+一个 variant 两行）。三件事必须说在前面：
+
+1. 校准家族的两个标签（`..._reaggregated` / `..._rescanned`）各自都写了
+   自己的诊断行——它们恰恰是论文最可能引用的行，不能要求读者去掉后缀才
+   找得到自己的诊断；
+2. 结果表里 domain="both" 的差中差行（`did_entry` / `did_topical`）**按
+   设计没有单独的诊断行**：它同时依赖两个领域的词表改动，对应的是该标签
+   下的两行诊断（public 与 celebrity），不是其中某一行；
+3. "做不到"的那几行注明行（留一类别、明星只留人名）按设计没有诊断行——
+   它们没有跑过任何词表子集，没有暴露面可记。
+
+`append_diagnostics` 与 `harness.append_rows` 一样是纯追加、不去重：同一个
+year 跑两次 `build()` 会让两张表都翻倍，这是本套件一贯的行为（重跑前先
+删掉旧文件），不是这里额外给的唯一性保证。
 
 使用方法:
     python -m gender_domain.robustness.vocabulary build --year 2020 \
@@ -76,6 +100,7 @@ from collections import namedtuple
 import fire
 import numpy as np
 import pandas as pd
+from scipy import stats as sps
 
 from gender_domain import build_user_tables as but
 from gender_domain import config
@@ -123,10 +148,16 @@ USER_TABLE_COLUMNS = [
 # 本模块不自己再推一遍（与 incidence 同一条纪律）。
 RAW_POST_COLUMNS = ["weibo_id", "weibo_content"]
 
-# 诊断表 schema。逐 (variant, replicate, domain) 一行，与结果表按前四列
-# 对应。前三组是"这次剔了多少词"，中间一组是遮蔽暴露面（重聚合误差的
-# 上界），最后一组是精确重扫校准出来的**实测**偏差（未校准的 replicate
-# 全部为 NaN，而不是 0——"没测过"和"测出来是 0"必须能分开）。
+# 每个被校准的 replicate、每个领域，随机抽多少条"重聚合判不命中的表达帖"
+# 做独立检验。500 条在 flip 率为 1% 时的 95% 区间约 ±1 个百分点，足够回答
+# "风险集之外还有没有成规模的漏判"这个问题，而代价只是多读几千条正文。
+DEFAULT_N_PROBE = 500
+
+# 诊断表 schema。逐 (variant_family, variant_label, domain) 一行。分五组：
+# 1) 身份；2) 这次剔了多少词；3) 风险集规模（完整口径 at_risk_* 与只看
+# 子串的 shadowed_* 并列，让读者看得见后者小多少）；4) 风险集之内的重扫
+# 校准实测偏差；5) 不依赖风险集定义的随机抽样检验。第 4、5 组在未校准的
+# replicate 上全部是 NaN，而不是 0——"没测过"和"测出来是 0"必须能分开。
 DIAGNOSTIC_SCHEMA = (
     "variant_family",
     "variant_label",
@@ -136,11 +167,16 @@ DIAGNOSTIC_SCHEMA = (
     "n_vocab_terms",
     "n_retained_terms",
     "retained_fraction",
-    "n_shadowed_terms",
-    "shadowed_share_of_retained",
-    "n_shadowing_dropped_terms",
-    "n_posts_with_shadowing_term",
+    # 完整风险口径（子串嵌套 + 边界重叠）
+    "n_at_risk_terms",
+    "at_risk_share_of_retained",
+    "n_at_risk_dropped_terms",
+    "n_posts_with_at_risk_term",
     "n_expressive_posts_possibly_lost",
+    # 只看子串的那一部分，用来显示完整口径比它大多少
+    "n_shadowed_terms",
+    "n_posts_with_shadowing_term",
+    "n_expressive_posts_possibly_lost_substring_only",
     "calibrated",
     "n_posts_rescanned",
     "n_expressive_posts_recovered",
@@ -149,11 +185,30 @@ DIAGNOSTIC_SCHEMA = (
     "mean_delta_topical_share",
     "max_abs_delta_topical_share",
     "n_users_with_delta",
+    # 独立检验：从全部"重聚合判不命中的表达帖"里随机抽样重扫
+    "n_nonhit_expressive_posts",
+    "n_probe_sampled",
+    "n_probe_flipped",
+    "n_probe_flipped_outside_at_risk",
+    "probe_flip_rate",
+    "probe_flip_rate_ci_low",
+    "probe_flip_rate_ci_high",
+    "probe_implied_missed_posts",
     "note",
 )
 
+# risk_pairs：每个领域的 {可能掩盖者: {被掩盖词}}，按词表建一次（O(n^2)），
+# 之后每个 replicate 只做集合运算。没有它，200 个 replicate × 2 个领域
+# 会把同一份两两判断重算 400 遍。
 VocabularyContext = namedtuple(
-    "VocabularyContext", ["year", "user_table", "vocab", "incidence"]
+    "VocabularyContext", ["year", "user_table", "vocab", "incidence", "risk_pairs"]
+)
+
+# 校准一个 (replicate, 领域) 需要事先准备好的两批帖子：风险集之内要逐条
+# 重扫的那批，以及不依赖风险集定义、随机抽出来的那批。两批的正文在
+# run_resampling 里合并成一次 IO 取回。
+CalibrationPlan = namedtuple(
+    "CalibrationPlan", ["affected", "probe", "probe_at_risk", "n_nonhit"]
 )
 
 
@@ -331,10 +386,11 @@ def drop_short_terms(terms, min_len=3):
 
 
 def drop_nested_terms(terms):
-    """剔除"是另一个词的子串"的那些词（重聚合偏差的唯一来源）
+    """剔除"是另一个词的子串"的那些词
 
-    这个变体本身也是对偏差的一次检验：剔掉全部嵌套词之后，任何词表子集
-    的重聚合都与重扫原文精确相等。
+    这只是重聚合偏差的一个来源，不是唯一来源：边界重叠（见
+    incidence.at_risk_pairs）在真实词表上比嵌套多一个数量级，剔完嵌套词
+    之后它仍然在。
     """
     nested = inc.nested_terms(terms)
     return sorted(t for t in inc.normalize_vocabulary(terms) if t not in nested)
@@ -355,16 +411,20 @@ def build_context(year=config.YEAR, domains=DOMAINS):
 
     vocab = {}
     incidences = {}
+    risk_pairs = {}
     for domain in domains:
         vocab[domain] = load_vocabulary(domain, year)
         incidences[domain] = inc.build_post_term_incidence(year, domain)
+        risk_pairs[domain] = inc.at_risk_pairs(vocab[domain])
+        n_pairs = sum(len(v) for v in risk_pairs[domain].values())
         print(
-            "{} 词表 {} 个词，其中嵌套词 {} 个".format(
-                domain, len(vocab[domain]), len(inc.nested_terms(vocab[domain]))
+            "{} 词表 {} 个词：子串嵌套词 {} 个，可能互相掩盖的有序词对 {} 对".format(
+                domain, len(vocab[domain]), len(inc.nested_terms(vocab[domain])), n_pairs
             )
         )
     return VocabularyContext(
-        year=year, user_table=user_table, vocab=vocab, incidence=incidences
+        year=year, user_table=user_table, vocab=vocab, incidence=incidences,
+        risk_pairs=risk_pairs,
     )
 
 
@@ -393,58 +453,193 @@ def topical_for_subset(context, domain, term_subset):
 
 
 # ---------------------------------------------------------------------------
-# 精确重扫校准
+# 重扫校准（风险集之内）与随机抽样检验（不依赖风险集）
 # ---------------------------------------------------------------------------
 
-def shadowing_affected_posts(incidence, term_subset, vocab):
-    """重聚合**可能**判错的那批帖子（精确重扫只需要读这些）
+_EMPTY_POSTS = ("weibo_id", "user_id", "month")
 
-    条件三条同时成立：
-    1) 是表达帖（非表达帖不进任何内容指标的分子分母）；
-    2) 在本子集下按存量重聚合判定为**不命中**；
-    3) 存量计数里含有至少一个"遮蔽了某个保留词"的被剔除词。
 
-    第 2、3 条合起来正是重聚合唯一可能出错的方向：重聚合判命中的帖子，
-    其保留词必然真实出现在正文里，重扫一定也命中，不可能翻案。因此
-    只重扫这批帖子，其余帖子照抄重聚合的结论，得到的逐用户命中数是精确的。
-
-    Returns:
-        DataFrame，列为 weibo_id / user_id / month，每条受影响的帖子一行。
-        行数恰好等于 incidence.shadowing_exposure 报的
-        n_expressive_posts_possibly_lost（那是上界，实际有多少条真的翻案
-        要重扫完才知道）。
-    """
-    posts = incidence.posts
-    empty = pd.DataFrame({
+def _empty_post_frame():
+    return pd.DataFrame({
         "weibo_id": pd.Series(dtype="object"),
         "user_id": pd.Series(dtype="object"),
         "month": pd.Series(dtype="int64"),
     })
-    dropped = inc.shadowing_dropped_terms(vocab, term_subset)
-    if not dropped or incidence.matrix.shape[1] == 0:
-        return empty
 
-    shadow_vec = np.zeros(incidence.matrix.shape[1], dtype=np.int32)
-    for term in dropped:
-        col = incidence.term_index.get(term)
-        if col is not None:
-            shadow_vec[col] = 1
-    keep = inc.term_subset_vector(incidence, term_subset, warn_unrecognized=False)
 
-    row_shadow = incidence.matrix.dot(shadow_vec) > 0
-    row_hit = incidence.matrix.dot(keep) > 0
-    post_shadow = inc._rows_to_posts(posts, row_shadow)
-    post_hit = inc._rows_to_posts(posts, row_hit)
-    expressive = posts["is_expressive"].to_numpy(dtype=bool)
-    mask = post_shadow & (~post_hit) & expressive
+def _post_frame(posts, mask):
+    """按逐帖布尔掩码取出 weibo_id / user_id / month 三列"""
     if not mask.any():
-        return empty
-
-    out = posts.loc[mask, ["weibo_id", "user_id", "month"]].copy()
+        return _empty_post_frame()
+    out = posts.loc[mask, list(_EMPTY_POSTS)].copy()
     out["weibo_id"] = out["weibo_id"].astype(str)
     out["user_id"] = out["user_id"].astype(str)
     out["month"] = out["month"].astype("int64")
     return out.reset_index(drop=True)
+
+
+def _reaggregated_hit_mask(incidence, term_subset):
+    """逐帖：本子集下按存量重聚合判定是否命中"""
+    if incidence.matrix.shape[1] == 0:
+        return np.zeros(len(incidence.posts), dtype=bool)
+    keep = inc.term_subset_vector(incidence, term_subset, warn_unrecognized=False)
+    return inc._rows_to_posts(incidence.posts, incidence.matrix.dot(keep) > 0)
+
+
+def at_risk_affected_posts(incidence, term_subset, vocab, pairs=None):
+    """重聚合**可能**判错的那批帖子（重扫只需要读这些）
+
+    条件三条同时成立：
+    1) 是表达帖（非表达帖不进任何内容指标的分子分母）；
+    2) 在本子集下按存量重聚合判定为**不命中**；
+    3) 存量计数里含有至少一个"可能掩盖住某个保留词"的被剔除词——完整口径
+       （子串嵌套 **加上** 边界重叠，见 incidence.at_risk_pairs），不是
+       只看子串的那一小半。
+
+    第 2 条是重聚合唯一可能出错的方向（重聚合判命中的帖子，其保留词必然
+    真实出现在正文里，重扫不可能翻案）。第 3 条把范围收到"按我们理解的
+    匹配失效方式，有可能翻案"的那些帖子上——**这一条是一个理论假设，不是
+    事实**：如果还有没想到的失效方式，符合第 1、2 条却不符合第 3 条的帖子
+    同样可能翻案，而本函数不会把它们交出去。random_nonhit_probe 存在的
+    意义正是去测这一块。
+
+    Returns:
+        DataFrame，列为 weibo_id / user_id / month。行数恰好等于
+        incidence.reaggregation_exposure 报的 n_expressive_posts_possibly_lost。
+    """
+    posts = incidence.posts
+    dropped = inc.at_risk_dropped_terms(vocab, term_subset, pairs=pairs)
+    if not dropped or incidence.matrix.shape[1] == 0:
+        return _empty_post_frame()
+
+    risk_vec = np.zeros(incidence.matrix.shape[1], dtype=np.int32)
+    for term in dropped:
+        col = incidence.term_index.get(term)
+        if col is not None:
+            risk_vec[col] = 1
+
+    post_risk = inc._rows_to_posts(posts, incidence.matrix.dot(risk_vec) > 0)
+    post_hit = _reaggregated_hit_mask(incidence, term_subset)
+    expressive = posts["is_expressive"].to_numpy(dtype=bool)
+    return _post_frame(posts, post_risk & (~post_hit) & expressive)
+
+
+def sample_nonhit_posts(incidence, term_subset, n_probe=DEFAULT_N_PROBE, seed=0):
+    """从**全部**"重聚合判不命中的表达帖"里等概率随机抽 n_probe 条
+
+    与 at_risk_affected_posts 的区别是关键：那一个只交出"按理论会翻案"的
+    帖子，这一个完全不看词表关系。因此在这批帖子上量到的翻案率，是对
+    "重聚合到底漏判了多少"的**无偏**估计，哪怕我们对匹配失效方式的理解
+    是错的、漏的。
+
+    Returns:
+        (抽样帧, 该子集下不命中表达帖的总数)
+    """
+    posts = incidence.posts
+    post_hit = _reaggregated_hit_mask(incidence, term_subset)
+    expressive = posts["is_expressive"].to_numpy(dtype=bool)
+    candidates = np.flatnonzero((~post_hit) & expressive)
+    n_total = int(candidates.size)
+    if n_total == 0 or n_probe <= 0:
+        return _empty_post_frame(), n_total
+
+    rng = np.random.default_rng(seed)
+    take = min(int(n_probe), n_total)
+    picked = rng.choice(candidates, size=take, replace=False)
+    picked.sort()
+    mask = np.zeros(len(posts), dtype=bool)
+    mask[picked] = True
+    return _post_frame(posts, mask), n_total
+
+
+def _clopper_pearson(n_success, n_total, confidence=0.95):
+    """二项比例的 Clopper-Pearson 精确区间
+
+    抽样检验的意义全在区间上：抽 500 条一条都没翻案，结论不是"漏判率是
+    0"，而是"漏判率的 95% 上限约 0.7%"。只报点估计会把后者说成前者。
+    """
+    if n_total <= 0:
+        return float("nan"), float("nan")
+    alpha = 1.0 - confidence
+    low = 0.0 if n_success == 0 else float(
+        sps.beta.ppf(alpha / 2, n_success, n_total - n_success + 1)
+    )
+    high = 1.0 if n_success == n_total else float(
+        sps.beta.ppf(1 - alpha / 2, n_success + 1, n_total - n_success)
+    )
+    return low, high
+
+
+def random_nonhit_probe(context, domain, term_subset, plan=None, text_cache=None,
+                        n_probe=DEFAULT_N_PROBE, seed=0):
+    """独立检验：随机抽的"不命中表达帖"里，实际有多大比例其实命中
+
+    这是本模块唯一一个**不依赖"风险集定义对不对"**的证据。返回的
+    probe_implied_missed_posts 是按抽样翻案率推回全体的漏判帖数，可以直接
+    与 n_expressive_posts_recovered（风险集之内实际找回的帖数）比较：后者
+    明显小于前者，就说明风险集漏掉了成规模的失效方式。
+    """
+    incidence = context.incidence[domain]
+    if plan is None:
+        plan = plan_calibration(context, domain, term_subset, n_probe=n_probe, seed=seed)
+    probe, n_nonhit = plan.probe, plan.n_nonhit
+    if len(probe) == 0:
+        return {
+            "n_nonhit_expressive_posts": int(n_nonhit),
+            "n_probe_sampled": 0, "n_probe_flipped": 0,
+            "n_probe_flipped_outside_at_risk": 0,
+            "probe_flip_rate": np.nan,
+            "probe_flip_rate_ci_low": np.nan, "probe_flip_rate_ci_high": np.nan,
+            "probe_implied_missed_posts": np.nan,
+        }
+
+    hits = rescan_hits(context.year, probe, term_subset, text_cache=text_cache)
+    flipped = hits["hit"].to_numpy(dtype=bool)
+    outside = ~np.isin(hits["weibo_id"].to_numpy(), plan.probe_at_risk)
+    n_flipped = int(flipped.sum())
+    n_sampled = int(len(hits))
+    rate = n_flipped / n_sampled
+    low, high = _clopper_pearson(n_flipped, n_sampled)
+    print(
+        "{} 随机抽样检验: 抽 {} 条不命中表达帖，实际命中 {} 条"
+        "（其中风险集之外 {} 条），翻案率 {:.3%}（95% CI {:.3%}-{:.3%}）".format(
+            domain, n_sampled, n_flipped, int((flipped & outside).sum()),
+            rate, low, high,
+        )
+    )
+    return {
+        "n_nonhit_expressive_posts": int(n_nonhit),
+        "n_probe_sampled": n_sampled,
+        "n_probe_flipped": n_flipped,
+        "n_probe_flipped_outside_at_risk": int((flipped & outside).sum()),
+        "probe_flip_rate": float(rate),
+        "probe_flip_rate_ci_low": float(low),
+        "probe_flip_rate_ci_high": float(high),
+        "probe_implied_missed_posts": float(rate * n_nonhit),
+    }
+
+
+def plan_calibration(context, domain, term_subset, n_probe=DEFAULT_N_PROBE, seed=0):
+    """一次校准需要读回正文的两批帖子（风险集之内 + 随机抽样），纯矩阵运算"""
+    incidence = context.incidence[domain]
+    affected = at_risk_affected_posts(
+        incidence, term_subset, context.vocab[domain],
+        pairs=context.risk_pairs.get(domain),
+    )
+    probe, n_nonhit = sample_nonhit_posts(
+        incidence, term_subset, n_probe=n_probe, seed=seed
+    )
+    at_risk_ids = set(affected["weibo_id"]) if len(affected) else set()
+    probe_at_risk = np.array(
+        [wid for wid in probe["weibo_id"]] if len(probe) else [], dtype=object
+    )
+    probe_at_risk = np.array(
+        [wid for wid in probe_at_risk if wid in at_risk_ids], dtype=object
+    )
+    return CalibrationPlan(
+        affected=affected, probe=probe, probe_at_risk=probe_at_risk,
+        n_nonhit=n_nonhit,
+    )
 
 
 def load_post_texts(year, affected):
@@ -530,25 +725,39 @@ def rescan_hits(year, affected, term_subset, text_cache=None):
     )
 
 
-def calibrate_topical(context, domain, term_subset, text_cache=None):
-    """对一个词表子集做精确重扫校准
+def calibrate_topical(context, domain, term_subset, plan=None, text_cache=None,
+                      n_probe=DEFAULT_N_PROBE, probe_seed=0):
+    """对一个词表子集做重扫校准（风险集之内）加一次随机抽样检验
 
     Returns:
         (reagg, corrected, stats)
         - reagg: 存量重聚合的逐用户 topical 指标
-        - corrected: 精确口径（重聚合 + 重扫翻案的那批帖子）
-        - stats: 实测偏差。delta 一律定义为 **重聚合 - 精确值**，因此
-          恒 <= 0（低估）；从来没有翻案时全部为 0，而不是 NaN。
+        - corrected: **在风险集之内修正过**的口径（重聚合 + 重扫翻案的
+          那批帖子）。刻意不叫"精确值"：它只修正了 at_risk_affected_posts
+          交出来的那批帖子，如果风险集本身漏了某类失效方式，这一侧同样
+          偏低，于是 stats 里的 delta 是重聚合误差的**下界**而不是上界。
+        - stats: 实测偏差 + 随机抽样检验。delta 一律定义为
+          **重聚合 - 修正值**，因此恒 <= 0（低估）；一条都没翻案时是 0
+          而不是 NaN。
     """
-    incidence = context.incidence[domain]
     vocab = context.vocab[domain]
     reagg = topical_for_subset(context, domain, term_subset)
+    if plan is None:
+        plan = plan_calibration(
+            context, domain, term_subset, n_probe=n_probe, seed=probe_seed
+        )
+    affected = plan.affected
 
-    affected = shadowing_affected_posts(incidence, term_subset, vocab)
-    exposure = inc.shadowing_exposure(incidence, term_subset, vocab)
+    # 一致性检查：受影响帖子集合与暴露面必须同一口径。注意它只能发现
+    # "本模块与 incidence 的两处实现分叉了"，**发现不了"两处用的是同一个
+    # 不完整的定义"**——那件事只有随机抽样检验才看得见。
+    exposure = inc.reaggregation_exposure(
+        context.incidence[domain], term_subset, vocab,
+        pairs=context.risk_pairs.get(domain),
+    )
     if len(affected) != exposure["n_expressive_posts_possibly_lost"]:
         raise ValueError(
-            "受影响帖子数 {} 与 shadowing_exposure 报的上界 {} 不一致，"
+            "受影响帖子数 {} 与 reaggregation_exposure 报的 {} 不一致，"
             "两处口径已经分叉，校准结果不可信".format(
                 len(affected), exposure["n_expressive_posts_possibly_lost"]
             )
@@ -594,13 +803,17 @@ def calibrate_topical(context, domain, term_subset, text_cache=None):
         "n_users_with_delta": int((finite != 0).sum()),
     }
     print(
-        "{} 校准: 重扫 {} 条，翻案 {} 条（上界 {}），"
+        "{} 校准: 风险集内重扫 {} 条，翻案 {} 条，"
         "逐用户 topical_share 平均偏差 {:.4f}，最差 {:.4f}".format(
             domain, stats["n_posts_rescanned"], stats["n_expressive_posts_recovered"],
-            stats["n_expressive_posts_possibly_lost"],
             stats["mean_delta_topical_share"], stats["max_abs_delta_topical_share"],
         )
     )
+    # 独立检验与上面的修正是两件事：它只测量、不参与修正 corrected，
+    # 因为抽样只能给出比例，落不到具体是哪几条帖子上。
+    stats.update(random_nonhit_probe(
+        context, domain, term_subset, plan=plan, text_cache=text_cache
+    ))
     return reagg, corrected, stats
 
 
@@ -611,15 +824,20 @@ def calibrate_topical(context, domain, term_subset, text_cache=None):
 def diagnostics_row(context, domain, term_subset, variant_label, replicate=0,
                     seed=None, variant_family=VARIANT_FAMILY, calibration=None,
                     note=None):
-    """一个 (变体, replicate, 领域) 的诊断行
+    """一个 (变体, 领域) 的诊断行
 
-    这一行回答的是"这次剔了多少词、有多少保留词被遮蔽、最多可能错几条
-    帖子"，以及（校准过的话）"实测错了多少"。未校准的 replicate 的校准
-    字段一律是 NaN，不是 0——"没测过"与"测出来是 0"必须能分开。
+    这一行回答三件事：这次剔了多少词；风险集有多大（完整口径与只看子串的
+    口径并列）；以及校准过的话，风险集之内实测错了多少、风险集之外的随机
+    抽样又看到了什么。未校准的 replicate 的后两组字段一律是 NaN，不是 0——
+    "没测过"与"测出来是 0"必须能分开。
     """
     vocab = context.vocab[domain]
     retained = inc.normalize_vocabulary(term_subset)
-    exposure = inc.shadowing_exposure(context.incidence[domain], retained, vocab)
+    pairs = context.risk_pairs.get(domain)
+    full = inc.reaggregation_exposure(
+        context.incidence[domain], retained, vocab, pairs=pairs
+    )
+    narrow = inc.shadowing_exposure(context.incidence[domain], retained, vocab)
     row = {
         "variant_family": variant_family,
         "variant_label": variant_label,
@@ -629,30 +847,48 @@ def diagnostics_row(context, domain, term_subset, variant_label, replicate=0,
         "n_vocab_terms": len(vocab),
         "n_retained_terms": len(retained),
         "retained_fraction": len(retained) / len(vocab) if vocab else np.nan,
-        "n_shadowed_terms": int(exposure["n_shadowed_terms"]),
-        "shadowed_share_of_retained": float(exposure["shadowed_share_of_retained"]),
-        "n_shadowing_dropped_terms": int(exposure["n_shadowing_dropped_terms"]),
-        "n_posts_with_shadowing_term": int(exposure["n_posts_with_shadowing_term"]),
+        "n_at_risk_terms": int(full["n_shadowed_terms"]),
+        "at_risk_share_of_retained": float(full["shadowed_share_of_retained"]),
+        "n_at_risk_dropped_terms": int(full["n_shadowing_dropped_terms"]),
+        "n_posts_with_at_risk_term": int(full["n_posts_with_shadowing_term"]),
         "n_expressive_posts_possibly_lost": int(
-            exposure["n_expressive_posts_possibly_lost"]
+            full["n_expressive_posts_possibly_lost"]
+        ),
+        "n_shadowed_terms": int(narrow["n_shadowed_terms"]),
+        "n_posts_with_shadowing_term": int(narrow["n_posts_with_shadowing_term"]),
+        "n_expressive_posts_possibly_lost_substring_only": int(
+            narrow["n_expressive_posts_possibly_lost"]
         ),
         "calibrated": calibration is not None,
-        "n_posts_rescanned": np.nan,
-        "n_expressive_posts_recovered": np.nan,
-        "reagg_topical_posts": np.nan,
-        "rescan_topical_posts": np.nan,
-        "mean_delta_topical_share": np.nan,
-        "max_abs_delta_topical_share": np.nan,
-        "n_users_with_delta": np.nan,
         "note": note,
     }
+    for key in _CALIBRATION_FIELDS:
+        row[key] = np.nan
     if calibration is not None:
-        for key in ("n_posts_rescanned", "n_expressive_posts_recovered",
-                    "reagg_topical_posts", "rescan_topical_posts",
-                    "mean_delta_topical_share", "max_abs_delta_topical_share",
-                    "n_users_with_delta"):
-            row[key] = float(calibration[key])
+        for key in _CALIBRATION_FIELDS:
+            value = calibration.get(key, np.nan)
+            row[key] = float(value) if value is not None else np.nan
     return row
+
+
+# 诊断表里"只有校准过才有值"的那些列
+_CALIBRATION_FIELDS = (
+    "n_posts_rescanned",
+    "n_expressive_posts_recovered",
+    "reagg_topical_posts",
+    "rescan_topical_posts",
+    "mean_delta_topical_share",
+    "max_abs_delta_topical_share",
+    "n_users_with_delta",
+    "n_nonhit_expressive_posts",
+    "n_probe_sampled",
+    "n_probe_flipped",
+    "n_probe_flipped_outside_at_risk",
+    "probe_flip_rate",
+    "probe_flip_rate_ci_low",
+    "probe_flip_rate_ci_high",
+    "probe_implied_missed_posts",
+)
 
 
 def append_diagnostics(rows, path):
@@ -660,6 +896,10 @@ def append_diagnostics(rows, path):
 
     单独实现是因为它的 schema 不是 ROBUSTNESS_SCHEMA：harness.append_rows
     读旧文件时显式点名共享 schema 的列，用它写诊断表会把诊断列全丢掉。
+
+    与 harness.append_rows 一样**不去重**：同一个 year 跑第二次 build()
+    会让表翻倍，(variant_family, variant_label, domain) 也就不再唯一。
+    这是本套件一贯的行为（重跑前先删旧文件），不是这里额外保证的不变量。
     """
     if path is None:
         return None
@@ -727,6 +967,36 @@ def _note_only_rows(variant_label, note, outcome, domain, out_path=None,
     return frame
 
 
+def _annotate_note(frame, text):
+    """在结果行的 note 上追加一段说明，不覆盖已有内容
+
+    确定性的词表构成变体（例如只留 3 字以上的词）必须在结果行上自己说清
+    "剔的是什么、剩下多少"，否则读者拿到 vocabulary.parquet 一张表时，
+    `drop_short_terms_min3` 这个标签背后是剔了 5 个词还是 337 个词完全看
+    不出来。已有的 note 是拟合失败的留痕，绝不能被覆盖，所以是追加。
+    """
+    if not text:
+        return frame
+    frame = frame.copy()
+    frame["note"] = [
+        text if existing is None or (isinstance(existing, float) and existing != existing)
+        else "{};{}".format(existing, text)
+        for existing in frame["note"]
+    ]
+    return frame
+
+
+def _subset_note(context, subsets, prefix=None):
+    """"这次每个领域保留了多少词"的紧凑说明，供 _annotate_note 用"""
+    parts = [] if not prefix else [prefix]
+    for domain in sorted(subsets):
+        retained = len(inc.normalize_vocabulary(subsets[domain]))
+        total = len(context.vocab[domain])
+        parts.append("{}_retained={}/{}({:.1%})".format(
+            domain, retained, total, retained / total if total else float("nan")))
+    return ";".join(parts)
+
+
 def _run_subset_variant(context, subsets, variant_label, out_path, diag_path,
                         replicate=0, seed=None, note=None):
     """一个确定性词表变体：两个领域各换一份词表，估一次六个量，写两行诊断"""
@@ -735,7 +1005,13 @@ def _run_subset_variant(context, subsets, variant_label, out_path, diag_path,
         for domain, subset in subsets.items()
     }
     user_df = user_frame_with_topical(context.user_table, topical)
-    rows = _estimate_and_append(user_df, variant_label, replicate, seed, out_path)
+    rows = harness.estimate_all(
+        user_df, variant_family=VARIANT_FAMILY, variant_label=variant_label,
+        replicate=replicate, seed=seed,
+    )
+    rows = _annotate_note(rows, _subset_note(context, subsets, prefix=note))
+    if out_path is not None:
+        harness.append_rows(rows, out_path)
     append_diagnostics(
         [
             diagnostics_row(context, domain, subset, variant_label,
@@ -765,39 +1041,55 @@ def calibration_replicates(n_replicates, n_calibration):
     return {int(p) for p in picks}
 
 
-def _prefetch_calibration_texts(context, subsets_by_replicate, calibrate):
-    """被校准的那些 replicate 的受影响帖子并集，一次读回正文
+def _prepare_calibration(context, subsets_by_replicate, calibrate, seeds,
+                         n_probe=DEFAULT_N_PROBE):
+    """为全部被校准的 replicate 备好两批帖子，并一次把正文读回来
 
-    并集只靠矩阵运算得到，不需要读任何正文；读回来的正文在整个
-    run_resampling 里共用，因此全年日文件只被扫一遍。calibrate 为空时
-    返回 None（完全不碰原始层——没有原始数据的机器照样能跑重采样）。
+    两批帖子（风险集之内要重扫的、随机抽样检验要重扫的）都只靠矩阵运算
+    得到，不需要读任何正文；把它们的并集一次读完，全年日文件就只被扫一遍。
+    每个被校准的 replicate 各扫一遍，在真实数据上是几个小时的纯 IO。
+
+    calibrate 为空时返回 ({}, None)：完全不碰原始层，没有原始数据的机器
+    照样能跑重采样。
     """
     if not calibrate:
-        return None
+        return {}, None
+    plans = {}
     frames = []
     for replicate in sorted(calibrate):
+        plans[replicate] = {}
         for domain, subset in subsets_by_replicate[replicate].items():
-            frames.append(shadowing_affected_posts(
-                context.incidence[domain], subset, context.vocab[domain]
-            ))
-    union = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(
-        columns=["weibo_id", "user_id", "month"]
-    )
+            # 抽样种子挂在 replicate 种子上：同一次运行可复现，不同
+            # replicate 抽到的又不是同一批帖子
+            plan = plan_calibration(
+                context, domain, subset, n_probe=n_probe,
+                seed=_domain_seed(seeds[replicate], domain),
+            )
+            plans[replicate][domain] = plan
+            frames.extend([plan.affected, plan.probe])
+    union = pd.concat(frames, ignore_index=True) if frames else _empty_post_frame()
     if len(union):
         union = union.drop_duplicates(subset=["weibo_id"], keep="first")
-    print("{} 个被校准的 replicate 合计受影响帖子 {:,} 条（并集），一次读回原文".format(
+    print("{} 个被校准的 replicate 合计需要原文 {:,} 条（并集），一次读回".format(
         len(calibrate), len(union)))
-    return load_post_texts(context.year, union)
+    return plans, load_post_texts(context.year, union)
 
 
 def run_resampling(year=config.YEAR, n_replicates=200, keep=0.8, seed=0,
-                   n_calibration=DEFAULT_N_CALIBRATION, context=None,
-                   out_path=None, diag_path=None):
+                   n_calibration=DEFAULT_N_CALIBRATION, n_probe=DEFAULT_N_PROBE,
+                   context=None, out_path=None, diag_path=None):
     """随机保留 keep 比例的词表重采样，逐 replicate 落盘
 
     每个 replicate：两个领域各抽一份词表子集 -> 重聚合逐用户 topical ->
     估六个量 -> 立刻落盘 -> 写两行诊断。被抽中校准的 replicate 额外做一次
-    精确重扫，并把"重聚合 / 重扫"两组估计成对写进 CALIBRATION_FAMILY。
+    风险集内重扫（成对写进 CALIBRATION_FAMILY）和一次随机抽样检验
+    （只写进诊断表）。
+
+    **偏差不是一个常数。** 它随这个 replicate 剔掉了多少"可能掩盖保留词"
+    的词而变（实测：k=0/5/15/80/167 个容器词对应 0 / -0.0010 / -0.0040 /
+    -0.0093 / -0.0233），因此 keep 越低偏差越大、离散度也越大。所以诊断表
+    逐 replicate 记 n_at_risk_terms，让下游能把偏差与它对上，而不是套用
+    某一次运行里的一个平均数。
     """
     context = context or build_context(year)
     seeds = replicate_seeds(seed, n_replicates)
@@ -826,8 +1118,8 @@ def run_resampling(year=config.YEAR, n_replicates=200, keep=0.8, seed=0,
         }
         for replicate in range(n_replicates)
     ]
-    text_cache = _prefetch_calibration_texts(
-        context, subsets_by_replicate, calibrate
+    plans, text_cache = _prepare_calibration(
+        context, subsets_by_replicate, calibrate, seeds, n_probe=n_probe
     )
 
     collected = []
@@ -846,11 +1138,13 @@ def run_resampling(year=config.YEAR, n_replicates=200, keep=0.8, seed=0,
         collected.append(rows)
 
         calibration_stats = {}
+        diagnostic_rows = []
         if replicate in calibrate:
             corrected = {}
             for domain, subset in subsets.items():
                 _, corrected_domain, stats = calibrate_topical(
-                    context, domain, subset, text_cache=text_cache
+                    context, domain, subset, plan=plans[replicate][domain],
+                    text_cache=text_cache,
                 )
                 corrected[domain] = corrected_domain
                 calibration_stats[domain] = stats
@@ -868,18 +1162,28 @@ def run_resampling(year=config.YEAR, n_replicates=200, keep=0.8, seed=0,
                 out_path, variant_family=CALIBRATION_FAMILY,
             )
             collected.extend([paired_reagg, paired_rescan])
-
-        append_diagnostics(
-            [
-                diagnostics_row(
-                    context, domain, subsets[domain], label, replicate=replicate,
-                    seed=replicate_seed,
-                    calibration=calibration_stats.get(domain),
+            # 校准家族的两个标签各自也要有诊断行：它们是最可能被引用的行，
+            # 不能要求读者剥掉 "_reaggregated" 后缀才找得到自己的诊断。
+            for suffix in ("_reaggregated", "_rescanned"):
+                diagnostic_rows.extend(
+                    diagnostics_row(
+                        context, domain, subsets[domain], label + suffix,
+                        replicate=replicate, seed=replicate_seed,
+                        variant_family=CALIBRATION_FAMILY,
+                        calibration=calibration_stats.get(domain),
+                        note="paired_with:{}".format(label),
+                    )
+                    for domain in sorted(subsets)
                 )
-                for domain in subsets
-            ],
-            diag_path,
+
+        diagnostic_rows.extend(
+            diagnostics_row(
+                context, domain, subsets[domain], label, replicate=replicate,
+                seed=replicate_seed, calibration=calibration_stats.get(domain),
+            )
+            for domain in sorted(subsets)
         )
+        append_diagnostics(diagnostic_rows, diag_path)
 
     return pd.concat(collected, ignore_index=True) if collected else pd.DataFrame(
         columns=list(harness.ROBUSTNESS_SCHEMA)
@@ -959,7 +1263,12 @@ def run_drop_short_terms(year=config.YEAR, min_len=3, context=None,
 
 def run_drop_nested_terms(year=config.YEAR, context=None, out_path=None,
                           diag_path=None):
-    """剔除全部嵌套词：这之后任何子集的重聚合都与重扫原文精确相等"""
+    """剔除全部子串嵌套词
+
+    注意：这**不能**让重聚合变得精确。它只消掉了嵌套这一类掩盖方式，
+    边界重叠（真实公共事务词表 1502 对有序词对）原封不动地留着，诊断行
+    里的 n_at_risk_terms 会照实反映这一点。
+    """
     context = context or build_context(year)
     subsets = {
         domain: drop_nested_terms(context.vocab[domain]) for domain in context.vocab
@@ -1005,7 +1314,7 @@ def run_celebrity_person_only(year=config.YEAR, categories=None, context=None,
 # ---------------------------------------------------------------------------
 
 def build(year=config.YEAR, n_replicates=200, keep=0.8, seed=0,
-          n_calibration=DEFAULT_N_CALIBRATION, min_len=3):
+          n_calibration=DEFAULT_N_CALIBRATION, n_probe=DEFAULT_N_PROBE, min_len=3):
     """§13.3 全部词表变体，逐 replicate 增量落盘，最后写 manifest"""
     context = build_context(year)
     out_path = results_path()
@@ -1013,7 +1322,7 @@ def build(year=config.YEAR, n_replicates=200, keep=0.8, seed=0,
     os.makedirs(robustness_dir(), exist_ok=True)
 
     run_resampling(year, n_replicates=n_replicates, keep=keep, seed=seed,
-                   n_calibration=n_calibration, context=context,
+                   n_calibration=n_calibration, n_probe=n_probe, context=context,
                    out_path=out_path, diag_path=diag_path)
     run_leave_one_category_out(year, context=context, out_path=out_path,
                                diag_path=diag_path)
@@ -1048,6 +1357,7 @@ def build(year=config.YEAR, n_replicates=200, keep=0.8, seed=0,
             "calibration_replicates": sorted(
                 calibration_replicates(n_replicates, n_calibration)
             ),
+            "n_probe": n_probe,
             "min_len": min_len,
             # 逐 replicate 的诊断表另有一份，这里只记它在哪
             "diagnostics_file": os.path.basename(diag_path),
@@ -1057,12 +1367,17 @@ def build(year=config.YEAR, n_replicates=200, keep=0.8, seed=0,
             "diagnostic_rows": int(len(diagnostics)),
             "variant_labels": int(results["variant_label"].nunique()),
             # 校准的实测偏差摘要：这是"重聚合到底靠不靠得住"的证据，
-            # 不是一句"影响很小"的断言
+            # 不是一句"影响很小"的断言。摘要是**这一次运行**的，不是常数：
+            # 偏差随每个 replicate 剔掉多少风险词而变。
             "calibration": {
                 "n_calibrated_rows": int(len(calibrated)),
                 "mean_delta_topical_share": (
                     float(calibrated["mean_delta_topical_share"].mean())
                     if len(calibrated) else None
+                ),
+                "sd_delta_topical_share": (
+                    float(calibrated["mean_delta_topical_share"].std())
+                    if len(calibrated) > 1 else None
                 ),
                 "worst_delta_topical_share": (
                     float(calibrated["max_abs_delta_topical_share"].max())
@@ -1071,6 +1386,24 @@ def build(year=config.YEAR, n_replicates=200, keep=0.8, seed=0,
                 "posts_recovered": (
                     int(calibrated["n_expressive_posts_recovered"].sum())
                     if len(calibrated) else 0
+                ),
+            },
+            # 不依赖风险集定义的那一条证据：随机抽样看到的翻案率，以及
+            # 其中落在风险集之外的部分（> 0 就说明风险集还漏了失效方式）
+            "random_probe": {
+                "n_sampled": (
+                    int(calibrated["n_probe_sampled"].sum()) if len(calibrated) else 0
+                ),
+                "n_flipped": (
+                    int(calibrated["n_probe_flipped"].sum()) if len(calibrated) else 0
+                ),
+                "n_flipped_outside_at_risk": (
+                    int(calibrated["n_probe_flipped_outside_at_risk"].sum())
+                    if len(calibrated) else 0
+                ),
+                "implied_missed_posts": (
+                    float(calibrated["probe_implied_missed_posts"].sum())
+                    if len(calibrated) else 0.0
                 ),
             },
         },
