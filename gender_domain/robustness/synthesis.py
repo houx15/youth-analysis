@@ -88,7 +88,7 @@ BASELINE_FAMILY = "baseline"
 # manifest，也会被测试引用。
 BASELINE_SOURCE_ROWS = "robustness_rows:variant_family=baseline"
 BASELINE_SOURCE_MAIN_RESULTS = "analysis_data/results:{}"
-BASELINE_SOURCE_RECOMPUTED = "recomputed_by_harness.baseline_from:{}"
+BASELINE_SOURCE_RECOMPUTED = "recomputed_by_harness.estimate_all_from:{}"
 BASELINE_SOURCE_UNAVAILABLE = "unavailable:no_baseline_rows_no_main_results"
 
 # 参照取不到时，占位行的 note 前缀（下游按子串识别）
@@ -129,7 +129,17 @@ PAIRED_FAMILIES = (voc.CALIBRATION_FAMILY,)
 # M2 层只有 §13.9 那一族会产出（方案文档 §11.4：M2 会收窄样本，混进其它
 # 比较会混淆结论）。因此"这一层缺了哪些族"在 M2 上只能拿这一族去比——
 # 按全套十个族去比，M2 会永远显示缺九个族，那不是一条信息，是噪声。
+M2_LAYER = "M2"
 M2_ONLY_FAMILIES = (smp.VARIANT_FAMILY_USER_TYPE,)
+
+# judge 里那块 §13.9 指路牌上写的话。**它是指路牌，不是第五条准则。**
+M2_POINTER_NOTE = (
+    "M2(account_profile_controls,13.9)_is_reported_separately_and_is_NOT_folded_"
+    "into_any_criterion_on_this_row:11.4_restricts_the_M2_sample,so_M2_estimates_"
+    "are_not_comparable_to_the_M0/M1_numbers_beside_them;"
+    "per-variant_M2_rows_live_in_synthesis_direction.parquet_and_"
+    "synthesis_specification_curve.parquet(model=='M2')"
+)
 
 # "这个变体按构造碰不到这个量"的 note 标记。**只能用子串匹配**：note 是
 # 追加的，前面还挂着这个变体自己的说明。
@@ -169,8 +179,18 @@ _UNIT_BY_FAMILY = {
     mea.VARIANT_FAMILY_POST_TYPE: UNIT_MEASUREMENT,
 }
 
-# accounts 族里"动的是单个账号"的标签前缀/片段（见 accounts.py 的标签构造）
-_SINGLE_ACCOUNT_MARKERS = ("loo_", "_exclude_top")
+# accounts 族里"动的**恰好是一个**账号"的标签前缀（见 accounts.py 的标签
+# 构造：`loo_{domain}_rank{NN}_{account_id}`，逐个剔除转发量最高的 top_n 个
+# 账号，每次只剔一个）。
+#
+# **`{domain}_exclude_top{k}` 刻意不在这里面。** 它的 k 取 (1, 5, 10)，
+# `public_exclude_top10` 一次剔掉十个账号；把它算成"单个账号"，就意味着
+# judge 里回答 §13.5 那个核心问题（"这个结论是不是一个账号撑起来的"）的
+# 数字，可能是由删掉十个账号得到的——那是另一个问题的答案。因此它落到
+# `account_set`。这样不会丢掉任何信息：k=1 那一条与 `loo_..._rank01_...`
+# 剔的是同一个账号（都是转发量第一名），单账号的情形已经被 loo_ 精确、
+# 且穷尽地覆盖了。
+_SINGLE_ACCOUNT_MARKERS = ("loo_",)
 
 # 影响力阈值：**一个说出来的分数**，不是一个藏在代码里的判断。默认 0.5，
 # 即"某个单位把估计推开了基线一半以上"，写进每一行与 manifest。
@@ -615,7 +635,7 @@ def _first_note(group):
 
 def expected_families_for(model, families=EXPECTED_VARIANT_FAMILIES):
     """这一层上**应当**出现的 variant_family（M2 只有 §13.9 那一族）"""
-    return tuple(M2_ONLY_FAMILIES) if model == "M2" else tuple(families)
+    return tuple(M2_ONLY_FAMILIES) if model == M2_LAYER else tuple(families)
 
 
 def _family_status(group_all, families):
@@ -669,7 +689,13 @@ def direction_consistency(df, families=EXPECTED_VARIANT_FAMILIES):
                 share = n_agree / float(len(live))
                 ci_low, ci_high = su.proportion_ci(n_agree, len(live))
             else:
-                n_agree, share, ci_low, ci_high = 0, np.nan, np.nan, np.nan
+                # 参照拿不到、或者一个活着的估计都没有：这次比较**根本
+                # 没能做**。n_agree 必须也写 NaN，不能写 0——写 0 会让
+                # 一个从没做过的比较读起来像"0 / n_live 个变体同号"，
+                # 即一次全面的不一致。这与本模块在方向一致率分母上守的
+                # 是同一条纪律：做不到的事不能渲染成一条负面事实。
+                n_agree, share, ci_low, ci_high = (
+                    np.nan, np.nan, np.nan, np.nan)
 
             tested, not_applicable, failed, missing = _family_status(
                 group, expected_families_for(model, families))
@@ -685,7 +711,7 @@ def direction_consistency(df, families=EXPECTED_VARIANT_FAMILIES):
                 "n_rows": int(len(group)),
                 "n_live": int(len(live)),
                 "n_nan": int(len(group) - len(live)),
-                "n_agree": int(n_agree),
+                "n_agree": float(n_agree) if n_agree == n_agree else np.nan,
                 "share_agree": float(share) if share == share else np.nan,
                 "share_ci_low": float(ci_low) if ci_low == ci_low else np.nan,
                 "share_ci_high": float(ci_high) if ci_high == ci_high else np.nan,
@@ -728,6 +754,10 @@ def activity_attenuation(df, layer_from="M0", layer_to="M1"):
     rows = []
     for quantity in harness.QUANTITIES:
         group = pool[pool["quantity"] == quantity]
+        # values 是**两层都活着**的配对；其中 M0 恰好等于 0 的那些配对算不出
+        # 衰减（分母为 0），进 finite 不了。两个计数必须分开报，否则
+        # n_variant_pairs 说"有 N 对"、而中位数/分位数只用了其中一部分，
+        # 读者无从知道差在哪里。
         values, flips = [], 0
         key = ["variant_family", "variant_label", "replicate"]
         if len(group):
@@ -753,7 +783,11 @@ def activity_attenuation(df, layer_from="M0", layer_to="M1"):
             "baseline_estimate_M0": float(b0) if b0 == b0 else np.nan,
             "baseline_estimate_M1": float(b1) if b1 == b1 else np.nan,
             "baseline_attenuation": _attenuation(b0, b1),
-            "n_variant_pairs": int(len(values)),
+            # n_variant_pairs 与下面的分位数**口径一致**：都只数算得出衰减
+            # 的那些配对
+            "n_variant_pairs": int(len(finite)),
+            "n_matched_pairs": int(len(values)),
+            "n_pairs_attenuation_undefined": int(len(values) - len(finite)),
             "attenuation_median": float(np.median(finite)) if finite else np.nan,
             "attenuation_p10": float(np.percentile(finite, 10)) if finite else np.nan,
             "attenuation_p90": float(np.percentile(finite, 90)) if finite else np.nan,
@@ -810,7 +844,10 @@ def influence_summary(df, threshold=DEFAULT_INFLUENCE_THRESHOLD):
             max_shift = float(shift.iloc[position])
             n_exceeding = int((shift > float(threshold)).sum())
         else:
-            worst, max_shift, n_exceeding = None, np.nan, 0
+            # 参照拿不到（或这一格没有活着的估计）时，"有没有越过阈值"
+            # 这个问题**没被问过**。n_exceeding 与 exceeds_threshold 都写
+            # 空值，不写 0 / False——后者读起来是"问过了，没越过"。
+            worst, max_shift, n_exceeding = None, np.nan, np.nan
         rows.append({
             "quantity": quantity,
             "model": model,
@@ -825,8 +862,9 @@ def influence_summary(df, threshold=DEFAULT_INFLUENCE_THRESHOLD):
             "worst_estimate": np.nan if worst is None else float(worst["estimate"]),
             "threshold": float(threshold),
             "n_exceeding": n_exceeding,
-            "exceeds_threshold": bool(max_shift == max_shift
-                                      and max_shift > float(threshold)),
+            "exceeds_threshold": (
+                bool(max_shift > float(threshold))
+                if max_shift == max_shift else None),
         })
     return pd.DataFrame(rows)
 
@@ -1050,9 +1088,17 @@ def judge(df, threshold=DEFAULT_INFLUENCE_THRESHOLD, layers=DEFAULT_LAYERS):
     4/4 但四个变体全来自同一族"这种局面。
 
     `layers` 默认只有 M0/M1：M2 只有 §13.9 那一族会产出（方案文档 §11.4，
-    M2 会收窄样本），把它摆进跨族比较里只会混淆结论。M2 的那些行仍然在
-    `direction_consistency` / `specification_curve_data` 里逐层可查，只是
-    不进这张逐量一行的汇总表。
+    M2 会收窄样本），把它摆进跨族比较里只会混淆结论——"变体同号比例"由
+    一个族算出来根本不是 §13.10 的准则一。**四条准则一律按 `layers` 过滤**，
+    包括准则三：一个 M2 变体不允许把它在受限样本上的偏移贡献给一行其余
+    数字全是 M0/M1 的记录。
+
+    但 §13.9 本身是论文欠读者的一个交代，judge 不能对它只字不提。因此这里
+    放一块**指路牌**（不是第五条准则）：`n_M2_variants`、
+    `m2_direction_share_profile_family` 与 `m2_pointer`，告诉读者 M2 的答案
+    在 `synthesis_direction.parquet` 与 `synthesis_specification_curve.parquet`
+    的 `model == "M2"` 行里，并写明它与同一行的 M0/M1 数字不来自同一个样本、
+    不能并排读。
     """
     prepared = _prepare(df)
     pool = variant_pool(prepared)
@@ -1110,18 +1156,28 @@ def judge(df, threshold=DEFAULT_INFLUENCE_THRESHOLD, layers=DEFAULT_LAYERS):
             row["attenuation_p10"] = item["attenuation_p10"]
             row["attenuation_p90"] = item["attenuation_p90"]
             row["n_variant_pairs"] = int(item["n_variant_pairs"])
+            row["n_matched_pairs"] = int(item["n_matched_pairs"])
+            row["n_pairs_attenuation_undefined"] = int(
+                item["n_pairs_attenuation_undefined"])
             row["n_sign_flip_M0_to_M1"] = int(item["n_sign_flip_M0_to_M1"])
 
         # --- 准则三：少数账号 / 用户群 / 词表 / 月份 ---
         n_exceeding_units = 0
         for unit, name in NAMED_UNITS.items():
             sub = influence[(influence["quantity"] == quantity)
-                            & (influence["influence_unit"] == unit)]
+                            & (influence["influence_unit"] == unit)
+                            # **必须按 layers 过滤**：准则一与准则四都是逐层
+                            # 取的，如果这里不过滤，一个只在 M2 上跑的
+                            # §13.9 变体（user_type 是唯一产出 M2 的族）会
+                            # 把它在受限样本上的偏移塞进一行"其余数字全是
+                            # M0/M1"的记录里——两个数字不来自同一个样本，
+                            # 摆在一行里读只会得出错的结论。
+                            & (influence["model"].isin(list(layers)))]
             sub = sub[sub["max_abs_relative_shift"].notna()]
             if len(sub):
-                # 跨层取最大：一个量在 M0 或 M1 任一层上被单个账号推开，
-                # 都是 §13.10 第三条准则要报告的事。哪一层推得最远写进
-                # worst_*_layer，读者不必反查。
+                # 在 layers 之内跨层取最大：一个量在 M0 或 M1 任一层上被单个
+                # 账号推开，都是 §13.10 第三条准则要报告的事。哪一层推得最远
+                # 写进 worst_*_layer，读者不必反查。
                 position = int(np.argmax(sub["max_abs_relative_shift"].values))
                 worst = sub.iloc[position]
                 row["max_relative_shift_{}".format(name)] = float(
@@ -1157,6 +1213,23 @@ def judge(df, threshold=DEFAULT_INFLUENCE_THRESHOLD, layers=DEFAULT_LAYERS):
         row["families_missing"] = "+".join(sorted(missing_all)) or None
         row["families_not_applicable"] = "+".join(sorted(not_applicable_all)) or None
         row["n_incomplete_variants"] = int(len(incomplete))
+
+        # --- §13.9 的指路牌：**不是**第五条准则 ---
+        # M2 不进上面任何一条准则（理由见本函数 docstring 与 §11.4），但
+        # "加进账号画像控制之后结论还在不在"是这篇论文欠读者的一个交代，
+        # judge 不能对它只字不提。因此这里只放一个指路牌：M2 上有几个变体、
+        # 它们的方向一致率是多少、去哪张表看逐行的细节。它与同一行里的
+        # M0/M1 数字**不来自同一个样本**，不能并排读——这句话写在 note 里。
+        m2 = direction[(direction["quantity"] == quantity)
+                       & (direction["model"] == M2_LAYER)]
+        if len(m2):
+            row["n_M2_variants"] = int(m2["n_live"].iloc[0])
+            row["m2_direction_share_profile_family"] = m2["share_agree"].iloc[0]
+        else:
+            row["n_M2_variants"] = 0
+            row["m2_direction_share_profile_family"] = np.nan
+        row["m2_pointer"] = M2_POINTER_NOTE
+
         row["note"] = JUDGE_NOTE
         rows.append(row)
 
@@ -1173,8 +1246,32 @@ def judge(df, threshold=DEFAULT_INFLUENCE_THRESHOLD, layers=DEFAULT_LAYERS):
 # CLI
 # ---------------------------------------------------------------------------
 
+def unlisted_result_files(directory):
+    """主结果目录里既不在次要清单、也没被认领的 parquet
+
+    SECONDARY_RESULT_FILES 是一份**手写的**清单。以后有人往
+    analysis_data/results/ 里加一张新的次要分析表而忘了登记，它就会静悄悄
+    地不进 FDR——一个漏做的多重比较校正不会报错，只会让一批 p 值看起来
+    比它们该有的样子更好看。因此这里主动扫一遍目录，把没登记的文件点名
+    警告出来，并写进 manifest，让"漏了一张表"这件事至少是可见的。
+    """
+    if not os.path.isdir(directory):
+        return []
+    known = set(SECONDARY_RESULT_FILES)
+    return sorted(
+        name for name in os.listdir(directory)
+        if name.endswith(".parquet") and name not in known
+    )
+
+
 def _read_secondary_results(directory):
     """读主结果层里可能装着次要分析的结果表（只读，读不到就跳过）"""
+    unlisted = unlisted_result_files(directory)
+    if unlisted:
+        print("警告: {} 里有 {} 张结果表不在 SECONDARY_RESULT_FILES 清单上，"
+              "**不会进 FDR**: {}。如果其中有次要分析，请把文件名登记进"
+              "synthesis.SECONDARY_RESULT_FILES".format(
+                  directory, len(unlisted), "+".join(unlisted)))
     frames = []
     used = []
     for name in SECONDARY_RESULT_FILES:
@@ -1241,6 +1338,9 @@ def build(year=config.YEAR, threshold=DEFAULT_INFLUENCE_THRESHOLD, alpha=0.05,
             "fdr_alpha": float(alpha),
             "fdr_scope": "secondary_analyses_only;"
                          "the_six_prespecified_quantities_are_never_corrected(11.3)",
+            # 目录里没被 FDR 认领的结果表：漏登记一张次要分析表不会报错，
+            # 只会让一批 p 值看起来更好看，所以把它记进 manifest
+            "result_files_not_in_fdr_scope": unlisted_result_files(results_dir()),
             "expected_variant_families": list(EXPECTED_VARIANT_FAMILIES),
             "paired_families_excluded_from_the_pool": list(PAIRED_FAMILIES),
             "not_applicable_note_markers": list(NOT_APPLICABLE_NOTE_MARKERS),

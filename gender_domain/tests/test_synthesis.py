@@ -593,16 +593,36 @@ def test_specification_curve_data_keeps_unestimable_rows_visible(
 # judge：报告，不裁定
 # ---------------------------------------------------------------------------
 
+# 禁用的**词干**。必须按子串匹配：按整名匹配的话，`is_robust_overall`
+# 或 `robust_flag` 会从名字这一关溜过去；再配上一个"名字里带 flag 就放行"
+# 的白名单，布尔那一关也一起溜过去。这条守卫是本模块"报告而不裁定"这条
+# 规则**唯一**的强制手段，不能留缝。
+BANNED_VERDICT_STEMS = (
+    "robust", "verdict", "pass", "surviv", "conclusion", "significant",
+)
+
+
 def test_judge_emits_no_boolean_robust_verdict(robustness_project):
     out = syn.judge(syn.load_all(2020))
-    banned = {"robust", "is_robust", "passes", "passed", "verdict", "survives",
-              "conclusion", "significant"}
-    assert not (banned & {c.lower() for c in out.columns})
     for column in out.columns:
-        if out[column].dtype == bool:
-            assert "exceed" in column or "flag" in column or "available" in column, (
-                "judge 不允许出现一个把判断替读者做完的布尔列: {}".format(column)
-            )
+        lowered = column.lower()
+        hits = [stem for stem in BANNED_VERDICT_STEMS if stem in lowered]
+        assert not hits, (
+            "judge 不允许出现一个把判断替读者做完的列: {}（命中词干 {}）"
+            .format(column, hits)
+        )
+    # 布尔那一关同样不留白名单：judge 里一个布尔列都不该有
+    boolean_columns = [c for c in out.columns if out[c].dtype == bool]
+    assert not boolean_columns, (
+        "judge 不允许出现任何布尔列: {}".format(boolean_columns))
+
+
+def test_the_anti_verdict_guard_would_catch_a_disguised_verdict_column():
+    """守卫本身必须挡得住 is_robust_overall / robust_flag 这类伪装"""
+    for disguised in ("is_robust_overall", "robust_flag", "passes_13_10",
+                      "survives_all_variants", "significant_everywhere"):
+        lowered = disguised.lower()
+        assert any(stem in lowered for stem in BANNED_VERDICT_STEMS), disguised
 
 
 def test_judge_surfaces_a_single_account_driving_the_whole_effect(
@@ -674,6 +694,148 @@ def test_build_output_is_readable_with_explicit_columns(robustness_project):
     judged = pd.read_parquet(paths["synthesis"], engine="pyarrow",
                              columns=["quantity", "completeness", "baseline_source"])
     assert set(judged["quantity"]) == set(harness.QUANTITIES)
+
+
+# ---------------------------------------------------------------------------
+# 复核第一轮修复
+# ---------------------------------------------------------------------------
+
+# 加上 M2 的基线，好让 M2 上的相对偏移真的算得出来——否则"M2 有没有漏进
+# 准则三"这件事无从检验（偏移会因为基线是 NaN 而恒为 NaN）。
+BASELINE_WITH_M2 = dict(BASELINE)
+BASELINE_WITH_M2[("entry_public", "M2")] = 0.10
+
+
+def test_exclude_top_k_is_not_classified_as_a_single_account():
+    """`{domain}_exclude_top10` 一次剔十个账号，归不到"单个账号"名下"""
+    assert syn.influence_unit(acc.VARIANT_FAMILY, "loo_public_rank01_9999") \
+        == syn.UNIT_ACCOUNT
+    for label in ("public_exclude_top1", "public_exclude_top5",
+                  "celebrity_exclude_top10"):
+        assert syn.influence_unit(acc.VARIANT_FAMILY, label) == syn.UNIT_ACCOUNT_SET
+
+
+def test_a_ten_account_deletion_cannot_produce_the_single_account_number():
+    """§13.5 的核心问题是"一个账号撑起来的吗"，答案不能由删十个账号得出"""
+    frames = [
+        variant_rows(syn.BASELINE_FAMILY, syn.BASELINE_FAMILY, BASELINE),
+        variant_rows(acc.VARIANT_FAMILY, "loo_celebrity_rank01_9999", {
+            ("entry_celebrity", "M0"): -0.19, ("entry_celebrity", "M1"): -0.15}),
+        variant_rows(acc.VARIANT_FAMILY, "celebrity_exclude_top10", {
+            ("entry_celebrity", "M0"): -0.01, ("entry_celebrity", "M1"): -0.01}),
+    ]
+    df = pd.concat(frames, ignore_index=True)
+    row = syn.judge(df)
+    row = row[row["quantity"] == "entry_celebrity"].iloc[0]
+    assert row["worst_single_account_variant"] == "loo_celebrity_rank01_9999"
+    assert float(row["max_relative_shift_single_account"]) < 0.5
+    # 删十个账号的那次偏移仍然被报告，只是记在"一批账号"名下
+    infl = syn.influence_summary(df)
+    sets = infl[(infl["quantity"] == "entry_celebrity")
+                & (infl["influence_unit"] == syn.UNIT_ACCOUNT_SET)]
+    assert "celebrity_exclude_top10" in set(sets["worst_variant_label"])
+    assert float(sets["max_abs_relative_shift"].max()) > 0.9
+
+
+def _frame_with_an_M2_only_variant():
+    layers = ("M0", "M1", "M2")
+    return pd.concat([
+        variant_rows(syn.BASELINE_FAMILY, syn.BASELINE_FAMILY, BASELINE_WITH_M2,
+                     layers=layers),
+        variant_rows(smp.VARIANT_FAMILY_EXTREME, "trim_pooled_top1pct", {
+            ("entry_public", "M0"): 0.11, ("entry_public", "M1"): 0.09},
+            layers=layers),
+        # 只在 M2 上估出来的 §13.9 变体，相对偏移巨大（受限样本）
+        variant_rows(smp.VARIANT_FAMILY_USER_TYPE, "verified_individuals_only",
+                     {("entry_public", "M2"): 1.00}, layers=layers),
+    ], ignore_index=True)
+
+
+def test_an_M2_variant_cannot_contribute_to_criterion_three_of_an_M0_M1_row():
+    """M2 是受限样本（§11.4），它的偏移不能混进一行其余全是 M0/M1 的记录"""
+    df = _frame_with_an_M2_only_variant()
+    # 影响力表本身照常逐层记录 M2 的偏移（9.0 = |1.00 - 0.10| / 0.10）
+    infl = syn.influence_summary(df)
+    m2 = infl[(infl["quantity"] == "entry_public") & (infl["model"] == "M2")
+              & (infl["influence_unit"] == syn.UNIT_USER_GROUP)].iloc[0]
+    assert float(m2["max_abs_relative_shift"]) == pytest.approx(9.0)
+    # judge 那一行必须只看 M0/M1
+    row = syn.judge(df)
+    row = row[row["quantity"] == "entry_public"].iloc[0]
+    assert row["worst_user_group_layer"] in ("M0", "M1")
+    assert float(row["max_relative_shift_user_group"]) == pytest.approx(0.125)
+    assert int(row["n_units_exceeding_threshold"]) == 0
+
+
+def test_judge_points_at_where_the_M2_answer_lives_without_making_it_a_criterion():
+    df = _frame_with_an_M2_only_variant()
+    row = syn.judge(df)
+    row = row[row["quantity"] == "entry_public"].iloc[0]
+    assert int(row["n_M2_variants"]) == 1
+    assert "synthesis_direction.parquet" in str(row["m2_pointer"])
+    assert "not_comparable" in str(row["m2_pointer"]).replace("NOT_", "not_")
+    # 指路牌不是准则：M2 没有被折进任何一个跨族一致率
+    assert "M2" not in str(row["direction_share_M0"])
+    assert not [c for c in syn.judge(df).columns if c.endswith("_M2")]
+
+
+def test_n_agree_is_nan_when_the_comparison_was_never_possible():
+    """参照拿不到时，n_agree 写 0 会读成"全体不一致"——必须是 NaN"""
+    df = variant_rows("vocabulary", "keep0.8_rep0", {("entry_public", "M0"): 0.11})
+    out = syn.direction_consistency(df)
+    row = out[(out["quantity"] == "entry_public") & (out["model"] == "M0")].iloc[0]
+    assert int(row["n_live"]) == 1
+    assert np.isnan(float(row["n_agree"]))
+    assert np.isnan(float(row["share_agree"]))
+    assert bool(row["incompletely_tested"])
+
+
+def test_exceeds_threshold_is_none_when_the_comparison_was_never_possible():
+    df = variant_rows(acc.VARIANT_FAMILY, "loo_public_rank01_1",
+                      {("entry_public", "M0"): 0.11})
+    out = syn.influence_summary(df)
+    row = out[(out["quantity"] == "entry_public") & (out["model"] == "M0")].iloc[0]
+    assert row["exceeds_threshold"] is None
+    assert np.isnan(float(row["n_exceeding"]))
+
+
+def test_n_variant_pairs_uses_the_same_pairs_as_the_quantiles():
+    """M0 恰为 0 的配对算不出衰减；计数与分位数不能各用各的口径"""
+    frames = [
+        variant_rows(syn.BASELINE_FAMILY, syn.BASELINE_FAMILY, BASELINE),
+        variant_rows("vocabulary", "keep0.8_rep0",
+                     {("entry_public", "M0"): 0.0, ("entry_public", "M1"): 0.0}),
+        variant_rows("vocabulary", "keep0.8_rep1",
+                     {("entry_public", "M0"): 0.10, ("entry_public", "M1"): 0.08}),
+    ]
+    out = syn.activity_attenuation(pd.concat(frames, ignore_index=True))
+    row = out[out["quantity"] == "entry_public"].iloc[0]
+    assert int(row["n_matched_pairs"]) == 2
+    assert int(row["n_variant_pairs"]) == 1
+    assert int(row["n_pairs_attenuation_undefined"]) == 1
+    assert float(row["attenuation_median"]) == pytest.approx(0.20)
+
+
+def test_the_recomputed_baseline_source_names_the_function_the_code_calls():
+    """溯源的人会 grep 这个字符串，它必须指向真正被调用的函数"""
+    assert "estimate_all" in syn.BASELINE_SOURCE_RECOMPUTED
+    assert "harness.baseline" not in syn.BASELINE_SOURCE_RECOMPUTED
+
+
+def test_a_result_file_outside_the_fdr_scope_is_reported_not_silently_skipped(
+    robustness_project, capsys
+):
+    directory = os.path.join(robustness_project["out_dir"], "results")
+    extra = os.path.join(directory, "models_brand_new_secondary.parquet")
+    pd.DataFrame({"x": [1]}).to_parquet(extra, engine="pyarrow", index=False)
+    assert "models_brand_new_secondary.parquet" in syn.unlisted_result_files(directory)
+    syn.build(2020)
+    assert "models_brand_new_secondary.parquet" in capsys.readouterr().out
+    with open(os.path.join(syn.manifest_dir(2020), "manifest.json"),
+              encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    assert "models_brand_new_secondary.parquet" in \
+        manifest["params"]["result_files_not_in_fdr_scope"]
 
 
 # ---------------------------------------------------------------------------
