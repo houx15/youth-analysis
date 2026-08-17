@@ -29,21 +29,27 @@ gender_domain/tests/test_samples_robustness.py 里有一条测试钉死
 逐变体记 n_dropped_male / n_dropped_female，让这份不对称直接可见。
 
 --------------------------------------------------------------------------
-"不处理极端值 vs log(1+x)"这一对在本流水线里为什么是同一组数字
+"不处理极端值 vs log(1+x)"这一对在本流水线里做不到，因此只留一行说明
 --------------------------------------------------------------------------
 §13.2 列出的前两种处理是"不处理"与"log(1+x)"。但 M1/M2 的活动量协变量
 **本来就是 log1p**：models_core.add_log_activity 把 n_posts / n_retweets
 变成 log_posts / log_retweets，MODEL_LAYERS 里写死用的是后者。也就是说，
-主规格已经是"log(1+x)"那一版；要跑出真正的"原始尺度协变量"版本，必须改
-models_core 的协变量常量，而稳健性层的第一条纪律就是"复用，绝不重实现"，
-更不能为了一个变体去改主模型层的规格。
+主规格已经是"log(1+x)"那一版；本模块只能改用户表，改不了协变量变换，
+所以"原始尺度协变量"那一版在这里跑不出来。
 
-因此本模块的做法是：`untreated` 与 `log1p_activity` 两个标签**共用同一次
-拟合的结果**，各自带一句 note 说明它们按构造相同、以及原始尺度版本为什么
-不在这里跑。这比"跑两遍得到两组一模一样的数字"诚实（读者不会误以为这是
-两次独立的检验），也比"干脆不写这一行"完整（§13.2 要求的对比在表里能找到
-一个明确的答复）。真的需要原始尺度协变量时，那是一次对 models_core 的改动
-加一次全流程重跑，不是这里能糊过去的事。
+**做不到的事只留一行注明原因的 NaN 行，绝不写成一组估计值。** 早先的做法
+是把 untreated 的结果原样复制一份挂上 log1p_activity 的标签、再用 note
+说明"按构造相同"——那段 note 只能被人读到，**下游的算术读不到**：
+synthesis 的 direction_consistency 是"与基线同号的**变体标签**占多少"，
+一个坐在正中心的复制标签会同时抬高方向一致率、压低估计值的离散度，把
+"这是同一次拟合"悄悄变成 §13.2 的一票赞成。因此改为走
+`voc._note_only_rows`（本模块处理 demographic_gender 缺失时用的同一套
+做法），让 synthesis 把 §13.2 记成"检验不完整"，而不是记成一次通过。
+
+真要做出这个对比，有两条路，**都是主流水线改动加一次重跑，不属于本任务**：
+往 models_core.MODEL_LAYERS 里加一层 M1_raw（能顺着 estimate_all 现有的
+layers 参数走通，但 MODEL_LAYERS 在 models_core 里有四处无条件遍历，会漏
+进主结果表），或者给 estimate_all 加一个协变量覆盖参数（更干净）。
 
 截尾只作用于**活动量协变量**（ACTIVITY_COLUMNS），不动结果变量：六个预先
 设定量的结果变量是一个 0/1 指示与一个 0-1 占比，本来就有界，对它们做
@@ -154,6 +160,16 @@ ACTIVITY_COLUMNS = ("n_posts", "n_retweets", "n_active_days", "n_active_months")
 
 # "总活动量"的定义：发帖数 + 转发帖数。删顶端 x% 用户按它排序。
 TOTAL_ACTIVITY_COLUMNS = ("n_posts", "n_retweets")
+
+# §13.2 的 log(1+x) 对照：跑不出来，只留一行注明原因的 NaN 行（见模块文档）。
+LOG1P_LABEL = "log1p_activity_unavailable"
+LOG1P_NOTE = (
+    "raw_scale_activity_covariates_not_estimable:"
+    "models_core.MODEL_LAYERS_fixes_the_covariate_transform_to_log1p;"
+    "main_specification_is_already_log1p;"
+    "requires_a_covariate_override_in_estimate_all_or_an_M1_raw_layer"
+    "(main_pipeline_change+rerun)"
+)
 
 DEFAULT_WINSOR_QUANTILES = (0.95, 0.99)
 DEFAULT_TRIM_SHARES = (0.01, 0.05)
@@ -345,6 +361,26 @@ def load_user_table(year=config.YEAR):
     return frame, plain, False
 
 
+def demographic_gender_coverage(frame):
+    """demographic_gender 有多少取值真的能映射成 m/f
+
+    只写一个"这一列在不在"的布尔值不够：这一列可能存在、却有一大半取值
+    认不出来（例如存成数字编码，见 _normalise_gender_token）。这三个数字
+    进 manifest，读者不必用减法去猜性别字段变体到底覆盖了哪些人。
+    """
+    n_total = int(len(frame))
+    if "demographic_gender" not in frame.columns:
+        return {"n_total": n_total, "n_mappable": 0, "n_unmappable": n_total,
+                "mappable_share": 0.0}
+    n_mappable = int(frame["demographic_gender"].map(_normalise_gender_token).notna().sum())
+    return {
+        "n_total": n_total,
+        "n_mappable": n_mappable,
+        "n_unmappable": n_total - n_mappable,
+        "mappable_share": (n_mappable / n_total) if n_total else float("nan"),
+    }
+
+
 def build_context(year=config.YEAR):
     """加载用户表，并判断 demographic_gender 到底能不能用"""
     frame, source_path, has_profile = load_user_table(year)
@@ -353,8 +389,7 @@ def build_context(year=config.YEAR):
 
     has_demographic = "demographic_gender" in frame.columns
     if has_demographic:
-        mapped = frame["demographic_gender"].map(_normalise_gender_token)
-        n_usable = int(mapped.notna().sum())
+        n_usable = demographic_gender_coverage(frame)["n_mappable"]
         if n_usable == 0:
             print(
                 "提示: demographic_gender 这一列存在但没有任何可识别的取值，"
@@ -933,7 +968,7 @@ def append_balance(rows, path):
 # 跑一个变体
 # ---------------------------------------------------------------------------
 
-def _sample_note(diagnostic, prefix=None):
+def _sample_note(diagnostic, prefix=None, extra_cuts=None):
     """把"这个变体动了多少人、阈值是多少"压成一句写进结果行的 note
 
     诊断表里有全套数字，但只拿到 samples.parquet 一张表的读者也必须看得见
@@ -945,6 +980,10 @@ def _sample_note(diagnostic, prefix=None):
     if diagnostic.get("threshold_variable"):
         parts.append("{}_cut={:.4f}".format(
             diagnostic["threshold_variable"], diagnostic["threshold_pooled"]))
+    # extra_cuts：一个变体动了多个变量时（截尾一次截四列），其余变量的
+    # 截点也必须写进 note，否则它们只存在于诊断表里
+    for variable, cut in (extra_cuts or []):
+        parts.append("{}_cut={:.4f}".format(variable, float(cut)))
     parts.append("n_users={}".format(diagnostic["n_users_after"]))
     parts.append("n_dropped_male={}".format(diagnostic["n_dropped_male"]))
     parts.append("n_dropped_female={}".format(diagnostic["n_dropped_female"]))
@@ -964,21 +1003,6 @@ def _run_variant(frame, variant_family, variant_label, diagnostic, out_path,
         harness.append_rows(rows, out_path)
     append_diagnostics([diagnostic], diag_path)
     return rows
-
-
-def _mirror_rows(rows, variant_label, note, out_path=None):
-    """把一批结果行原样复制成另一个标签，并注明"按构造与它相同"
-
-    只用在 untreated / log1p_activity 这一对上：主规格的活动量协变量本来
-    就是 log1p，两者按构造是同一组数字（见模块文档）。复制而不是重跑，
-    是因为跑两遍得到两组一模一样的数字会让读者误以为这是两次独立的检验。
-    """
-    mirrored = rows.copy()
-    mirrored["variant_label"] = variant_label
-    mirrored = voc._annotate_note(mirrored, note)
-    if out_path is not None:
-        harness.append_rows(mirrored, out_path)
-    return mirrored
 
 
 # ---------------------------------------------------------------------------
@@ -1003,23 +1027,19 @@ def run_extreme_value_variants(year=config.YEAR, context=None, out_path=None,
                         out_path, diag_path)
     collected.append(rows)
 
-    # log(1+x)：主规格本来就是它，见模块文档
+    # log(1+x)：**做不到，因此只留一行注明原因的 NaN 行**，见下面的长注释
     log_diag = dict(untreated_diag)
-    log_diag["variant_label"] = "log1p_activity"
-    log_diag["rule"] = "log1p_activity_covariates(main_specification)"
-    log_diag["note"] = (
-        "identical_to_untreated_by_construction:"
-        "models_core.add_log_activity_already_applies_log1p"
-    )
+    log_diag["variant_label"] = LOG1P_LABEL
+    log_diag["rule"] = "not_estimable:covariate_transform_is_fixed_in_models_core"
+    log_diag["note"] = LOG1P_NOTE
     append_diagnostics([log_diag], diag_path)
-    collected.append(_mirror_rows(
-        rows, "log1p_activity",
-        "identical_to_untreated_by_construction;"
-        "M1_covariates_are_log1p_via_models_core.add_log_activity",
-        out_path,
+    collected.append(voc._note_only_rows(
+        LOG1P_LABEL, LOG1P_NOTE, outcome="source_entered", domain="public",
+        out_path=out_path, variant_family=VARIANT_FAMILY_EXTREME,
     ))
-    print("§13.2 不处理 / log(1+x)：主规格的活动量协变量本来就是 log1p，"
-          "两个标签共用同一次拟合并各自注明")
+    print("§13.2 “不处理 vs log(1+x)”这一对做不到（协变量变换写死在 "
+          "models_core.MODEL_LAYERS 里），已按本模块处理不可用变体的同一套"
+          "做法留一行注明原因的 NaN 行")
 
     for quantile in winsor_quantiles:
         label = "winsorised_pooled_p{}".format(int(round(float(quantile) * 100)))
@@ -1040,8 +1060,16 @@ def run_extreme_value_variants(year=config.YEAR, context=None, out_path=None,
             winsorised, variant_family=VARIANT_FAMILY_EXTREME, variant_label=label,
             replicate=0, seed=None,
         )
+        # note 必须带上**全部四个**活动量列的阈值：只写 diagnostics[0]
+        # （n_posts）会让另外三列的截点只存在于诊断表里，拿到
+        # samples.parquet 一张表的读者看不到这个变体到底截了什么。
         estimate_rows = voc._annotate_note(
-            estimate_rows, _sample_note(diagnostics[0]))
+            estimate_rows,
+            _sample_note(diagnostics[0], extra_cuts=[
+                (row["threshold_variable"], row["threshold_pooled"])
+                for row in diagnostics[1:]
+            ]),
+        )
         if out_path is not None:
             harness.append_rows(estimate_rows, out_path)
         append_diagnostics(diagnostics, diag_path)
@@ -1118,11 +1146,14 @@ def run_equal_size_gender(year=config.YEAR, n_replicates=DEFAULT_N_REPLICATES,
 
 def run_activity_balanced(year=config.YEAR, n_bins=DEFAULT_N_BINS, seed=0,
                           context=None, out_path=None, diag_path=None,
-                          balance_path=None):
+                          bal_path=None):
     """§13.6：按发帖量、转发量、活跃天数与认证状态做 1:1 匹配
 
     variant_label 里写着实际用的方法（ps_match / cem_match）与四个协变量，
     平衡前后的标准化均值差写进 sample_balance.parquet。
+
+    参数名是 bal_path 而不是 balance_path：后者会遮蔽模块级的
+    `balance_path()` 函数，函数体内再想拿默认路径就拿不到了。
     """
     context = context or build_context(year)
     frame = context.user_table
@@ -1131,7 +1162,7 @@ def run_activity_balanced(year=config.YEAR, n_bins=DEFAULT_N_BINS, seed=0,
 
     rows_before = balance_rows(frame, VARIANT_FAMILY_BALANCE, label, "before")
     rows_after = balance_rows(matched, VARIANT_FAMILY_BALANCE, label, "after")
-    append_balance(rows_before + rows_after, balance_path)
+    append_balance(rows_before + rows_after, bal_path)
     for before, after in zip(rows_before, rows_after):
         print("平衡 {}: SMD {:.3f} -> {:.3f}".format(
             before["covariate"], before["std_mean_diff"], after["std_mean_diff"]))
@@ -1271,7 +1302,7 @@ def build(year=config.YEAR, n_replicates=DEFAULT_N_REPLICATES, seed=0,
                           context=context, out_path=out_path, diag_path=diag_path)
     run_activity_balanced(year, n_bins=n_bins, seed=seed, context=context,
                           out_path=out_path, diag_path=diag_path,
-                          balance_path=bal_path)
+                          bal_path=bal_path)
     run_gender_field_variants(year, context=context, out_path=out_path,
                               diag_path=diag_path,
                               automation_quantile=automation_quantile)
@@ -1283,6 +1314,11 @@ def build(year=config.YEAR, n_replicates=DEFAULT_N_REPLICATES, seed=0,
     balance = pd.read_parquet(bal_path, engine="pyarrow",
                               columns=list(BALANCE_SCHEMA))
     matched = balance[balance["stage"] == "after"]
+    demographic_coverage = demographic_gender_coverage(context.user_table)
+    # 删顶端的不对称只能在 §13.2 这一族里看：把最大值取遍全部 family，
+    # 真实数据上最大的那个来自 verified_individuals_only（它按定义只留下
+    # 几千个认证账号，两性都被剔掉 97% 以上），与截尾一点关系都没有。
+    extreme = diagnostics[diagnostics["variant_family"] == VARIANT_FAMILY_EXTREME]
     manifest = config.build_manifest(
         step="robustness_samples_{}".format(year),
         inputs=[os.path.relpath(context.source_path, config.OUTPUT_DIR)],
@@ -1313,6 +1349,15 @@ def build(year=config.YEAR, n_replicates=DEFAULT_N_REPLICATES, seed=0,
             # demographic_gender 到底有没有：没有的话结果表里是两行注明原因
             # 的行，不是"两个字段一致"
             "demographic_gender_available": bool(context.has_demographic_gender),
+            # 光有一个布尔值不够：真实数据里这一列可能存在、却有一大半取值
+            # 认不出来（例如存成数字编码，见 _normalise_gender_token）。把
+            # 可映射比例直接写下来，读者不必用减法去猜这个变体到底覆盖了谁。
+            "demographic_gender_mappable_share": (
+                float(demographic_coverage["mappable_share"])),
+            "demographic_gender_mappable_users": (
+                int(demographic_coverage["n_mappable"])),
+            "demographic_gender_unmappable_users": (
+                int(demographic_coverage["n_unmappable"])),
             "profile_columns_available": bool(context.has_profile),
             "source_table": os.path.basename(context.source_path),
             "diagnostics_file": os.path.basename(diag_path),
@@ -1326,10 +1371,13 @@ def build(year=config.YEAR, n_replicates=DEFAULT_N_REPLICATES, seed=0,
             "users_total": int(len(context.user_table)),
             "users_male": int((context.user_table["gender"] == "m").sum()),
             "users_female": int((context.user_table["gender"] == "f").sum()),
-            # 删顶端到底删掉了谁：两性不对称本身就是 §13.2 的发现
-            "max_dropped_share_male": float(diagnostics["dropped_share_male"].max()),
-            "max_dropped_share_female": float(
-                diagnostics["dropped_share_female"].max()),
+            # 删顶端到底删掉了谁：两性不对称本身就是 §13.2 的发现。**只取
+            # extreme_values 这一族**，否则最大值会来自 §13.9 的子样本变体，
+            # 名字说的和数字来源就不是一回事了。
+            "extreme_values_max_dropped_share_male": (
+                float(extreme["dropped_share_male"].max()) if len(extreme) else None),
+            "extreme_values_max_dropped_share_female": (
+                float(extreme["dropped_share_female"].max()) if len(extreme) else None),
             "worst_smd_after_matching": (
                 float(matched["std_mean_diff"].abs().max())
                 if len(matched) else None
@@ -1344,11 +1392,33 @@ def build(year=config.YEAR, n_replicates=DEFAULT_N_REPLICATES, seed=0,
     }
 
 
+def _cli(fn, needs_balance=False):
+    """CLI 包装：把 out_path / diag_path 的默认值补成模块的正式路径
+
+    各 run_* 函数的路径参数默认是 None（供测试与 build() 显式传路径），
+    但从命令行单跑一个子命令时，None 意味着"算了一整轮、一个字节都没写"，
+    而且不会有任何提示。这层包装只在 CLI 入口生效：没显式给路径就写正式
+    路径，并把写到哪里打印出来。
+    """
+    def _run(*args, **kwargs):
+        kwargs.setdefault("out_path", results_path())
+        kwargs.setdefault("diag_path", diagnostics_path())
+        if needs_balance:
+            kwargs.setdefault("bal_path", balance_path())
+        os.makedirs(robustness_dir(), exist_ok=True)
+        print("输出目录: {}".format(robustness_dir()))
+        return fn(*args, **kwargs)
+
+    _run.__doc__ = fn.__doc__
+    _run.__name__ = fn.__name__
+    return _run
+
+
 if __name__ == "__main__":
     fire.Fire({
         "build": build,
-        "extreme_values": run_extreme_value_variants,
-        "equal_size_gender": run_equal_size_gender,
-        "activity_balanced": run_activity_balanced,
-        "gender_field_variants": run_gender_field_variants,
+        "extreme_values": _cli(run_extreme_value_variants),
+        "equal_size_gender": _cli(run_equal_size_gender),
+        "activity_balanced": _cli(run_activity_balanced, needs_balance=True),
+        "gender_field_variants": _cli(run_gender_field_variants),
     })

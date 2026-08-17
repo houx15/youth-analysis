@@ -20,9 +20,20 @@ gender_domain.robustness.samples 的单元测试（§13.2 极端值、§13.6 性
    子样本有代表性。
 
 4. **"平衡样本"必须自证平衡。** 平衡前后的标准化均值差都要写出来，
-   而且平衡之后必须真的变小；一个不自证的"balanced"标签比不做平衡更糟。
+   而且**三个活动量协变量**的 SMD 必须真的变小；一个不自证的"balanced"
+   标签比不做平衡更糟。测试刻意**不**要求 verified_flag 也变小：认证账号
+   在真实数据与夹具里都极少，匹配后它的 SMD 反而会变大（夹具上
+   0.130 -> 0.354），而这正是平衡表要暴露、而不是掩盖的东西——标签宣称的
+   是活动量平衡，认证状态的失衡必须留在表上让读者看见。
 
-5. **性别字段冲突的用户必须真的被冲突变体剔除、被基线保留**；
+5. **做不到的变体只留一行注明原因的 NaN 行，绝不留一组估计值。**
+   §13.2 的 log(1+x) 对照在本流水线里做不出来（协变量变换写死在
+   models_core 里）。早先的做法是复制 untreated 的结果挂上另一个标签，
+   note 里写"按构造相同"——但下游 synthesis 的方向一致率是按**变体标签**
+   数的，一个坐在正中心的复制标签会同时抬高一致率、压低离散度。测试因此
+   钉死这一行是 NaN、且不带任何模型层。
+
+6. **性别字段冲突的用户必须真的被冲突变体剔除、被基线保留**；
    demographic_gender 不存在时必须留一行注明原因，**绝不编一个"一致"
    出来**。
 """
@@ -293,13 +304,13 @@ def test_extreme_value_variants_cover_every_treatment_and_record_the_cut_points(
     results = _read_results(out_path)
     labels = set(results["variant_label"])
     assert "untreated" in labels
-    assert "log1p_activity" in labels
+    assert smp.LOG1P_LABEL in labels
     assert "winsorised_pooled_p95" in labels
     assert "winsorised_pooled_p99" in labels
     assert "trim_pooled_top1pct" in labels
     assert "trim_pooled_top5pct" in labels
-    # 每个变体恰好六个量 × 两层
-    for label in labels:
+    # 每个真的估出来的变体恰好六个量 × 两层
+    for label in labels - {smp.LOG1P_LABEL}:
         assert len(results[results["variant_label"] == label]) == (
             len(harness.QUANTITIES) * 2
         )
@@ -327,6 +338,48 @@ def test_extreme_value_diagnostics_record_who_was_dropped_by_gender(context, tmp
         int(row["n_users_before"]) - int(row["n_dropped_male"])
         - int(row["n_dropped_female"])
     )
+
+
+def test_the_log1p_comparison_is_a_note_only_row_not_a_duplicated_estimate(
+    context, tmp_path
+):
+    """做不到的对照绝不能留下一组估计值
+
+    §13.2 的 log(1+x) 对照在本流水线里做不出来（协变量变换写死在
+    models_core 里）。如果把 untreated 的结果复制一份挂上另一个标签，
+    下游 synthesis 的方向一致率（按变体标签数）会凭空多出一票坐在正中心的
+    赞成，离散度也被压低——note 里写"按构造相同"救不了这件事，因为算术读
+    不到 note。这一行必须是 NaN。
+    """
+    out_path = str(tmp_path / "samples.parquet")
+    smp.run_extreme_value_variants(YEAR, context=context, out_path=out_path,
+                                   diag_path=str(tmp_path / "diag.parquet"))
+    results = _read_results(out_path)
+    log_rows = results[results["variant_label"] == smp.LOG1P_LABEL]
+    assert len(log_rows) == 1
+    assert log_rows["estimate"].isna().all()
+    assert log_rows["model"].isna().all()          # 不属于任何模型层
+    assert "not_estimable" in log_rows["note"].iloc[0]
+    assert "MODEL_LAYERS" in log_rows["note"].iloc[0]
+
+    # 而 untreated 的估计值一个不少，两者不是同一批行
+    untreated = results[results["variant_label"] == "untreated"]
+    assert len(untreated) == len(harness.QUANTITIES) * 2
+
+
+def test_winsorised_note_carries_every_activity_column_cut(context, tmp_path):
+    """截尾一次截四列，四个截点都必须出现在结果行的 note 里
+
+    只写 n_posts 的截点会让另外三列的干预只存在于诊断表里，拿到
+    samples.parquet 一张表的读者看不出这个变体到底截了什么。
+    """
+    out_path = str(tmp_path / "samples.parquet")
+    smp.run_extreme_value_variants(YEAR, context=context, out_path=out_path,
+                                   diag_path=str(tmp_path / "diag.parquet"))
+    results = _read_results(out_path)
+    note = results[results["variant_label"] == "winsorised_pooled_p95"]["note"].iloc[0]
+    for column in smp.ACTIVITY_COLUMNS:
+        assert "{}_cut=".format(column) in note
 
 
 def test_trimming_notes_reach_the_result_rows(context, tmp_path):
@@ -395,7 +448,7 @@ def test_balanced_variant_states_its_method_in_the_label(context, tmp_path):
     out_path = str(tmp_path / "samples.parquet")
     smp.run_activity_balanced(YEAR, context=context, out_path=out_path,
                               diag_path=str(tmp_path / "diag.parquet"),
-                              balance_path=str(tmp_path / "balance.parquet"))
+                              bal_path=str(tmp_path / "balance.parquet"))
     results = _read_results(out_path)
     label = results["variant_label"].iloc[0]
     assert "match" in label
@@ -406,7 +459,7 @@ def test_balance_is_reported_before_and_after_and_actually_improves(context, tmp
     balance_path = str(tmp_path / "balance.parquet")
     smp.run_activity_balanced(YEAR, context=context, out_path=None,
                               diag_path=str(tmp_path / "diag.parquet"),
-                              balance_path=balance_path)
+                              bal_path=balance_path)
     balance = pd.read_parquet(balance_path, engine="pyarrow",
                               columns=list(smp.BALANCE_SCHEMA))
     assert set(balance["stage"]) == {"before", "after"}
@@ -422,7 +475,7 @@ def test_balanced_sample_has_the_same_number_of_men_and_women(context, tmp_path)
     diag_path = str(tmp_path / "diag.parquet")
     smp.run_activity_balanced(YEAR, context=context, out_path=None,
                               diag_path=diag_path,
-                              balance_path=str(tmp_path / "balance.parquet"))
+                              bal_path=str(tmp_path / "balance.parquet"))
     diag = _read_diagnostics(diag_path)
     row = diag[diag["variant_family"] == smp.VARIANT_FAMILY_BALANCE].iloc[0]
     assert int(row["n_male_after"]) == int(row["n_female_after"])
@@ -556,6 +609,57 @@ def test_build_writes_everything_under_the_robustness_directory(synthetic_projec
     assert params["automation_rule"] == smp.AUTOMATION_RULE
     assert params["balance_method"]
     assert "demographic_gender_available" in params
+
+
+def test_manifest_records_how_much_of_demographic_gender_is_usable(synthetic_project):
+    """光有一个布尔值不够：认不出来的取值占多少必须能直接读到
+
+    夹具里每 10 个用户有 1 个的 demographic_gender 是空（user_id 以 5 结尾），
+    可映射比例因此是 0.9——读者不该靠减法去推这个数。
+    """
+    smp.build(YEAR, n_replicates=2, seed=0)
+    manifest_path = os.path.join(synthetic_project, "robustness",
+                                 "samples_{}".format(YEAR), "manifest.json")
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        params = json.load(f)["params"]
+    n_total = N_MALE + N_FEMALE
+    n_unmappable = sum(1 for i in range(N_MALE) if str(i).endswith("5"))
+    n_unmappable += sum(1 for i in range(N_FEMALE) if str(i).endswith("5"))
+    assert params["demographic_gender_unmappable_users"] == n_unmappable
+    assert params["demographic_gender_mappable_users"] == n_total - n_unmappable
+    assert params["demographic_gender_mappable_share"] == pytest.approx(
+        (n_total - n_unmappable) / n_total)
+
+
+def test_manifest_dropped_share_is_scoped_to_the_extreme_value_family(
+    synthetic_project
+):
+    """删顶端的不对称只能在 §13.2 这一族里看
+
+    §13.9 的 verified_individuals_only 按定义会剔掉 97% 以上的用户；把最大值
+    取遍全部 family，这个数字就会来自那里，而名字说的是截尾。
+    """
+    paths = smp.build(YEAR, n_replicates=2, seed=0)
+    manifest_path = os.path.join(synthetic_project, "robustness",
+                                 "samples_{}".format(YEAR), "manifest.json")
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        counts = json.load(f)["counts"]
+    diag = _read_diagnostics(paths["diagnostics_path"])
+    extreme = diag[diag["variant_family"] == smp.VARIANT_FAMILY_EXTREME]
+    assert counts["extreme_values_max_dropped_share_male"] == pytest.approx(
+        float(extreme["dropped_share_male"].max()))
+    # 全族最大值来自 §13.9 的子样本变体，与截尾无关——两者必须不同，
+    # 否则这条测试无法证明作用域真的收窄了
+    assert float(diag["dropped_share_male"].max()) > float(
+        extreme["dropped_share_male"].max())
+
+
+def test_cli_subcommands_default_to_the_module_output_paths(synthetic_project):
+    """从命令行单跑一个子命令不能算完一整轮却一个字节都不写"""
+    runner = smp._cli(smp.run_extreme_value_variants)
+    runner(YEAR)
+    assert os.path.exists(smp.results_path())
+    assert os.path.exists(smp.diagnostics_path())
 
 
 def test_build_covers_all_three_subsections(synthetic_project):
