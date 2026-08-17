@@ -842,15 +842,292 @@ def test_a_result_file_outside_the_fdr_scope_is_reported_not_silently_skipped(
 # SLURM 作业
 # ---------------------------------------------------------------------------
 
-def test_slurm_array_job_runs_one_task_per_family():
+def _slurm_text(name):
     path = os.path.join(os.path.dirname(os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__)))), "slurm", "run_robustness.slurm")
-    assert os.path.exists(path)
+        os.path.dirname(os.path.abspath(__file__)))), "slurm", name)
+    assert os.path.exists(path), path
     with open(path, encoding="utf-8") as handle:
-        text = handle.read()
-    assert "#SBATCH --array=" in text
+        return path, handle.read()
+
+
+def test_slurm_array_jobs_between_them_run_one_task_per_family():
+    """五个族一个不少，只是分在两个数组里跑（重的两族 + 轻的三族）"""
+    _, heavy = _slurm_text("run_robustness.slurm")
+    _, light = _slurm_text("run_robustness_light.slurm")
+    for text in (heavy, light):
+        assert "#SBATCH --array=" in text
+    launched = ""
     for module in ("vocabulary", "accounts", "samples", "measures",
                    "context_sample"):
-        assert "gender_domain.robustness.{}".format(module) in text
+        call = "gender_domain.robustness.{}".format(module)
+        assert (call in heavy) or (call in light), module
+        launched += call
+    # 一个族只能由一个脚本真的启动，否则两个数组会同时往同一张 parquet 里写
+    assert "gender_domain.robustness.vocabulary build" in heavy
+    assert "gender_domain.robustness.accounts build" in heavy
+    for module in ("samples", "measures", "context_sample"):
+        call = "gender_domain.robustness.{} build".format(module)
+        assert call in light
+        assert call not in heavy
     # 降低成本的旋钮必须写在头部注释里
-    assert "top_n" in text and "n_replicates" in text
+    assert "top_n" in heavy and "n_replicates" in heavy
+    assert "n_per_cell" in light
+
+
+def test_the_light_slurm_script_really_asks_for_less_than_the_heavy_one():
+    """拆脚本的全部意义就在这三个额度上：时间、内存、核数都必须更低"""
+    import re
+
+    def _sbatch(text, key):
+        match = re.search(r"#SBATCH --{}=(\S+)".format(key), text)
+        assert match, key
+        return match.group(1)
+
+    _, heavy = _slurm_text("run_robustness.slurm")
+    _, light = _slurm_text("run_robustness_light.slurm")
+
+    def _hours(value):
+        parts = value.split(":")
+        return int(parts[0]) + int(parts[1]) / 60.0
+
+    assert _hours(_sbatch(light, "time")) < _hours(_sbatch(heavy, "time"))
+    assert int(_sbatch(light, "mem").rstrip("G")) < \
+        int(_sbatch(heavy, "mem").rstrip("G"))
+    assert int(_sbatch(light, "cpus-per-task")) <= \
+        int(_sbatch(heavy, "cpus-per-task"))
+    # 两个数组的任务号不重叠：`--array=4` 在任何一边都只指向测量族
+    assert _sbatch(heavy, "array") == "1-2"
+    assert _sbatch(light, "array") == "3-5"
+
+
+def test_the_two_slurm_scripts_point_at_each_other():
+    """拆开之后，只投其中一个是最容易犯、也最难发现的错——两边都要写明"""
+    _, heavy = _slurm_text("run_robustness.slurm")
+    _, light = _slurm_text("run_robustness_light.slurm")
+    assert "slurm/run_robustness_light.slurm" in heavy
+    assert "slurm/run_robustness.slurm" in light
+    # 拆成两个数组作业之后 %A 不再相同，共用运行标识只能靠手工导出一次
+    for text in (heavy, light):
+        assert "GENDER_DOMAIN_RUN_ID" in text
+        assert "--export=ALL" in text
+
+
+# ---------------------------------------------------------------------------
+# 方向一致率的两个口径：行池 vs 一族一票
+# ---------------------------------------------------------------------------
+
+def _frame_dominated_by_one_resampling_family(n_replicates=10):
+    """一个重抽样族刷 n_replicates 行全部同号，一个确定性族一行反号
+
+    这就是真实数据上的形状：vocabulary 与 accounts 的 bootstrap 各默认 200 个
+    replicate，而 temporal_restrictions / denominators 一类的确定性族一共只有
+    三十来行。行池口径下反号的那一族几乎投不出票。
+    """
+    frames = [variant_rows(syn.BASELINE_FAMILY, syn.BASELINE_FAMILY, BASELINE)]
+    for i in range(n_replicates):
+        frames.append(variant_rows(
+            voc.VARIANT_FAMILY, "keep0.8_rep{}".format(i),
+            {("entry_public", "M0"): 0.10 + 0.001 * i,
+             ("entry_public", "M1"): 0.08}, replicate=i, seed=100 + i))
+    frames.append(variant_rows(
+        mea.VARIANT_FAMILY_TEMPORAL, "months=1-6",
+        {("entry_public", "M0"): -0.02, ("entry_public", "M1"): -0.01}))
+    return pd.concat(frames, ignore_index=True)
+
+
+def test_direction_by_family_breaks_the_share_out_one_row_per_family():
+    """逐族一致率必须自成一张表：在它出现之前，这个数字哪里都读不到"""
+    df = _frame_dominated_by_one_resampling_family()
+    out = syn.direction_by_family(df)
+    rows = out[(out["quantity"] == "entry_public") & (out["model"] == "M0")]
+    by_family = {r["variant_family"]: r for _, r in rows.iterrows()}
+    assert set(by_family) == {voc.VARIANT_FAMILY, mea.VARIANT_FAMILY_TEMPORAL}
+    assert float(by_family[voc.VARIANT_FAMILY]["share_agree"]) == pytest.approx(1.0)
+    assert float(by_family[mea.VARIANT_FAMILY_TEMPORAL]["share_agree"]) == \
+        pytest.approx(0.0)
+    # 每一族占了行池一致率多大的权重——这就是"被两个重抽样族压着"这件事
+    # 本身的数字
+    assert float(by_family[voc.VARIANT_FAMILY]["share_of_pooled_live_rows"]) == \
+        pytest.approx(10 / 11)
+    assert float(rows["share_of_pooled_live_rows"].sum()) == pytest.approx(1.0)
+
+
+def test_direction_by_family_never_reports_an_agreement_that_was_not_tested():
+    """与 direction_consistency 守同一条纪律：比较做不成时 n_agree 是 NaN"""
+    df = variant_rows("vocabulary", "keep0.8_rep0", {("entry_public", "M0"): 0.11})
+    out = syn.direction_by_family(df)
+    row = out[(out["quantity"] == "entry_public") & (out["model"] == "M0")].iloc[0]
+    assert int(row["n_live"]) == 1
+    assert np.isnan(float(row["n_agree"]))
+    assert np.isnan(float(row["share_agree"]))
+
+
+def test_judge_reports_both_the_row_pooled_and_the_family_weighted_share():
+    """一条准则两个口径，两个都在表里，谁写进正文由作者定"""
+    df = _frame_dominated_by_one_resampling_family()
+    row = syn.judge(df)
+    row = row[row["quantity"] == "entry_public"].iloc[0]
+    # 行池：11 个活着的变体行里 10 个同号
+    assert float(row["direction_share_row_pooled_M0"]) == pytest.approx(10 / 11)
+    # 一族一票：词表族 1.0、时间族 0.0，平均 0.5
+    assert float(row["direction_share_family_weighted_M0"]) == pytest.approx(0.5)
+    assert int(row["direction_n_families_weighted_M0"]) == 2
+    # 两者之差可以直接读出来，不必自己回去减
+    assert float(row["direction_share_pooled_minus_family_weighted_M0"]) == \
+        pytest.approx(10 / 11 - 0.5)
+
+
+def test_the_historical_direction_share_column_still_means_the_row_pooled_number():
+    """**没有**把一个口径悄悄换成另一个：老列名的含义一个字都没变"""
+    df = _frame_dominated_by_one_resampling_family()
+    row = syn.judge(df)
+    row = row[row["quantity"] == "entry_public"].iloc[0]
+    assert float(row["direction_share_M0"]) == \
+        pytest.approx(float(row["direction_share_row_pooled_M0"]))
+    direction = syn.direction_consistency(df)
+    pooled = direction[(direction["quantity"] == "entry_public")
+                       & (direction["model"] == "M0")].iloc[0]
+    assert float(row["direction_share_M0"]) == pytest.approx(
+        float(pooled["share_agree"]))
+
+
+def test_judge_names_the_family_that_dominates_the_row_pooled_share():
+    """"这个 97% 主要是谁投出来的"必须能被直接读到，不必自己反查"""
+    df = _frame_dominated_by_one_resampling_family()
+    row = syn.judge(df)
+    row = row[row["quantity"] == "entry_public"].iloc[0]
+    assert row["direction_dominant_family_M0"] == voc.VARIANT_FAMILY
+    assert float(row["direction_dominant_family_row_share_M0"]) == \
+        pytest.approx(10 / 11)
+    assert "family_weighted" in str(row["direction_share_pointer"])
+
+
+def test_judge_keeps_both_shares_nan_when_the_layer_is_absent():
+    """某一层压根没跑时，两个口径的列都要在、都写 NaN——列集合必须稳定"""
+    df = variant_rows(syn.BASELINE_FAMILY, syn.BASELINE_FAMILY,
+                      {("entry_public", "M0"): 0.10}, layers=("M0",))
+    out = syn.judge(df)
+    for column in ("direction_share_row_pooled_M1",
+                   "direction_share_family_weighted_M1",
+                   "direction_share_pooled_minus_family_weighted_M1"):
+        assert column in out.columns
+        assert out[column].isna().all()
+
+
+def test_build_writes_the_per_family_direction_table(robustness_project):
+    paths = syn.build(2020)
+    assert "synthesis_direction_by_family" in paths
+    frame = pd.read_parquet(paths["synthesis_direction_by_family"],
+                            engine="pyarrow",
+                            columns=["quantity", "model", "variant_family",
+                                     "share_agree", "share_of_pooled_live_rows"])
+    assert len(frame)
+    assert voc.VARIANT_FAMILY in set(frame["variant_family"])
+    # 配对校准族不进变体池，也就不该出现在这张表里
+    assert voc.CALIBRATION_FAMILY not in set(frame["variant_family"])
+
+
+# ---------------------------------------------------------------------------
+# 参照的批次：不只是"和哪几个文件比的"，还要说"和哪一批比的"
+# ---------------------------------------------------------------------------
+
+def _write_run_stamps(results_dir, stamps):
+    with open(os.path.join(results_dir, config.RUN_STAMP_FILE), "w",
+              encoding="utf-8") as handle:
+        json.dump(stamps, handle, ensure_ascii=False, indent=2)
+
+
+def _stamp_all(results_dir, run_id="run-A", git_sha="abc1234", git_dirty=False):
+    _write_run_stamps(results_dir, {
+        name: {"run_id": run_id, "step": "models_core_2020",
+               "written_at": "2026-01-01T00:00:00",
+               "git_sha": git_sha, "git_dirty": git_dirty}
+        for name in ("models_entry.parquet", "models_share.parquet",
+                     "interaction_gender_domain.parquet")
+    })
+
+
+def test_the_baseline_records_which_run_of_the_main_results_it_came_from(
+    robustness_project
+):
+    """表 C 重建之后主结果重跑一次，同名文件里换了一批数字——只有 run_id
+    能让这次版本差事后被认出来"""
+    results = os.path.join(robustness_project["out_dir"], "results")
+    _stamp_all(results, run_id="run-A", git_sha="abc1234")
+    df = syn.load_all(2020)
+    assert set(df["baseline_run_id"]) == {"run-A"}
+    assert set(df["baseline_git_sha"]) == {"abc1234"}
+    judged = syn.judge(df)
+    assert set(judged["baseline_run_id"]) == {"run-A"}
+    assert set(syn.direction_consistency(df)["baseline_run_id"]) == {"run-A"}
+
+
+def test_the_manifest_pins_the_run_id_and_git_sha_of_the_reference(
+    robustness_project
+):
+    results = os.path.join(robustness_project["out_dir"], "results")
+    _stamp_all(results, run_id="run-B", git_sha="deadbee")
+    syn.build(2020)
+    with open(os.path.join(syn.manifest_dir(2020), "manifest.json"),
+              encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    assert manifest["params"]["baseline_run_id"] == "run-B"
+    assert manifest["params"]["baseline_git_sha"] == "deadbee"
+    assert manifest["params"]["baseline_source"]
+
+
+def test_a_reference_split_across_two_runs_is_made_visible_not_silent(
+    robustness_project, capsys
+):
+    """三张主结果表来自两批时，参照的六个量横跨两次运行——必须看得见"""
+    results = os.path.join(robustness_project["out_dir"], "results")
+    _write_run_stamps(results, {
+        "models_entry.parquet": {"run_id": "run-A", "git_sha": "aaa"},
+        "models_share.parquet": {"run_id": "run-A", "git_sha": "aaa"},
+        "interaction_gender_domain.parquet": {"run_id": "run-B", "git_sha": "bbb"},
+    })
+    df = syn.load_all(2020)
+    run_id = str(df["baseline_run_id"].iloc[0])
+    assert run_id.startswith(syn.BASELINE_STAMP_MIXED_PREFIX)
+    assert "run-A" in run_id and "run-B" in run_id
+    assert "run_id" in capsys.readouterr().out
+    # 但**不报错**：本模块报告，不裁定（拦下混装是导出层 verify_same_run 的活）
+    assert len(syn.judge(df)) == len(harness.QUANTITIES)
+
+
+def test_a_reference_without_run_stamps_is_recorded_as_unrecorded(
+    robustness_project, capsys
+):
+    """读不出批次这件事本身就是证据，不能写成一个看起来正常的空值"""
+    df = syn.load_all(2020)     # 夹具没有写 run_stamps.json
+    assert set(df["baseline_run_id"]) == {syn.BASELINE_STAMP_UNRECORDED}
+    assert "运行标识" in capsys.readouterr().out
+
+
+def test_a_reference_that_did_not_come_from_the_results_layer_says_so():
+    """手工构造的帧、重算出来的参照：批次指纹如实写"不适用"，不写空"""
+    df = variant_rows(syn.BASELINE_FAMILY, syn.BASELINE_FAMILY, BASELINE)
+    out = syn.judge(df)
+    assert set(out["baseline_run_id"]) == {syn.BASELINE_STAMP_NOT_FROM_RESULTS}
+
+
+# ---------------------------------------------------------------------------
+# 未登记的 variant_family 必须报错，不能被兜进一个没人读的桶
+# ---------------------------------------------------------------------------
+
+def test_an_unregistered_variant_family_raises_instead_of_being_bucketed():
+    """兜底值会让一个将来新增却忘了登记的族照样进准则三，只是分在
+    "unclassified"名下——那等于 §13.10 第三条准则对它从没被问过"""
+    with pytest.raises(ValueError, match="_UNIT_BY_FAMILY"):
+        syn.influence_unit("a_family_someone_forgot_to_register", "label")
+
+
+def test_every_family_that_can_reach_the_classifier_is_registered():
+    """十个变体族 + 参照 + 配对校准族，一个都不能漏"""
+    for family in syn.EXPECTED_VARIANT_FAMILIES:
+        assert syn.influence_unit(family, "some_label")
+    assert syn.influence_unit(syn.BASELINE_FAMILY, syn.BASELINE_FAMILY) == \
+        syn.UNIT_BASELINE
+    for family in syn.PAIRED_FAMILIES:
+        assert syn.influence_unit(family, "rep0_reaggregated") == \
+            syn.UNIT_PAIRED_CALIBRATION

@@ -365,3 +365,45 @@ def test_append_rows_survives_a_crash_between_write_and_replace(tmp_path, monkey
     # 失败的那次调用留下的临时文件必须被清理掉，不能在目录里越积越多
     leftovers = [f for f in os.listdir(str(tmp_path)) if f != "crash_family.parquet"]
     assert leftovers == [], f"崩溃路径必须清理临时文件，实际残留: {leftovers}"
+
+
+# ---------------------------------------------------------------------------
+# layers 参数必须真的少算一层，而不是算完再丢
+# ---------------------------------------------------------------------------
+
+def test_the_default_two_layers_never_fit_m2_at_all():
+    """默认 layers=("M0","M1") 必须省下 M2 的拟合，而不是拟合完再筛掉
+
+    丢弃的行从来没有泄漏进结果表（_extract_row 按 model 精确取行），所以
+    这从头到尾只是一笔浪费——但它是一笔大浪费：账号族约 326 次
+    estimate_all、词表族约 200 次，每次都在算一层永远不会被写出来的 M2，
+    占掉整个套件三分之一的机时。这条测试是这次改动收益的唯一守卫：
+    如果哪天有人把 layers 退回"照样跑三层再筛一遍"，数值结果不会有任何
+    变化，只有这里会挂。
+    """
+    df = _simulate_frame(seed=11)
+    seen = []
+    original = mc._layer_sample
+
+    def _spy(frame, layer, n_input, base_mask=None, base_reason=None):
+        seen.append(layer)
+        return original(frame, layer, n_input, base_mask=base_mask,
+                        base_reason=base_reason)
+
+    mc._layer_sample = _spy
+    try:
+        harness.estimate_all(df, "vocabulary", "keep0.8_rep0",
+                             layers=("M0", "M1"))
+        assert "M2" not in seen, "默认层里出现了 M2 的样本构造，说明还在白算"
+        assert set(seen) == {"M0", "M1"}
+    finally:
+        mc._layer_sample = original
+
+
+def test_asking_for_m2_still_fits_m2():
+    """§13.9 那一族确实要 M2，参数必须能把它要回来"""
+    df = _simulate_frame(seed=12)
+    out = harness.estimate_all(df, "user_type", "verified_only",
+                               layers=("M0", "M1", "M2"))
+    assert set(out["model"]) == {"M0", "M1", "M2"}
+    assert len(out) == len(harness.QUANTITIES) * 3

@@ -241,7 +241,10 @@ def estimate_all(user_df, variant_family, variant_label, replicate=0, seed=None,
             处理，本函数当前不做这件事。
         layers: 要估计的模型层，默认 ("M0", "M1")；只有 §13.9 画像相关
             的 variant 才应该传入 M2（方案文档 §11.4：M2 会收窄样本，
-            混进其它比较会混淆结论）
+            混进其它比较会混淆结论）。**这个参数会一路传给
+            models_core.fit_entry_models / fit_share_models**，因此默认值
+            真的少拟合一层，而不是拟合三层再把 M2 丢掉；DiD 那一侧
+            models_interaction.fit_interaction 本来就一次只拟合一层。
 
     Returns:
         DataFrame，恰好 len(QUANTITIES) * len(layers) 行，列集合等于
@@ -250,13 +253,24 @@ def estimate_all(user_df, variant_family, variant_label, replicate=0, seed=None,
     """
     n_input = len(user_df)
 
+    # `layers` 一路传到底层拟合函数里，而不是"拟合三层再把不要的层丢掉"。
+    # models_core 的四个 fit_* 原先无条件遍历 MODEL_LAYERS，于是默认的
+    # layers=("M0","M1") 一层机时都省不下来：账号族约 326 次估计、词表族约
+    # 200 次，每次都在算一层永远不会被写进结果表的 M2。丢弃的行从来没有
+    # 泄漏出去（_extract_row 按 model 精确取行），所以这是纯粹的浪费，
+    # 但它占掉整个套件三分之一的机时。
+    fit_layers = tuple(layers)
     entry_frames = {
-        domain: _safe_call(lambda d=domain: mc.fit_entry_models(user_df, d), f"entry/{domain}")
+        domain: _safe_call(
+            lambda d=domain: mc.fit_entry_models(user_df, d, layers=fit_layers),
+            f"entry/{domain}")
         for domain in set(_ENTRY_QUANTITIES.values())
     }
     topical_frames = {
         domain: _safe_call(
-            lambda d=domain: mc.fit_share_models(user_df, d, "topical_share"), f"topical/{domain}"
+            lambda d=domain: mc.fit_share_models(user_df, d, "topical_share",
+                                                 layers=fit_layers),
+            f"topical/{domain}"
         )
         for domain in set(_TOPICAL_QUANTITIES.values())
     }

@@ -1,31 +1,58 @@
 #!/bin/bash
-#SBATCH --job-name=robust
+#SBATCH --job-name=robust_heavy
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --time=48:00:00
 #SBATCH --mem=192G
-#SBATCH --array=1-5
+#SBATCH --array=1-2
 #SBATCH --output=job.%A_%a.robust.out
 #SBATCH --mail-type=end
 #SBATCH --mail-user=2401111059@stu.pku.edu.cn
 
-# §13 稳健性套件：一个数组任务跑一个族。
-# 输出（全部只写 analysis_data/robustness/）：
+# §13 稳健性套件的**两个贵族**：一个数组任务跑一个族。
 #   1 vocabulary     -> vocabulary.parquet, vocabulary_diagnostics.parquet
 #   2 accounts       -> accounts.parquet, account_diagnostics.parquet,
 #                       account_concentration.parquet
+#
+# 另外三个族在 **slurm/run_robustness_light.slurm**（任务号 3/4/5，见下）：
 #   3 samples        -> samples.parquet, sample_diagnostics.parquet,
 #                       sample_balance.parquet
 #   4 measures       -> measures.parquet, measure_diagnostics.parquet
 #   5 context_sample -> context_sample.parquet（供人工编码）
-# 各族自己写各自的 manifest 子目录。综合层（synthesis）**不在这个数组里**，
+# 两个脚本**共用同一套任务编号**：`--array=2` 在这个脚本里是账号族，
+# `--array=4` 在那个脚本里是测量族，任何一边都不会把编号错开。
+# 各族自己写各自的 manifest 子目录。综合层（synthesis）**两个数组都不含**，
 # 见文件末尾的运行顺序。
 #
-# 用法：
-#   sbatch slurm/run_robustness.slurm
-#   sbatch --array=2 slurm/run_robustness.slurm          # 只重跑账号族
-#   sbatch --array=1 slurm/run_robustness.slurm          # 只重跑词表族
+# 用法（两个脚本都要投，缺一不可）：
+#   export GENDER_DOMAIN_RUN_ID=$(date +%Y%m%d%H%M%S)   # 见下面"运行标识"
+#   sbatch --export=ALL slurm/run_robustness.slurm
+#   sbatch --export=ALL slurm/run_robustness_light.slurm
+#   sbatch --export=ALL --array=2 slurm/run_robustness.slurm   # 只重跑账号族
+#   sbatch --export=ALL --array=1 slurm/run_robustness.slurm   # 只重跑词表族
+#
+# --------------------------------------------------------------------------
+# 为什么要拆成两个脚本
+# --------------------------------------------------------------------------
+# SLURM 的 --time / --mem 对**整个数组**是同一个值。五个族原先挤在一个
+# 1-5 的数组里，就只能按最贵的那个申请：五个任务同时排上队要占住
+# 5 × 192G = 960G、48 小时的额度，而其中三个族一两个小时就结束、
+# 内存也远用不到 192G。多占的那部分不会变成算得更快，只会让这批作业更难
+# 排上队，也挡着同一个分区里别人的作业。
+# 因此重的两族留在这里（48 小时 / 192G / 8 核），轻的三族去
+# slurm/run_robustness_light.slurm（6 小时 / 96G / 4 核）。
+#
+# --------------------------------------------------------------------------
+# 运行标识（run_id）：拆开之后必须**手工**导出一次
+# --------------------------------------------------------------------------
+# 各族的 manifest 里都记着 config.run_id()，它优先读环境变量
+# GENDER_DOMAIN_RUN_ID，缺失时退化成 SLURM 的数组作业 id。五个族原先在同一个
+# 数组作业里，%A 相同，于是五张结果表天然带着同一个标识；拆成两个数组作业
+# 之后 %A 不再相同——**要让五张表还能被认出是同一批产出的，必须在投递之前
+# 自己 export 一次 GENDER_DOMAIN_RUN_ID，并对两个脚本都 `--export=ALL`**。
+# 不这么做不会报错，只会让两半的 manifest 各带各的标识，事后没有人能证明
+# 它们属于同一批。
 #
 # --------------------------------------------------------------------------
 # 稀疏关联结构在**每个任务内部**各建一份
@@ -39,7 +66,7 @@
 # 因此 --mem 是按"单个任务内存里同时装得下一份矩阵加一份表 C"申请的。
 #
 # --------------------------------------------------------------------------
-# 额度是按最贵的那两个族申请的
+# 额度是按这两个族申请的
 # --------------------------------------------------------------------------
 # 任务 1（词表）：默认 200 个 replicate，每个 replicate 一次
 #   harness.estimate_all（六个量 × 两层，含两次 DiD 拟合），外加默认 20 个
@@ -47,8 +74,7 @@
 #   正文，是整个套件里唯一还碰原始文本的一步。
 # 任务 2（账号）：默认 326 次 estimate_all（留一账号 2×50、留一类别 8+11、
 #   剔头部 2×3、中央级媒体 1、账号 bootstrap 200）。
-# 这两个任务各自都可能跑满十几个小时；任务 3/4/5 通常一两个小时内结束，
-# 但 SLURM 的 --time/--mem 对整个数组是同一个值，只能按最贵的那个申请。
+# 这两个任务各自都可能跑满十几个小时。
 #
 # 想让它跑得更快、更省：**调低下面两个旋钮，不要改代码**。
 #   * 词表族的 replicate 数：--n_replicates=50（默认 200，方案文档允许
@@ -81,12 +107,10 @@ VOC_REPLICATES="${VOC_REPLICATES:-200}"
 VOC_CALIBRATION="${VOC_CALIBRATION:-20}"
 ACC_TOP_N="${ACC_TOP_N:-50}"
 ACC_REPLICATES="${ACC_REPLICATES:-200}"
-SMP_REPLICATES="${SMP_REPLICATES:-200}"
-CTX_PER_CELL="${CTX_PER_CELL:-25}"
 
-# 同一次数组作业的五个任务共用一个运行标识（%A 是数组作业 id，对全部任务
-# 相同），这样五张结果表能被认出是同一批产出的。
-export GENDER_DOMAIN_RUN_ID="${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-$(date +%Y%m%d%H%M%S)}}"
+# 优先用调用者导出的运行标识（这是拆成两个脚本之后把五个族串成"同一批"的
+# 唯一办法），没有才退回本数组作业的 id。
+export GENDER_DOMAIN_RUN_ID="${GENDER_DOMAIN_RUN_ID:-${SLURM_ARRAY_JOB_ID:-${SLURM_JOB_ID:-$(date +%Y%m%d%H%M%S)}}}"
 echo "GENDER_DOMAIN_RUN_ID=${GENDER_DOMAIN_RUN_ID} TASK=${SLURM_ARRAY_TASK_ID:-1}"
 
 case "${SLURM_ARRAY_TASK_ID:-1}" in
@@ -104,27 +128,12 @@ case "${SLURM_ARRAY_TASK_ID:-1}" in
       --top_n="${ACC_TOP_N}" \
       --n_replicates="${ACC_REPLICATES}"
     ;;
-  3)
-    echo "=== 任务 3/5: §13.2 极端值 + §13.6 性别样本 + §13.9 用户类型 ==="
-    python -m gender_domain.robustness.samples build \
-      --year="${YEAR}" \
-      --n_replicates="${SMP_REPLICATES}"
-    ;;
-  4)
-    echo "=== 任务 4/5: §13.1 分母 + §13.8 帖子类型 + §13.7 时间限制 ==="
-    # §13.7 的留一月重估从 models_temporal 的输出里读，不重算：跑这一任务
-    # 之前 slurm/run_results.slurm 必须已经跑过，否则那一段会退化成一行
-    # 注明原因的行（LOMO_UNAVAILABLE_NOTE）。
-    python -m gender_domain.robustness.measures build --year="${YEAR}"
-    ;;
-  5)
-    echo "=== 任务 5/5: §13.4 语境效度抽样（产出给人工编码的表）==="
-    python -m gender_domain.robustness.context_sample build \
-      --year="${YEAR}" \
-      --n_per_cell="${CTX_PER_CELL}"
+  3|4|5)
+    echo "任务 ${SLURM_ARRAY_TASK_ID} 属于轻量的三个族，请投 slurm/run_robustness_light.slurm" >&2
+    exit 1
     ;;
   *)
-    echo "未知的数组任务号 ${SLURM_ARRAY_TASK_ID:-}，本数组只有 1-5" >&2
+    echo "未知的数组任务号 ${SLURM_ARRAY_TASK_ID:-}，本脚本只有 1-2" >&2
     exit 1
     ;;
 esac
@@ -132,8 +141,10 @@ esac
 echo "任务 ${SLURM_ARRAY_TASK_ID:-1} 完成，run_id=${GENDER_DOMAIN_RUN_ID}"
 
 # --------------------------------------------------------------------------
-# 五个任务全部结束之后，在登录节点跑综合层（它只读五张结果表，几秒钟）：
+# 本脚本的两个任务与 slurm/run_robustness_light.slurm 的三个任务**全部**结束
+# 之后，在登录节点跑综合层（它只读五张结果表，几秒钟）：
 #   python3 -m gender_domain.robustness.synthesis build --year=2020
-# 综合层刻意不放进这个数组：它必须等五个族都写完才有意义，而数组任务之间
-# 没有顺序保证。真要串起来，用 --dependency=afterok:<数组作业 id>。
+# 综合层刻意不放进任何一个数组：它必须等五个族都写完才有意义，而数组任务
+# 之间没有顺序保证。真要串起来，用
+#   --dependency=afterok:<本数组作业 id>:<轻量数组作业 id>
 # --------------------------------------------------------------------------

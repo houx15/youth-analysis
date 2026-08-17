@@ -736,3 +736,94 @@ def test_formula_terms_distinguishes_an_absent_column_from_a_constant_one():
     assert "{}:log_fans".format(mc.DROP_KIND_MISSING) in note
     # 两个前缀不能是同一个字符串，否则这条测试什么也没区分
     assert mc.DROP_KIND_CONSTANT != mc.DROP_KIND_MISSING
+
+
+# ---------------------------------------------------------------------------
+# layers 参数：默认必须仍然是三层，主结果层的行为一个字节都不能变
+# ---------------------------------------------------------------------------
+
+def test_the_default_layers_are_still_all_three_for_every_fit_function():
+    """默认不传 layers 时，四个 fit_* 都必须原样产出 M0/M1/M2
+
+    这是加 layers 参数时唯一真正危险的地方：论文正文的四张结果表要三层
+    （模块文档第 2 条），默认值一旦变成 M0/M1，会静悄悄地把 M2 从论文
+    自己的表里删掉——那比它想省下的那点机时糟糕得多。
+    """
+    df = _simulate_users(n_male=300, n_female=300, seed=90)
+    for frame in (
+        mc.fit_entry_models(df, "public"),
+        mc.fit_intensity_models(df, "public"),
+        mc.fit_share_models(df, "public", "topical_share"),
+        mc.fit_persistence_models(df, "public"),
+    ):
+        assert set(frame["model"]) == {"M0", "M1", "M2"}
+
+
+def test_the_default_is_byte_identical_to_asking_for_all_three_layers():
+    """default 与显式三层必须逐行逐列相同——这就是"主流程没被动过"的证据"""
+    df = _simulate_users(n_male=300, n_female=300, seed=91)
+    all_three = ("M0", "M1", "M2")
+    pd.testing.assert_frame_equal(
+        mc.fit_entry_models(df, "public"),
+        mc.fit_entry_models(df, "public", layers=all_three))
+    pd.testing.assert_frame_equal(
+        mc.fit_share_models(df, "public", "topical_share"),
+        mc.fit_share_models(df, "public", "topical_share", layers=all_three))
+    pd.testing.assert_frame_equal(
+        mc.fit_persistence_models(df, "public"),
+        mc.fit_persistence_models(df, "public", layers=all_three))
+    pd.testing.assert_frame_equal(
+        mc.fit_intensity_models(df, "public"),
+        mc.fit_intensity_models(df, "public", layers=all_three))
+
+
+def test_asking_for_two_layers_drops_m2_and_leaves_the_other_rows_unchanged():
+    """稳健性套件要的那两层，其数值必须与三层跑法逐行相同"""
+    df = _simulate_users(n_male=300, n_female=300, seed=92)
+    full = mc.fit_entry_models(df, "public")
+    two = mc.fit_entry_models(df, "public", layers=("M0", "M1"))
+    assert set(two["model"]) == {"M0", "M1"}
+    expected = full[full["model"].isin(("M0", "M1"))].reset_index(drop=True)
+    pd.testing.assert_frame_equal(two.reset_index(drop=True), expected)
+
+
+def test_selected_layers_keeps_the_declaration_order_of_model_layers():
+    """传进来的顺序不影响输出顺序：层的顺序只有 MODEL_LAYERS 一个来源"""
+    assert [name for name, _ in mc.selected_layers(("M1", "M0"))] == ["M0", "M1"]
+    assert [name for name, _ in mc.selected_layers(None)] == list(mc.MODEL_LAYER_NAMES)
+
+
+def test_an_unknown_layer_name_raises_instead_of_being_silently_skipped():
+    """写错层名如果被静默忽略，得到的是一张"少了几层却看不出少了"的表"""
+    df = _simulate_users(n_male=50, n_female=50, seed=93)
+    with pytest.raises(ValueError, match="M3"):
+        mc.fit_entry_models(df, "public", layers=("M0", "M3"))
+    with pytest.raises(ValueError):
+        mc.selected_layers(("m1",))
+
+
+def test_a_skipped_layer_is_never_fitted_at_all():
+    """不是"拟合三层再丢掉 M2"，而是根本不去构造 M2 的样本
+
+    这条测试守的是这次改动的**全部收益**：如果哪天有人把 layers 参数
+    退化成"照样跑三层、最后再筛一遍"，数值结果不会有任何变化，只有这里
+    会挂。
+    """
+    df = _simulate_users(n_male=200, n_female=200, seed=94)
+    seen = []
+    original = mc._layer_sample
+
+    def _spy(frame, layer, n_input, base_mask=None, base_reason=None):
+        seen.append(layer)
+        return original(frame, layer, n_input, base_mask=base_mask,
+                        base_reason=base_reason)
+
+    mc._layer_sample = _spy
+    try:
+        mc.fit_entry_models(df, "public", layers=("M0", "M1"))
+        assert seen == ["M0", "M1"]
+        seen.clear()
+        mc.fit_entry_models(df, "public")
+        assert seen == ["M0", "M1", "M2"]
+    finally:
+        mc._layer_sample = original

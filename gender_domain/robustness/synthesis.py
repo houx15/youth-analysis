@@ -18,6 +18,39 @@
   这条路径在真实数据上一定会被走到。
 
 --------------------------------------------------------------------------
+方向一致率有两个口径，本模块两个都报
+--------------------------------------------------------------------------
+§13.10 第一条准则问的是"换掉账号、换掉月份、换掉分母之后，方向还在不在"。
+把它数成一个比例，有两种数法，而它们在这套数据上差得很远：
+
+- **行池口径**（`direction_share_row_pooled_{layer}`，历史列名
+  `direction_share_{layer}`）：每一个变体行一票。vocabulary 默认 200 个
+  replicate、accounts 的 bootstrap 默认 200 个，而 denominators / post_types /
+  temporal_restrictions / user_type / extreme_values 加起来只有三十来行确定性
+  变体。于是一个"97% 的变体同号"里，九成以上的票来自两个重抽样分布——它说的
+  其实是"这两个分布很紧"，而不是准则一真正要问的那件事。
+- **一族一票口径**（`direction_share_family_weighted_{layer}`）：先算每一族
+  自己的一致率，再在族之间取算术平均，与 replicate 数无关。
+
+两个数字回答的是两个不同的问题（"随机抽一次估计"vs"随机抽一族检验"），
+因此本模块**两个都输出、都清清楚楚地命名，并给出两者之差**，逐族明细单独
+落成 `synthesis_direction_by_family.parquet`。哪一个写进正文是作者的判断——
+和这个模块里其它每一处一样，它报告，不裁定。
+
+--------------------------------------------------------------------------
+参照不只要说"和什么比的"，还要说"和哪一批比的"
+--------------------------------------------------------------------------
+`baseline_source` 记的是文件名（默认是 analysis_data/results 的三张表），
+但同名文件里的数字会随主结果层重跑而整批更换。表 C 重建之后重跑一次主结果，
+每一个"变体减基线"的差值就同时混着"这个变体改了什么"和"主结果换了一版"
+两件事，而且事后无从分辨。因此参照的 `run_id` / `git_sha` / `git_dirty`
+一并记录（读的是 `config.stamp_result_files` 已经在
+`analysis_data/results/run_stamps.json` 里写好的那一份，不另造约定），
+逐行写进每一张输出表，也写进 manifest。三张表来自不同批次时写成 `mixed:`
+并告警——但**不报错**：导出层用 `config.verify_same_run` 拦下混装是对的，
+本模块的纪律是把它摆出来给作者看。
+
+--------------------------------------------------------------------------
 上游四件事，本模块必须原样接住
 --------------------------------------------------------------------------
 1. **没有任何一族产出基线行。** vocabulary 与 accounts 是有意不产出的，
@@ -99,6 +132,26 @@ BASELINE_UNAVAILABLE_NOTE = (
 )
 BASELINE_MISSING_ROW_NOTE = "baseline_row_missing_in_main_results"
 
+# --------------------------------------------------------------------------
+# 参照的批次指纹：run_id / git_sha
+# --------------------------------------------------------------------------
+# `baseline_source` 只说了"和 analysis_data/results 的哪几个文件比的"，没说
+# **哪一版**的那几个文件。表 C 一旦重建、主结果层重跑，同名文件里的数字就换
+# 了一批，而每一个"变体减基线"的差值会被这次版本差静默污染——差值照样算得
+# 出来，只是它同时混着"这个变体改了什么"和"主结果换了一版"两件事。
+# config.stamp_result_files 已经在 analysis_data/results/run_stamps.json 里逐
+# 文件记下了 run_id / git_sha（导出层用 verify_same_run 读同一份记录），这里
+# 复用它，不另造一套约定。
+BASELINE_STAMP_NOT_FROM_RESULTS = (
+    "not_applicable:baseline_did_not_come_from_analysis_data/results")
+BASELINE_STAMP_UNRECORDED = (
+    "unrecorded:no_run_stamps.json_entry_for_the_baseline_result_tables")
+# 三张主结果表来自不同批次时的写法。它本身就是一条要被看见的事实：
+# 参照的六个量此时横跨两次运行。
+BASELINE_STAMP_MIXED_PREFIX = "mixed:"
+BASELINE_STAMP_COLUMNS = ("baseline_run_id", "baseline_git_sha",
+                          "baseline_git_dirty")
+
 # 五个族各自的落盘文件。键是 SLURM 数组任务的那个"族"，值是结果表文件名。
 # 一个文件里可以有多个 variant_family（samples 里有四个），两者刻意分开。
 FAMILY_FILES = OrderedDict([
@@ -157,7 +210,11 @@ UNIT_TERM_SET = "term_set"
 UNIT_USER_GROUP = "user_group"
 UNIT_MONTH = "month"
 UNIT_MEASUREMENT = "measurement"
-UNIT_UNCLASSIFIED = "unclassified"
+# 参照行与配对校准族都不是"变体"，它们不动任何一个影响力单位。两者仍然要
+# **显式**登记（见 _UNIT_BY_FAMILY 下面的说明）：只有把它们写出来，未登记的
+# 族才能被当成错误抓住。
+UNIT_BASELINE = "baseline_reference"
+UNIT_PAIRED_CALIBRATION = "paired_calibration_arm"
 
 # 简报点名的四个单位，judge 逐个单独成列
 NAMED_UNITS = OrderedDict([
@@ -167,7 +224,17 @@ NAMED_UNITS = OrderedDict([
     (UNIT_MONTH, "month"),
 ])
 
+# 每一个可能出现在本模块里的 variant_family 都必须在这里登记一个影响力单位。
+# **没有兜底值**：从前这里的 `.get(family, UNIT_UNCLASSIFIED)` 会把任何一个
+# 将来新增、却忘了登记的族静悄悄地吸进 "unclassified" 这个桶里——它照样会被
+# 算进准则三的分组，只是分在一个没有人会去读的组名下，于是"这一族到底动的是
+# 账号、用户群还是月份"这个 §13.10 第三条准则唯一要回答的问题，对它就永远
+# 不会被问出来。忘记登记必须当场报错（见 influence_unit）。
+# baseline 与配对校准族本身不进变体池，但 specification_curve_data 会把参照行
+# 一起画进曲线，所以它们同样要有一个显式的取值。
 _UNIT_BY_FAMILY = {
+    BASELINE_FAMILY: UNIT_BASELINE,
+    voc.CALIBRATION_FAMILY: UNIT_PAIRED_CALIBRATION,
     voc.VARIANT_FAMILY: UNIT_TERM_SET,
     acc.BOOTSTRAP_FAMILY: UNIT_ACCOUNT_SET,
     smp.VARIANT_FAMILY_EXTREME: UNIT_USER_GROUP,
@@ -214,6 +281,22 @@ JUDGE_NOTE = (
     "the_judgement_is_the_author's"
 )
 
+# judge 每一行都带着的、关于方向一致率两个口径的说明。**它不是第五条准则，
+# 也不说哪个口径是对的**——两个口径回答的是两个不同的问题，选哪一个写进正文
+# 是作者的判断（见 _family_weighted_share）。
+DIRECTION_SHARE_POINTER = (
+    "direction_share_row_pooled_*_weights_every_variant_row_equally,so_the_two_"
+    "resampling_families(vocabulary~200_replicates,accounts_bootstrap~200)"
+    "dominate_it_over_the_~30_deterministic_rows_of_denominators/post_types/"
+    "temporal_restrictions/user_type/extreme_values;"
+    "direction_share_family_weighted_*_gives_every_variant_family_one_vote;"
+    "their_difference_is_direction_share_pooled_minus_family_weighted_*,"
+    "and_the_per-family_breakdown_lives_in_synthesis_direction_by_family.parquet;"
+    "13.10's_first_criterion_asks_whether_the_sign_survives_dropping_accounts,"
+    "months_or_denominators,which_is_closer_to_the_family-weighted_reading,"
+    "but_which_number_goes_in_the_paper_is_the_author's_call"
+)
+
 # §11.3 的 FDR 只作用于次要分析。这些是主结果层里可能装着次要分析的文件；
 # 其中的六个预先设定量由 apply_fdr 逐行认出并跳过。
 SECONDARY_RESULT_FILES = (
@@ -246,7 +329,8 @@ _QUANTITY_BY_TRIPLE = {
 }
 
 # 本模块在共享 schema 之上追加的列
-SYNTHESIS_EXTRA_COLUMNS = ("quantity", "source_file", "baseline_source")
+SYNTHESIS_EXTRA_COLUMNS = (
+    ("quantity", "source_file", "baseline_source") + BASELINE_STAMP_COLUMNS)
 
 
 # ---------------------------------------------------------------------------
@@ -285,13 +369,33 @@ def quantity_of(outcome, domain, term):
 
 
 def influence_unit(variant_family, variant_label):
-    """这一行动的是哪一类东西：单个账号 / 一批账号 / 词表 / 用户群 / 月份"""
+    """这一行动的是哪一类东西：单个账号 / 一批账号 / 词表 / 用户群 / 月份
+
+    未登记的 variant_family **直接报错**，不给兜底值。以前的兜底是
+    `UNIT_UNCLASSIFIED`，一个将来新增却忘了登记的族会被静悄悄地吸进那个桶
+    里，照样参与准则三的分组、只是分在一个没人读的组名下。§13.10 第三条准则
+    问的恰恰是"这个结论是不是被少数账号 / 用户群 / 词 / 月份推着走"，一个没
+    被分类的族等于这个问题对它从没被问出来过——那必须是一次显式的失败，
+    而不是一行安静的输出。
+    """
     if variant_family == acc.VARIANT_FAMILY:
         label = "" if variant_label is None else str(variant_label)
         if any(marker in label for marker in _SINGLE_ACCOUNT_MARKERS):
             return UNIT_ACCOUNT
         return UNIT_ACCOUNT_SET
-    return _UNIT_BY_FAMILY.get(variant_family, UNIT_UNCLASSIFIED)
+    if variant_family not in _UNIT_BY_FAMILY:
+        raise ValueError(
+            "variant_family {!r} 没有在 synthesis._UNIT_BY_FAMILY 里登记影响力"
+            "单位。§13.10 的第三条准则是按影响力单位分组回答的，一个没登记的族"
+            "会落进一个没人读的组名下，等于这个问题对它从没被问过。请显式把它"
+            "归到 {} 之一（或者，如果它根本不是一个变体族，归到 {}）。".format(
+                variant_family,
+                sorted({UNIT_ACCOUNT, UNIT_ACCOUNT_SET, UNIT_TERM_SET,
+                        UNIT_USER_GROUP, UNIT_MONTH, UNIT_MEASUREMENT}),
+                sorted({UNIT_BASELINE, UNIT_PAIRED_CALIBRATION}),
+            )
+        )
+    return _UNIT_BY_FAMILY[variant_family]
 
 
 def is_not_applicable(note):
@@ -331,6 +435,63 @@ def _nan_baseline_rows(layers, note, source):
         rows, columns=list(harness.ROBUSTNESS_SCHEMA) + ["quantity", "source_file"])
 
 
+def _not_from_results_stamp():
+    """参照不是从主结果层读来的（已有基线行 / 重算 / 取不到）时的批次指纹"""
+    return {name: BASELINE_STAMP_NOT_FROM_RESULTS for name in BASELINE_STAMP_COLUMNS}
+
+
+def _collapse_stamp_field(values, field):
+    """把若干张表的同一个批次字段收敛成一个值，不一致时写成 mixed: 并告警"""
+    distinct = sorted({str(v) for v in values})
+    if not distinct:
+        return BASELINE_STAMP_UNRECORDED
+    if len(distinct) == 1:
+        return distinct[0]
+    print("警告: 参照用到的主结果表 {} 不一致（{}）。参照的六个量因此横跨多次"
+          "运行，任何'变体减基线'的差值都混着一次主结果版本差——"
+          "请重新完整跑一遍 slurm/run_results.slurm".format(
+              field, "|".join(distinct)))
+    return BASELINE_STAMP_MIXED_PREFIX + "|".join(distinct)
+
+
+def baseline_run_stamp(directory, filenames):
+    """从 analysis_data/results/run_stamps.json 取这几张参照表的批次指纹
+
+    返回 BASELINE_STAMP_COLUMNS 三个键的 dict。没有记录（表是在运行标识机制
+    之前跑出来的，或者是手工拷进来的）时写成 BASELINE_STAMP_UNRECORDED——
+    **不编一个**：读不出批次这件事本身就是"这次比较无法追溯"的证据，比一个
+    看起来正常的空字符串有用得多。
+
+    这里刻意不调 `config.verify_same_run`：那个函数在不一致时抛错，对导出层
+    是对的（混装的图必须拦下），对本模块不是——稳健性综合层的纪律是报告而
+    不是裁定，参照横跨两次运行时该做的是把这件事写进每一行与 manifest，让
+    作者看见，而不是让整个综合层跑不出来。
+    """
+    try:
+        stamps = config.read_run_stamps(directory)
+    except Exception as exc:  # noqa: BLE001 —— 读不出批次要留痕，不能静默
+        print("警告: 读不出 {} 的运行标识记录（{}: {}），参照的批次指纹记为"
+              "无记录".format(directory, type(exc).__name__, exc))
+        stamps = {}
+    entries = [stamps[name] for name in filenames if name in stamps]
+    missing = [name for name in filenames if name not in stamps]
+    if missing:
+        print("警告: {} 里这些参照表没有运行标识记录: {}。它们要么产出于运行"
+              "标识机制之前，要么是手工拷进来的——无论哪一种，'参照是哪一批'"
+              "都无法被事后核对".format(directory, "+".join(missing)))
+    if not entries:
+        return {name: BASELINE_STAMP_UNRECORDED for name in BASELINE_STAMP_COLUMNS}
+    return {
+        "baseline_run_id": _collapse_stamp_field(
+            [e.get("run_id", BASELINE_STAMP_UNRECORDED) for e in entries], "run_id"),
+        "baseline_git_sha": _collapse_stamp_field(
+            [e.get("git_sha", BASELINE_STAMP_UNRECORDED) for e in entries], "git_sha"),
+        "baseline_git_dirty": _collapse_stamp_field(
+            [e.get("git_dirty", BASELINE_STAMP_UNRECORDED) for e in entries],
+            "git_dirty"),
+    }
+
+
 def _baseline_from_main_results(layers, directory):
     """从主结果层的三张表里按 (outcome, domain, term, model) 取六个量
 
@@ -348,7 +509,8 @@ def _baseline_from_main_results(layers, directory):
                                       columns=list(su.RESULT_SCHEMA)))
         used.append(name)
     if not frames:
-        return None, None
+        return None, None, None
+    stamp = baseline_run_stamp(directory, used)
     pooled = pd.concat(frames, ignore_index=True)
     rows = []
     n_missing = 0
@@ -384,7 +546,7 @@ def _baseline_from_main_results(layers, directory):
               "这些参照写成 NaN 并注明原因".format(n_missing))
     frame = pd.DataFrame(
         rows, columns=list(harness.ROBUSTNESS_SCHEMA) + ["quantity", "source_file"])
-    return frame, BASELINE_SOURCE_MAIN_RESULTS.format("+".join(used))
+    return frame, BASELINE_SOURCE_MAIN_RESULTS.format("+".join(used)), stamp
 
 
 def _baseline_recomputed(year, layers):
@@ -426,37 +588,46 @@ def _baseline_recomputed(year, layers):
 
 def resolve_baseline(variants, year=config.YEAR, main_results_dir=None,
                      allow_recompute=True):
-    """显式取得参照，并返回 (参照行, 来源说明)
+    """显式取得参照，并返回 (参照行, 来源说明, 批次指纹)
 
     顺序刻意如此：
       1. 数据里已有 `variant_family="baseline"` 的行——最直接；
       2. 主结果层的三张表——论文正文报告的就是它们，默认走这一条；
       3. 从表 C 现场重算（可关）；
       4. 都没有：一组注明"参照不可得"的 NaN 行。**不编造参照。**
+
+    第三个返回值是 BASELINE_STAMP_COLUMNS 三个键的 dict：走第 2 条时是那几张
+    主结果表在 run_stamps.json 里的 run_id / git_sha / git_dirty，其余三条路
+    上是 BASELINE_STAMP_NOT_FROM_RESULTS。**没有它，`baseline_source` 只说得
+    出"和 results 下的哪几个文件比的"，说不出是哪一版**——表 C 重建之后主结果
+    重跑一次，同名文件里换了一批数字，每个"变体减基线"的差值都被这次版本差
+    静默污染，事后没有任何东西能把它认出来。
     """
     layers = _layers_of(variants)
     existing = variants[variants["variant_family"] == BASELINE_FAMILY]
     if len(existing):
         print("参照来源: 数据里已有 {} 行 variant_family=baseline".format(len(existing)))
-        return existing.copy(), BASELINE_SOURCE_ROWS
+        return existing.copy(), BASELINE_SOURCE_ROWS, _not_from_results_stamp()
 
-    frame, source = _baseline_from_main_results(
+    frame, source, stamp = _baseline_from_main_results(
         layers, main_results_dir if main_results_dir is not None else results_dir())
     if frame is not None:
-        print("参照来源: {}".format(source))
-        return frame, source
+        print("参照来源: {}（run_id={}, git_sha={}）".format(
+            source, stamp["baseline_run_id"], stamp["baseline_git_sha"]))
+        return frame, source, stamp
 
     if allow_recompute:
         frame, source = _baseline_recomputed(year, layers)
         if frame is not None:
             print("参照来源: {}".format(source))
-            return frame, source
+            return frame, source, _not_from_results_stamp()
 
     print("警告: 参照不可得——既没有 baseline 行，也读不到主结果表。"
           "六个量的参照写成 NaN 并注明原因，所有比较都会随之为 NaN")
     return (_nan_baseline_rows(layers, BASELINE_UNAVAILABLE_NOTE,
                                BASELINE_SOURCE_UNAVAILABLE),
-            BASELINE_SOURCE_UNAVAILABLE)
+            BASELINE_SOURCE_UNAVAILABLE,
+            _not_from_results_stamp())
 
 
 def _layers_of(frame):
@@ -482,10 +653,12 @@ def load_all(year=config.YEAR, directory=None, main_results_dir=None,
         allow_recompute: 参照实在取不到时，允不允许从表 C 现场重算
 
     Returns:
-        DataFrame，列 = ROBUSTNESS_SCHEMA + quantity + source_file +
-        baseline_source。`quantity` 认不出来的行（注明原因的行、schema
-        对得上但不属于六个量的行）如实留空，不硬塞。`baseline_source`
-        是整张表的常量，因此任何子集都还带着"和什么比的"这条信息。
+        DataFrame，列 = ROBUSTNESS_SCHEMA + SYNTHESIS_EXTRA_COLUMNS。
+        `quantity` 认不出来的行（注明原因的行、schema 对得上但不属于六个量
+        的行）如实留空，不硬塞。`baseline_source` 与三列批次指纹
+        （baseline_run_id / baseline_git_sha / baseline_git_dirty）都是整张表
+        的常量，因此任何子集都还带着"和什么比的"以及"和哪一批比的"这两条
+        信息。
     """
     directory = directory if directory is not None else robustness_dir()
     frames = []
@@ -515,7 +688,7 @@ def load_all(year=config.YEAR, directory=None, main_results_dir=None,
         for o, d, t in zip(variants["outcome"], variants["domain"], variants["term"])
     ]
 
-    baseline, source = resolve_baseline(
+    baseline, source, stamp = resolve_baseline(
         variants, year=year, main_results_dir=main_results_dir,
         allow_recompute=allow_recompute)
     baseline = baseline.copy()
@@ -535,6 +708,10 @@ def load_all(year=config.YEAR, directory=None, main_results_dir=None,
         out = pd.concat([variants[columns], baseline[columns]], ignore_index=True)
     out = out.reset_index(drop=True)
     out["baseline_source"] = source
+    # 批次指纹与 baseline_source 一样逐行带着：任何一个子集都还答得出
+    # "和哪一批主结果比的"，而不只是"和哪几个文件名比的"
+    for name in BASELINE_STAMP_COLUMNS:
+        out[name] = stamp[name]
     print("综合层共读入 {} 行（其中参照 {} 行），缺失的族: {}".format(
         len(out), int((out["variant_family"] == BASELINE_FAMILY).sum()),
         missing or "无"))
@@ -542,7 +719,7 @@ def load_all(year=config.YEAR, directory=None, main_results_dir=None,
 
 
 def _prepare(df):
-    """补齐 quantity / baseline_source 两列，让手工构造的帧也能直接进来"""
+    """补齐 quantity / baseline_source / 批次指纹三组列，让手工构造的帧也能进来"""
     out = df.copy()
     if "quantity" not in out.columns:
         out["quantity"] = [
@@ -553,7 +730,19 @@ def _prepare(df):
         has_rows = (out["variant_family"] == BASELINE_FAMILY).any()
         out["baseline_source"] = (
             BASELINE_SOURCE_ROWS if has_rows else BASELINE_SOURCE_UNAVAILABLE)
+    for name in BASELINE_STAMP_COLUMNS:
+        if name not in out.columns:
+            # 手工构造的帧（测试、临时排查）没有走 load_all，参照不是从主结果
+            # 层读来的，指纹如实写成"不适用"，不写空
+            out[name] = BASELINE_STAMP_NOT_FROM_RESULTS
     return out
+
+
+def _stamp_of(prepared):
+    """从已经 _prepare 过的帧里把三个批次指纹取回来（空帧退化成"不适用"）"""
+    if not len(prepared):
+        return _not_from_results_stamp()
+    return {name: str(prepared[name].iloc[0]) for name in BASELINE_STAMP_COLUMNS}
 
 
 def variant_pool(df):
@@ -672,6 +861,7 @@ def direction_consistency(df, families=EXPECTED_VARIANT_FAMILIES):
     pool = variant_pool(prepared)
     base = baseline_map(prepared)
     source = str(prepared["baseline_source"].iloc[0]) if len(prepared) else None
+    stamp = _stamp_of(prepared)
 
     models = _layers_of(pool) if len(pool) else _layers_of(prepared)
     rows = []
@@ -705,6 +895,9 @@ def direction_consistency(df, families=EXPECTED_VARIANT_FAMILIES):
                 "quantity": quantity,
                 "model": model,
                 "baseline_source": source,
+                "baseline_run_id": stamp["baseline_run_id"],
+                "baseline_git_sha": stamp["baseline_git_sha"],
+                "baseline_git_dirty": stamp["baseline_git_dirty"],
                 "baseline_estimate": float(baseline_estimate)
                 if baseline_estimate == baseline_estimate else np.nan,
                 "baseline_sign": baseline_sign,
@@ -729,6 +922,144 @@ def direction_consistency(df, families=EXPECTED_VARIANT_FAMILIES):
     return pd.DataFrame(rows)
 
 
+DIRECTION_BY_FAMILY_COLUMNS = (
+    "quantity", "model", "variant_family", "baseline_source", "baseline_run_id",
+    "baseline_git_sha", "baseline_git_dirty", "baseline_estimate", "baseline_sign",
+    "n_variant_labels", "n_replicates", "n_rows", "n_live", "n_nan", "n_agree",
+    "share_agree", "share_ci_low", "share_ci_high", "estimate_min", "estimate_max",
+    "estimate_median", "share_of_pooled_live_rows", "note",
+)
+
+DIRECTION_BY_FAMILY_NOTE = (
+    "one_row_per_(quantity,layer,variant_family);"
+    "share_of_pooled_live_rows_is_this_family's_weight_in_the_row-pooled_"
+    "share_agree_of_synthesis_direction.parquet:"
+    "vocabulary_and_accounts_bootstrap_contribute_~200_replicates_each_while_"
+    "the_deterministic_families_contribute_a_handful_of_rows,so_the_row-pooled_"
+    "number_is_mostly_a_statement_about_two_resampling_distributions;"
+    "families_that_produced_no_row_at_all_are_not_listed_here_"
+    "(see_families_missing_in_synthesis_direction.parquet)"
+)
+
+
+def direction_by_family(df, families=EXPECTED_VARIANT_FAMILIES):
+    """逐 (量, 层, variant_family) 的方向一致率，外加这一族占了行池的多大份额
+
+    **为什么必须单独有这张表。** `direction_consistency` 的 `share_agree` 是
+    按**行**汇总的，而各族的行数差着两个数量级：vocabulary 默认 200 个
+    replicate、accounts 的 bootstrap 默认 200 个，剩下的 denominators /
+    post_types / temporal_restrictions / user_type / extreme_values 加起来只有
+    三十来行确定性变体。于是一个"97% 的变体同号"实际上主要在说"两个重抽样
+    分布很紧"，而不是 §13.10 第一条准则真正要问的"换掉账号、换掉月份、换掉
+    分母之后结论还在不在"。`n_families_live` / `families_tested` 让细心的读者
+    有可能察觉到这一点，但在这张表出现之前，逐族的一致率**在任何一张输出里
+    都不存在**，想看只能自己回去重算。
+
+    `share_of_pooled_live_rows` 就是这一族在行池一致率里的权重，把上面那件事
+    变成一个可以直接读的数字。
+
+    只列出**真的产出过行**的族：一个族一行都没产出时，"它的一致率是多少"
+    没有意义，那件事由 `direction_consistency` 的 `families_missing` 报告。
+    """
+    prepared = _prepare(df)
+    pool = variant_pool(prepared)
+    base = baseline_map(prepared)
+    source = str(prepared["baseline_source"].iloc[0]) if len(prepared) else None
+    stamp = _stamp_of(prepared)
+
+    models = _layers_of(pool) if len(pool) else _layers_of(prepared)
+    rows = []
+    for quantity in harness.QUANTITIES:
+        for model in models:
+            group = pool[(pool["quantity"] == quantity) & (pool["model"] == model)]
+            if not len(group):
+                continue
+            n_live_pooled = int(group["estimate"].notna().sum())
+            baseline_estimate = base.get((quantity, model), np.nan)
+            baseline_sign = (
+                float(np.sign(baseline_estimate))
+                if baseline_estimate == baseline_estimate else np.nan)
+            expected = expected_families_for(model, families)
+            # 先按 expected 的顺序排，再把出现在数据里、却不在 expected 里的族
+            # 补在后面——后者本身就是一条要被看见的事实（多跑了一族），
+            # 不能因为"不在名单上"就从这张表里消失
+            present = [f for f in expected
+                       if (group["variant_family"] == f).any()]
+            present += sorted(set(group["variant_family"].dropna().unique())
+                              - set(expected))
+            for family in present:
+                sub = group[group["variant_family"] == family]
+                live = sub[sub["estimate"].notna()]
+                if len(live) and baseline_sign == baseline_sign:
+                    n_agree = int((np.sign(live["estimate"].astype(float))
+                                   == baseline_sign).sum())
+                    share = n_agree / float(len(live))
+                    ci_low, ci_high = su.proportion_ci(n_agree, len(live))
+                else:
+                    # 与 direction_consistency 守同一条纪律：这次比较根本没能
+                    # 做的时候，n_agree 写 NaN 而不是 0
+                    n_agree, share, ci_low, ci_high = (
+                        np.nan, np.nan, np.nan, np.nan)
+                rows.append({
+                    "quantity": quantity,
+                    "model": model,
+                    "variant_family": family,
+                    "baseline_source": source,
+                    "baseline_run_id": stamp["baseline_run_id"],
+                    "baseline_git_sha": stamp["baseline_git_sha"],
+                    "baseline_git_dirty": stamp["baseline_git_dirty"],
+                    "baseline_estimate": float(baseline_estimate)
+                    if baseline_estimate == baseline_estimate else np.nan,
+                    "baseline_sign": baseline_sign,
+                    "n_variant_labels": int(sub["variant_label"].nunique()),
+                    "n_replicates": int(sub["replicate"].nunique(dropna=False)),
+                    "n_rows": int(len(sub)),
+                    "n_live": int(len(live)),
+                    "n_nan": int(len(sub) - len(live)),
+                    "n_agree": float(n_agree) if n_agree == n_agree else np.nan,
+                    "share_agree": float(share) if share == share else np.nan,
+                    "share_ci_low": float(ci_low) if ci_low == ci_low else np.nan,
+                    "share_ci_high": float(ci_high) if ci_high == ci_high else np.nan,
+                    "estimate_min": float(live["estimate"].min())
+                    if len(live) else np.nan,
+                    "estimate_max": float(live["estimate"].max())
+                    if len(live) else np.nan,
+                    "estimate_median": float(live["estimate"].median())
+                    if len(live) else np.nan,
+                    "share_of_pooled_live_rows": (
+                        len(live) / float(n_live_pooled)
+                        if n_live_pooled else np.nan),
+                    "note": DIRECTION_BY_FAMILY_NOTE,
+                })
+    return pd.DataFrame(rows, columns=list(DIRECTION_BY_FAMILY_COLUMNS))
+
+
+def _family_weighted_share(by_family, quantity, model):
+    """一族一票的方向一致率：各族自己的 share_agree 取算术平均
+
+    与行池一致率的差别只有一件事——**权重**。行池按行数加权，于是 200 个
+    replicate 的重抽样族压过所有确定性族；这里每一族一票，"换掉一个月份"
+    与"重抽一次词表"分量相同。两个数字都不是"正确"的那一个：前者回答
+    "随机抽一次估计，它与基线同号的概率"，后者回答"随机抽一族检验，这一族
+    整体上与基线同号的比例"。§13.10 第一条准则问的更接近后者，但选哪个
+    当正文里的那句话是作者的判断，本模块两个都报。
+
+    Returns:
+        (family_weighted_share, n_families, dominant_family, dominant_weight)
+    """
+    sub = by_family[(by_family["quantity"] == quantity)
+                    & (by_family["model"] == model)]
+    live = sub[sub["share_agree"].notna()]
+    share = float(live["share_agree"].mean()) if len(live) else np.nan
+    dominant, weight = None, np.nan
+    weights = sub[sub["share_of_pooled_live_rows"].notna()]
+    if len(weights):
+        position = int(np.argmax(weights["share_of_pooled_live_rows"].values))
+        dominant = weights["variant_family"].iloc[position]
+        weight = float(weights["share_of_pooled_live_rows"].iloc[position])
+    return share, int(len(live)), dominant, weight
+
+
 # ---------------------------------------------------------------------------
 # §13.10 准则二：活动量调整带来的衰减
 # ---------------------------------------------------------------------------
@@ -750,6 +1081,7 @@ def activity_attenuation(df, layer_from="M0", layer_to="M1"):
     pool = variant_pool(prepared)
     base = baseline_map(prepared)
     source = str(prepared["baseline_source"].iloc[0]) if len(prepared) else None
+    stamp = _stamp_of(prepared)
 
     rows = []
     for quantity in harness.QUANTITIES:
@@ -780,6 +1112,9 @@ def activity_attenuation(df, layer_from="M0", layer_to="M1"):
             "layer_from": layer_from,
             "layer_to": layer_to,
             "baseline_source": source,
+            "baseline_run_id": stamp["baseline_run_id"],
+            "baseline_git_sha": stamp["baseline_git_sha"],
+            "baseline_git_dirty": stamp["baseline_git_dirty"],
             "baseline_estimate_M0": float(b0) if b0 == b0 else np.nan,
             "baseline_estimate_M1": float(b1) if b1 == b1 else np.nan,
             "baseline_attenuation": _attenuation(b0, b1),
@@ -814,9 +1149,11 @@ def influence_summary(df, threshold=DEFAULT_INFLUENCE_THRESHOLD):
     pool = variant_pool(prepared)
     base = baseline_map(prepared)
     source = str(prepared["baseline_source"].iloc[0]) if len(prepared) else None
+    stamp = _stamp_of(prepared)
     if not len(pool):
         return pd.DataFrame(columns=[
             "quantity", "model", "influence_unit", "baseline_source",
+            "baseline_run_id", "baseline_git_sha", "baseline_git_dirty",
             "baseline_estimate", "n_live", "max_abs_relative_shift",
             "worst_variant_family", "worst_variant_label", "worst_estimate",
             "threshold", "n_exceeding", "exceeds_threshold",
@@ -853,6 +1190,9 @@ def influence_summary(df, threshold=DEFAULT_INFLUENCE_THRESHOLD):
             "model": model,
             "influence_unit": unit,
             "baseline_source": source,
+            "baseline_run_id": stamp["baseline_run_id"],
+            "baseline_git_sha": stamp["baseline_git_sha"],
+            "baseline_git_dirty": stamp["baseline_git_dirty"],
             "baseline_estimate": float(baseline_estimate)
             if baseline_estimate == baseline_estimate else np.nan,
             "n_live": int(len(live)),
@@ -949,6 +1289,7 @@ def specification_curve_data(df, threshold=DEFAULT_INFLUENCE_THRESHOLD):
     pool = variant_pool(prepared)
     base = baseline_map(prepared)
     source = str(prepared["baseline_source"].iloc[0]) if len(prepared) else None
+    stamp = _stamp_of(prepared)
     baseline_rows = prepared[
         (prepared["variant_family"] == BASELINE_FAMILY)
         & prepared["quantity"].notna()
@@ -960,7 +1301,8 @@ def specification_curve_data(df, threshold=DEFAULT_INFLUENCE_THRESHOLD):
             "seed", "influence_unit", "is_baseline", "estimate", "se", "ci_low",
             "ci_high", "estimate_available", "rank", "n_specifications",
             "crosses_zero", "agrees_with_baseline", "relative_shift",
-            "baseline_estimate", "baseline_source", "note",
+            "baseline_estimate", "baseline_source", "baseline_run_id",
+            "baseline_git_sha", "baseline_git_dirty", "note",
         ])
 
     frame = frame.copy()
@@ -974,6 +1316,8 @@ def specification_curve_data(df, threshold=DEFAULT_INFLUENCE_THRESHOLD):
         base.get((q, m), np.nan) for q, m in zip(frame["quantity"], frame["model"])
     ]
     frame["baseline_source"] = source
+    for name in BASELINE_STAMP_COLUMNS:
+        frame[name] = stamp[name]
     frame["crosses_zero"] = [
         bool(low == low and high == high and low <= 0.0 <= high)
         for low, high in zip(frame["ci_low"], frame["ci_high"])
@@ -1013,7 +1357,8 @@ def specification_curve_data(df, threshold=DEFAULT_INFLUENCE_THRESHOLD):
         "seed", "influence_unit", "is_baseline", "estimate", "se", "ci_low",
         "ci_high", "estimate_available", "rank", "n_specifications",
         "crosses_zero", "agrees_with_baseline", "relative_shift",
-        "baseline_estimate", "baseline_source", "note",
+        "baseline_estimate", "baseline_source", "baseline_run_id",
+        "baseline_git_sha", "baseline_git_dirty", "note",
     ]
     return frame[columns]
 
@@ -1087,6 +1432,21 @@ def judge(df, threshold=DEFAULT_INFLUENCE_THRESHOLD, layers=DEFAULT_LAYERS):
     压成一个布尔值等于替作者做完判断，而且做得比他差——它看不见"一致率
     4/4 但四个变体全来自同一族"这种局面。
 
+    **准则一有两个口径，两个都报，不替作者挑一个：**
+    - `direction_share_row_pooled_{layer}`：按**行**汇总，每个变体行一票。
+      vocabulary（默认 200 个 replicate）与 accounts 的 bootstrap（默认 200
+      个）合起来压过 denominators / post_types / temporal_restrictions /
+      user_type / extreme_values 那三十来行确定性变体，所以这个数字主要在说
+      "两个重抽样分布很紧"。
+    - `direction_share_family_weighted_{layer}`：**一族一票**，各族自己的
+      一致率取算术平均，与 replicate 数无关。
+    - 两者之差写在 `direction_share_pooled_minus_family_weighted_{layer}`，
+      支配了行池的那一族与它占的行份额写在
+      `direction_dominant_family_{layer}` / `direction_dominant_family_row_share_{layer}`，
+      逐族的明细在 `synthesis_direction_by_family.parquet`。
+    `direction_share_{layer}` 是行池口径的历史列名，原样保留、含义未变——
+    这里**没有**把一个口径悄悄换成另一个，只是把"这两件事本来就不同"摆出来。
+
     `layers` 默认只有 M0/M1：M2 只有 §13.9 那一族会产出（方案文档 §11.4，
     M2 会收窄样本），把它摆进跨族比较里只会混淆结论——"变体同号比例"由
     一个族算出来根本不是 §13.10 的准则一。**四条准则一律按 `layers` 过滤**，
@@ -1103,14 +1463,17 @@ def judge(df, threshold=DEFAULT_INFLUENCE_THRESHOLD, layers=DEFAULT_LAYERS):
     prepared = _prepare(df)
     pool = variant_pool(prepared)
     direction = direction_consistency(prepared)
+    by_family = direction_by_family(prepared)
     attenuation = activity_attenuation(prepared)
     influence = influence_summary(prepared, threshold=threshold)
     incomplete = incomplete_variants(prepared)
     source = str(prepared["baseline_source"].iloc[0]) if len(prepared) else None
+    stamp = _stamp_of(prepared)
 
     rows = []
     for quantity in harness.QUANTITIES:
         row = {"quantity": quantity, "baseline_source": source}
+        row.update(stamp)
 
         # --- 准则一：方向 ---
         missing_all, not_applicable_all = set(), set()
@@ -1123,14 +1486,38 @@ def judge(df, threshold=DEFAULT_INFLUENCE_THRESHOLD, layers=DEFAULT_LAYERS):
                 # 这一层压根没出现在数据里（例如只跑了 M0 的一次局部运行）。
                 # 如实写 NaN，不省略这几列——省略会让不同次运行的 judge 表
                 # 列集合不一致，下游拼不起来。
-                for name in ("direction_share", "direction_n_live",
+                for name in ("direction_share", "direction_share_row_pooled",
+                             "direction_share_family_weighted",
+                             "direction_share_pooled_minus_family_weighted",
+                             "direction_n_families_weighted",
+                             "direction_dominant_family_row_share",
+                             "direction_n_live",
                              "direction_n_nan", "direction_ci_low",
                              "direction_ci_high", "estimate_min",
                              "estimate_max", "baseline_estimate"):
                     row["{}_{}".format(name, model)] = np.nan
+                row["direction_dominant_family_{}".format(model)] = None
                 continue
             item = sub.iloc[0]
-            row["direction_share_{}".format(model)] = item["share_agree"]
+            # --- 一条准则，两个口径：行池 vs 一族一票 ---
+            # 两个数字都报，谁当正文里的那句话由作者定（见
+            # `_family_weighted_share` 与模块文档"同一条准则的两个口径"）。
+            # `direction_share_{layer}` 是行池口径的历史列名，原样保留；
+            # `direction_share_row_pooled_{layer}` 是同一个数字的明确名字。
+            pooled = item["share_agree"]
+            weighted, n_families_weighted, dominant, dominant_weight = \
+                _family_weighted_share(by_family, quantity, model)
+            row["direction_share_{}".format(model)] = pooled
+            row["direction_share_row_pooled_{}".format(model)] = pooled
+            row["direction_share_family_weighted_{}".format(model)] = weighted
+            row["direction_share_pooled_minus_family_weighted_{}".format(model)] = (
+                float(pooled) - float(weighted)
+                if (pooled == pooled and weighted == weighted) else np.nan)
+            row["direction_n_families_weighted_{}".format(model)] = int(
+                n_families_weighted)
+            row["direction_dominant_family_{}".format(model)] = dominant
+            row["direction_dominant_family_row_share_{}".format(model)] = \
+                dominant_weight
             row["direction_n_live_{}".format(model)] = int(item["n_live"])
             row["direction_n_nan_{}".format(model)] = int(item["n_nan"])
             row["direction_ci_low_{}".format(model)] = item["share_ci_low"]
@@ -1229,6 +1616,7 @@ def judge(df, threshold=DEFAULT_INFLUENCE_THRESHOLD, layers=DEFAULT_LAYERS):
             row["n_M2_variants"] = 0
             row["m2_direction_share_profile_family"] = np.nan
         row["m2_pointer"] = M2_POINTER_NOTE
+        row["direction_share_pointer"] = DIRECTION_SHARE_POINTER
 
         row["note"] = JUDGE_NOTE
         rows.append(row)
@@ -1301,10 +1689,14 @@ def build(year=config.YEAR, threshold=DEFAULT_INFLUENCE_THRESHOLD, alpha=0.05,
     os.makedirs(robustness_dir(), exist_ok=True)
     df = load_all(year, allow_recompute=allow_recompute)
     source = str(df["baseline_source"].iloc[0]) if len(df) else None
+    stamp = _stamp_of(_prepare(df))
 
     tables = OrderedDict([
         ("synthesis", judge(df, threshold=threshold)),
         ("synthesis_direction", direction_consistency(df)),
+        # 逐族的一致率必须自成一张表：行池口径被两个重抽样族压着，
+        # 而"这一族自己怎么说"在这张表出现之前哪里都读不到
+        ("synthesis_direction_by_family", direction_by_family(df)),
         ("synthesis_attenuation", activity_attenuation(df)),
         ("synthesis_influence", influence_summary(df, threshold=threshold)),
         ("synthesis_specification_curve", specification_curve_data(df)),
@@ -1334,6 +1726,13 @@ def build(year=config.YEAR, threshold=DEFAULT_INFLUENCE_THRESHOLD, alpha=0.05,
             "year": year,
             # "和什么比的"——这是本层最该被引用的一条参数
             "baseline_source": source,
+            # "和哪一批比的"。只有文件名不够：同名文件里的数字会随主结果层
+            # 重跑整批更换，那次版本差会静默污染每一个"变体减基线"的差值。
+            # 取的是 analysis_data/results/run_stamps.json 里的记录，
+            # 与 export_figure_data.verify_same_run 读的是同一份。
+            "baseline_run_id": stamp["baseline_run_id"],
+            "baseline_git_sha": stamp["baseline_git_sha"],
+            "baseline_git_dirty": stamp["baseline_git_dirty"],
             "influence_threshold": float(threshold),
             "fdr_alpha": float(alpha),
             "fdr_scope": "secondary_analyses_only;"
@@ -1353,6 +1752,8 @@ def build(year=config.YEAR, threshold=DEFAULT_INFLUENCE_THRESHOLD, alpha=0.05,
             "variant_rows": int(len(pool)),
             "live_variant_rows": int(pool["estimate"].notna().sum()),
             "variant_labels": int(pool["variant_label"].nunique()),
+            "direction_by_family_rows": int(
+                len(tables["synthesis_direction_by_family"])),
             "incomplete_variants": int(len(tables["synthesis_incomplete_variants"])),
             "calibration_pairs": int(len(tables["synthesis_calibration_pairs"])),
             "fdr_n_tested": int(fdr["fdr_n_tested"].iloc[0]) if len(fdr) else 0,
@@ -1371,6 +1772,7 @@ if __name__ == "__main__":
         "build": build,
         "load_all": load_all,
         "direction_consistency": direction_consistency,
+        "direction_by_family": direction_by_family,
         "activity_attenuation": activity_attenuation,
         "influence_summary": influence_summary,
         "specification_curve": specification_curve_data,
