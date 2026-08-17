@@ -874,8 +874,14 @@ def test_slurm_array_jobs_between_them_run_one_task_per_family():
     assert "n_per_cell" in light
 
 
-def test_the_light_slurm_script_really_asks_for_less_than_the_heavy_one():
-    """拆脚本的全部意义就在这三个额度上：时间、内存、核数都必须更低"""
+def test_the_two_robustness_scripts_split_the_families_without_overlap():
+    """两个脚本必须覆盖不重叠的任务号，且都只用本集群支持的 SBATCH 指令
+
+    原来这里断言 light 脚本的 --time/--mem/--cpus-per-task 都比 heavy 小。
+    真机上这三个指令都不被接受：本集群用分区名（例如 C032M0128G = 32 核
+    128G）同时选核数与内存。额度差异因此改由分区名承载，而不是这三个开关；
+    在拿到可用分区列表之前两个脚本用同一个分区，能断言的只有任务号划分。
+    """
     import re
 
     def _sbatch(text, key):
@@ -886,18 +892,20 @@ def test_the_light_slurm_script_really_asks_for_less_than_the_heavy_one():
     _, heavy = _slurm_text("run_robustness.slurm")
     _, light = _slurm_text("run_robustness_light.slurm")
 
-    def _hours(value):
-        parts = value.split(":")
-        return int(parts[0]) + int(parts[1]) / 60.0
-
-    assert _hours(_sbatch(light, "time")) < _hours(_sbatch(heavy, "time"))
-    assert int(_sbatch(light, "mem").rstrip("G")) < \
-        int(_sbatch(heavy, "mem").rstrip("G"))
-    assert int(_sbatch(light, "cpus-per-task")) <= \
-        int(_sbatch(heavy, "cpus-per-task"))
     # 两个数组的任务号不重叠：`--array=4` 在任何一边都只指向测量族
     assert _sbatch(heavy, "array") == "1-2"
     assert _sbatch(light, "array") == "3-5"
+
+    # 本集群不接受这些指令，写了会直接被拒
+    for text, name in ((heavy, "run_robustness"), (light, "run_robustness_light")):
+        for unsupported in ("--mem=", "--time=", "--cpus-per-task=",
+                            "--mail-type=", "--mail-user="):
+            for line in text.splitlines():
+                if line.strip().startswith("#SBATCH"):
+                    assert unsupported not in line, (name, unsupported, line)
+        # 分区与队列必须显式写出，否则落到默认队列上
+        assert re.search(r"#SBATCH -p \S+", text), name
+        assert "--qos=" in text, name
 
 
 def test_the_two_slurm_scripts_point_at_each_other():
