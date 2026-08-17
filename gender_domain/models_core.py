@@ -32,6 +32,14 @@
    必须写进结果表：M2 的样本流失是论文要交代的事实（§11.4），
    不是可以省略的实现细节。
 
+3b. **四个 fit_* 都接受 `layers` 参数，但默认必须是三层。**
+   `layers=None`（默认）= MODEL_LAYERS 的全部三层，主结果层的 build() 走的
+   就是这一条，行为与这个参数出现之前逐字节相同——论文自己的四张表少一层
+   M2，比它想省下的那点机时糟糕得多。传子集的只有 §13 稳健性套件：
+   `robustness.harness.estimate_all` 默认只报 M0/M1（§11.4：M2 收窄样本，
+   不能混进跨族比较），此前它拿到的是三层结果表再丢掉 M2 那几行，等于每次
+   估计白算一层。层名的合法性由 `selected_layers` 校验，写错直接报错。
+
 4. **计数用两部分（hurdle）结构，不用单一 Poisson/OLS。**
    来源转发数是"绝大多数人是 0、少数人非常大"的分布，单一 Poisson 会
    同时低估零膨胀和过离散，单一 OLS 会被长尾拖走。因此：
@@ -114,6 +122,7 @@ M0 = ["gender"]
 M1 = M0 + ["log_posts", "log_retweets", "n_active_days", "n_active_months"]
 M2 = M1 + ["verified_flag", "log_fans", "log_friends", "region"]
 MODEL_LAYERS = (("M0", M0), ("M1", M1), ("M2", M2))
+MODEL_LAYER_NAMES = tuple(name for name, _ in MODEL_LAYERS)
 
 # 结果行的 term 命名：一个 term 对应一个明确的量，不靠 scale 列去区分，
 # 这样下游按 (outcome, domain, model, term) 取行永远唯一。
@@ -247,6 +256,37 @@ def active_months_column(frame):
 # 性质。都写成 dropped_constant 会让前者永远伪装成后者。
 DROP_KIND_CONSTANT = "dropped_constant"
 DROP_KIND_MISSING = "missing_covariate"
+
+
+def selected_layers(layers=None):
+    """把 `layers` 参数翻译成 MODEL_LAYERS 的一个子集，顺序始终随 MODEL_LAYERS
+
+    四个 fit_* 函数原先无条件遍历 MODEL_LAYERS，三层都拟合。论文正文的四张
+    结果表确实要三层（模块文档第 2 条：三层对每个结果变量都必须出现），所以
+    **默认必须原样是三层**——`layers=None` 走的就是这一条，主结果层的行为
+    因此与加这个参数之前逐字节相同。
+
+    需要这个参数的是 §13 稳健性套件：`robustness.harness.estimate_all` 默认
+    只报 M0/M1（M2 会收窄样本，§11.4 不允许混进跨族比较），但在这个参数出现
+    之前，它拿到的是三层的完整结果表、再把 M2 那几行丢掉——账号族约 326 次
+    估计、词表族约 200 次，每次都白算一层 M2，占掉整个套件三分之一的机时。
+
+    调用方传进来的层名必须真的存在：写错一个层名（"m1"、"M3"）如果被静默
+    忽略，得到的是一张少了几层、却看不出少了的结果表。因此这里直接报错。
+    """
+    if layers is None:
+        return MODEL_LAYERS
+    wanted = tuple(layers)
+    unknown = [name for name in wanted if name not in MODEL_LAYER_NAMES]
+    if unknown:
+        raise ValueError(
+            f"未知的模型层 {unknown}；models_core 只定义了 {list(MODEL_LAYER_NAMES)}。"
+            "层名写错时静默跳过会产出一张'少了几层却看不出少了'的结果表，"
+            "因此这里直接报错。"
+        )
+    keep = set(wanted)
+    return tuple((name, covariates) for name, covariates in MODEL_LAYERS
+                 if name in keep)
 
 
 def _formula_terms(covariates, sample):
@@ -541,11 +581,14 @@ def _exponentiated_row(result, outcome, domain, model, term, scale, n_obs, n_dro
 # §6.2 进入模型
 # ---------------------------------------------------------------------------
 
-def fit_entry_models(user_df, domain, note_prefix=None):
+def fit_entry_models(user_df, domain, note_prefix=None, layers=None):
     """§6.2 是否曾经转发过该领域来源账号：二值 logistic，M0/M1/M2
 
     每一层产出两行：概率尺度的性别 AME（主报告量）与同一模型的发生比
     （附加参考）。发生比永远不单独出现。
+
+    `layers=None`（默认）就是 M0/M1/M2 三层，主结果层永远走这一条；只有
+    §13 稳健性套件会传入子集，见 `selected_layers` 的说明。
     """
     outcome = "source_entered"
     outcome_col = f"{domain}_source_entered"
@@ -553,7 +596,7 @@ def fit_entry_models(user_df, domain, note_prefix=None):
     frame = prepare_model_frame(user_df)
 
     rows = []
-    for model, covariates in MODEL_LAYERS:
+    for model, covariates in selected_layers(layers):
         sample, n_obs, n_dropped, drop_reason = _layer_sample(frame, model, n_input)
         base_note = note_prefix
         terms, dropped = _formula_terms(covariates, sample)
@@ -662,7 +705,7 @@ def _fit_ztnb(formula, sample, label):
     return None, f"ztnb_methods_tried:{','.join(ZTNB_METHODS)}", last_fail
 
 
-def fit_intensity_models(user_df, domain):
+def fit_intensity_models(user_df, domain, layers=None):
     """§6.3 来源转发强度：第一部分进入模型 + 第二部分零截断负二项
 
     第二部分只在"至少转发过一次该领域来源"的用户上估计，报告发生率比
@@ -676,13 +719,13 @@ def fit_intensity_models(user_df, domain):
 
     # 第一部分就是进入模型本身，原样带进强度表，note 标明它是第一部分，
     # 这样 models_intensity.parquet 单独拿出来也是完整的两部分结果。
-    part1 = fit_entry_models(user_df, domain, note_prefix=NOTE_PART1)
+    part1 = fit_entry_models(user_df, domain, note_prefix=NOTE_PART1, layers=layers)
 
     frame = prepare_model_frame(user_df)
     participants = frame[count_col].astype(float) > 0
 
     rows = []
-    for model, covariates in MODEL_LAYERS:
+    for model, covariates in selected_layers(layers):
         sample, n_obs, n_dropped, drop_reason = _layer_sample(
             frame, model, n_input, base_mask=participants,
             base_reason="no_source_retweets",
@@ -763,11 +806,12 @@ def _fit_fractional_logit(sample, outcome_col, terms, label, var_weights=None):
     return _safe_fit(_fit, label)
 
 
-def fit_share_models(user_df, domain, outcome):
+def fit_share_models(user_df, domain, outcome, layers=None):
     """§6.3 占比型结果变量的分数 logit（quasi-binomial），AME 在比例尺度上
 
     Args:
         outcome: "source_share" 或 "topical_share"
+        layers: 要拟合的模型层，None（默认）= M0/M1/M2 三层，见 selected_layers
 
     分母为 0 的用户（没有转发 / 没有表达帖）该结果变量是 NaN，剔除并
     计入 n_dropped，drop_reason 用 SHARE_DROP_REASONS 里的具体原因，
@@ -784,7 +828,7 @@ def fit_share_models(user_df, domain, outcome):
     defined = frame[outcome_col].notna()
 
     rows = []
-    for model, covariates in MODEL_LAYERS:
+    for model, covariates in selected_layers(layers):
         sample, n_obs, n_dropped, drop_reason = _layer_sample(
             frame, model, n_input, base_mask=defined,
             base_reason=SHARE_DROP_REASONS[outcome],
@@ -819,7 +863,7 @@ def fit_share_models(user_df, domain, outcome):
 # §6.4 持续性模型
 # ---------------------------------------------------------------------------
 
-def fit_persistence_models(user_df, domain):
+def fit_persistence_models(user_df, domain, layers=None):
     """§6.4 参与月数 ÷ 活跃月数：分数 logit + 以活跃月数为 var_weights
 
     **估计量（estimand）与权重是两件事，这里必须说清楚，否则读者会读错
@@ -854,7 +898,7 @@ def fit_persistence_models(user_df, domain):
     defined = frame[outcome_col].notna() & (frame[months_col].astype(float) > 0)
 
     rows = []
-    for model, covariates in MODEL_LAYERS:
+    for model, covariates in selected_layers(layers):
         sample, n_obs, n_dropped, drop_reason = _layer_sample(
             frame, model, n_input, base_mask=defined, base_reason="no_active_months",
         )

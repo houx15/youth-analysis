@@ -48,6 +48,14 @@ PROFILE_COLUMNS = [
     "user_type",
     "fans_number",
     "friends_count",
+    # demographic_gender：稳健性检验 §13.9"比较不同可用性别字段一致的用户"
+    # 唯一的第二份性别字段。它**不是** M2 的控制变量，也不进任何回归方程，
+    # 只是原样透传到带画像的表 C 里，供 robustness/samples.py 判断两个性别
+    # 字段是否一致。它在这里而不是在 build_user_tables.aggregate_posts 里，
+    # 是因为表 A（build_post_table 的 OUTPUT_COLUMNS）根本没有透传这一列，
+    # 从表 A 走要连带重跑一次全年文本扫描；而这个字段本来就住在本模块已经
+    # 在读的 merged_user_profiles.parquet 里，加一列即可，不必动上游。
+    "demographic_gender",
 ]
 
 # 判定"该用户 M2 可用"的画像来源控制变量：即 verified_flag/log_fans/
@@ -209,7 +217,16 @@ def build(year=config.YEAR):
     # 在这里另外硬编码一份、迟早跟表 C 真实结构脱节的列清单。
     user_columns = pq.ParquetFile(user_path).schema.names
     user_df = pd.read_parquet(user_path, columns=user_columns)
-    profile_df = pd.read_parquet(profile_path, columns=PROFILE_COLUMNS)
+    # 画像表少了某一列时不能直接炸：demographic_gender 是后加的，旧的
+    # merged_user_profiles.parquet 可能没有这一列。先读 schema 取交集，
+    # 缺什么打印出来（attach_profile_controls 的 reindex 会把缺列补成全缺失，
+    # 依赖它的 §13.9 变体随后会自己输出一行注明原因的结果）。
+    available = set(pq.ParquetFile(profile_path).schema.names)
+    profile_columns = [c for c in PROFILE_COLUMNS if c in available]
+    missing_columns = [c for c in PROFILE_COLUMNS if c not in available]
+    if missing_columns:
+        print(f"警告: 画像表缺少列 {missing_columns}，它们在输出里全部为缺失")
+    profile_df = pd.read_parquet(profile_path, columns=profile_columns)
     print(f"读取表 C {len(user_df):,} 用户，画像表 {len(profile_df):,} 行")
 
     out, report = attach_profile_controls(user_df, profile_df)

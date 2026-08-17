@@ -1,13 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=figdata
+#SBATCH -o job.%j.out
+#SBATCH -p C032M0128G
+#SBATCH --qos=low
 #SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=2
-#SBATCH --time=2:00:00
-#SBATCH --mem=64G
-#SBATCH --output=job.%j.figdata.out
-#SBATCH --mail-type=end
-#SBATCH --mail-user=2401111059@stu.pku.edu.cn
+#SBATCH --ntasks-per-node=32
 
 # 把服务器上的结果导出成一小撮"能下载"的文件，供本地画 §12 的图。
 # 必须排在 run_results.slurm 之后：本步骤只搬运结果表，不重算任何数字，
@@ -51,7 +47,8 @@
 
 set -euo pipefail
 
-source ~/miniconda3/etc/profile.d/conda.sh
+module load anaconda/3.11
+source ~/.bash_profile
 conda activate opinion
 
 python -m gender_domain.export_figure_data build --year=2020

@@ -1,13 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=results
+#SBATCH -o job.%j.out
+#SBATCH -p C032M0128G
+#SBATCH --qos=low
 #SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --time=24:00:00
-#SBATCH --mem=192G
-#SBATCH --output=job.%j.results.out
-#SBATCH --mail-type=end
-#SBATCH --mail-user=2401111059@stu.pku.edu.cn
+#SBATCH --ntasks-per-node=32
 
 # Server-side results layer, run in dependency order: profile join first
 # (Table C -> user_domain_2020_with_profile.parquet), then the descriptive
@@ -46,7 +42,7 @@
 # （720 小时与不设上限），并列写进 delay_quantiles.parquet 的不同 model 变体，
 # 让阈值这条裁定的代价直接可读；口径可用 --delay_thresholds 覆盖。
 #
-# 资源额度（M18）：statsmodels 本身是单线程的，cpus-per-task 只对底层 BLAS
+# 资源额度（M18）：statsmodels 本身是单线程的，分区自带的核数只对底层 BLAS
 # （零截断负二项与 GEE 的矩阵运算）有用，因此 4 -> 8 只是给 BLAS 一点余量，
 # 不指望线性加速。真正的瓶颈是墙钟与内存：最贵的一步是 §9 的 26 次留一月
 # 重估（两个域各 13 次），每一次都在两百多万行的用户—月面板上拟合并算按
@@ -57,7 +53,7 @@
 #
 # 失败处理（C1）：set -euo pipefail 必须有。此前六条命令顺序执行、没有任何
 # 错误处理，models_core 崩掉之后后面几步照常运行，作业的退出码是最后一条
-# 命令的退出码，--mail-type=end 无论如何都报告"结束"。于是盘上留下
+# 命令的退出码，作业无论如何都以最后一条命令的状态收尾。于是盘上留下
 # "describe 是本次的、models_entry 是上一次的"这种组合，而导出层当时只检查
 # 文件在不在——旧文件同样在。现在两道闸门一起上：
 #   1) set -euo pipefail：任何一步非零退出，作业立刻停下，退出码传出去；
@@ -76,7 +72,8 @@
 
 set -euo pipefail
 
-source ~/miniconda3/etc/profile.d/conda.sh
+module load anaconda/3.11
+source ~/.bash_profile
 conda activate opinion
 
 # 同一次作业的六个步骤共用一个运行标识。用 SLURM_JOB_ID 是因为它天然唯一
