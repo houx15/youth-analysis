@@ -35,6 +35,7 @@ from gender_domain import build_post_table as bpt
 from gender_domain import build_retweet_table as brt
 from gender_domain import build_user_tables as but
 from gender_domain import config
+from gender_domain import stats_utils as su
 from gender_domain import text_rules as tr
 from gender_domain.robustness import accounts as acc
 from gender_domain.robustness import harness
@@ -57,31 +58,51 @@ POST_TEMPLATES = [
     "顶流的综艺真好看",
 ]
 
-# 账号规格：{账号: (领域, 类别, [(用户序号, 事件数), ...])}
-# 类别刻意含两个跨类别账号（pa6、ca2），因为真实的 news_user_ids.json /
-# entertain_user_ids.json 都不是划分：一个账号可以同时属于 central_news
-# 与 org_news，一个艺人的 verified_reason 里可以同时有"演员"和"歌手"。
-# 留一类别按"成员资格"剔除（属于该类别就剔），bootstrap 的分层则必须用
-# 表 B 里那个拼接后的类别串（它才是一个真正的划分）。
+# 账号规格：{账号: {"domains": {领域: [类别]}, "users": [(用户序号, 事件数)]}}
+# 三件事是**故意**放进来的，缺了任何一件都有一类错误测不到：
+#   1) 跨类别账号（pa6、ca2）：真实的 news_user_ids.json /
+#      entertain_user_ids.json 都不是划分，一个账号可以同时属于
+#      central_news 与 org_news，一个艺人的 verified_reason 里可以同时有
+#      "演员"和"歌手"。留一类别按成员资格剔除，bootstrap 的分层则必须用
+#      表 B 里那个拼接后的类别串（它才是一个真正的划分）。
+#   2) **同时在两份名单上的账号（xa9）**：表 B 的 manifest 专门记了
+#      overlapping_accounts，说明真实数据里就有。剔除必须按 (账号, 领域)
+#      键——按账号 ID 全局剔除会让"留一公共事务账号"顺手削掉明星领域的
+#      转发量，variant_label 说的就不是真正跑的那件事了。
+#   3) 只转过一个来源账号的用户（u046 -> pa3、u047 -> ca4）：进入指示
+#      必须由 True 翻成 False。
 ACCOUNT_SPEC = {
-    "pa1": ("public", ["central_news"], [(i, 2) for i in range(24)]),
-    "pa2": ("public", ["central_news"], [(i, 1) for i in range(8)]),
+    "pa1": {"domains": {"public": ["central_news"]},
+            "users": [(i, 2) for i in range(24)]},
+    "pa2": {"domains": {"public": ["central_news"]},
+            "users": [(i, 1) for i in range(8)]},
     # 只有 u046 转过它——留一账号必须让 u046 变成非参与者
-    "pa3": ("public", ["local_news_units"], [(46, 1)]),
-    "pa4": ("public", ["local_news_units"], [(i, 1) for i in range(24, 32)]),
-    "pa5": ("public", ["gov_release_weibo"], [(i, 1) for i in range(32, 36)]),
-    "pa6": ("public", ["central_news", "org_news"], [(i, 1) for i in range(36, 40)]),
+    "pa3": {"domains": {"public": ["local_news_units"]}, "users": [(46, 1)]},
+    "pa4": {"domains": {"public": ["local_news_units"]},
+            "users": [(i, 1) for i in range(24, 32)]},
+    "pa5": {"domains": {"public": ["gov_release_weibo"]},
+            "users": [(i, 1) for i in range(32, 36)]},
+    "pa6": {"domains": {"public": ["central_news", "org_news"]},
+            "users": [(i, 1) for i in range(36, 40)]},
     # prov_release_weibo 这一层恰好两个账号，且只有 u045 转过它们，
     # 3 次与 5 次——账号 bootstrap 哨兵就靠这个构造
-    "pa7": ("public", ["prov_release_weibo"], [(45, 3)]),
-    "pa8": ("public", ["prov_release_weibo"], [(45, 5)]),
-    # 明星领域高度集中：ca1 一家占 80/96
-    "ca1": ("celebrity", ["演员"], [(i, 2) for i in range(40)]),
-    "ca2": ("celebrity", ["演员", "歌手"], [(i, 1) for i in range(10)]),
-    "ca3": ("celebrity", ["歌手"], [(i, 1) for i in range(40, 45)]),
+    "pa7": {"domains": {"public": ["prov_release_weibo"]}, "users": [(45, 3)]},
+    "pa8": {"domains": {"public": ["prov_release_weibo"]}, "users": [(45, 5)]},
+    # 明星领域高度集中：ca1 一家占八成以上
+    "ca1": {"domains": {"celebrity": ["演员"]},
+            "users": [(i, 2) for i in range(40)]},
+    "ca2": {"domains": {"celebrity": ["演员", "歌手"]},
+            "users": [(i, 1) for i in range(10)]},
+    "ca3": {"domains": {"celebrity": ["歌手"]},
+            "users": [(i, 1) for i in range(40, 45)]},
     # 只有 u047 转过它
-    "ca4": ("celebrity", ["导演"], [(47, 1)]),
+    "ca4": {"domains": {"celebrity": ["导演"]}, "users": [(47, 1)]},
+    # 同时在两份名单上：一条转发同时命中两个领域，表 B 会各出一行
+    "xa9": {"domains": {"public": ["gov_release_weibo"], "celebrity": ["演员"]},
+            "users": [(10, 1), (11, 1)]},
 }
+
+OVERLAP_ACCOUNT = "xa9"
 
 SOLO_PUBLIC_USER = "u046"
 SOLO_PUBLIC_ACCOUNT = "pa3"
@@ -98,28 +119,32 @@ def _gender(index):
 
 
 def _accounts_by_domain(domain):
-    return sorted(a for a, spec in ACCOUNT_SPEC.items() if spec[0] == domain)
+    return sorted(
+        a for a, spec in ACCOUNT_SPEC.items() if domain in spec["domains"]
+    )
 
 
 def _category_map(domain):
     """{类别: {账号}}，与 configs/*.json 的形状一致（可跨类别）"""
     out = {}
-    for account, (account_domain, categories, _) in ACCOUNT_SPEC.items():
-        if account_domain != domain:
-            continue
-        for category in categories:
+    for account, spec in ACCOUNT_SPEC.items():
+        for category in spec["domains"].get(domain, []):
             out.setdefault(category, set()).add(account)
     return out
 
 
 def _expected_volume(domain, genders=None):
-    """夹具自己算出来的 {账号: 事件数}，不经过被测模块"""
+    """夹具自己算出来的 {账号: 事件数}，不经过被测模块
+
+    同时在两份名单上的账号，同一条转发在两个领域各算一次——与表 B
+    "一条转发命中两个领域就出两行"的口径一致。
+    """
     out = {}
-    for account, (account_domain, _, users) in ACCOUNT_SPEC.items():
-        if account_domain != domain:
+    for account, spec in ACCOUNT_SPEC.items():
+        if domain not in spec["domains"]:
             continue
         total = 0
-        for index, n_events in users:
+        for index, n_events in spec["users"]:
             if genders is None or _gender(index) in genders:
                 total += n_events
         out[account] = total
@@ -153,8 +178,7 @@ def _raw_retweets():
     rows = []
     counter = 0
     for account in sorted(ACCOUNT_SPEC):
-        _, _, users = ACCOUNT_SPEC[account]
-        for index, n_events in users:
+        for index, n_events in ACCOUNT_SPEC[account]["users"]:
             for _ in range(n_events):
                 counter += 1
                 rows.append({
@@ -241,7 +265,7 @@ def context(synthetic_project):
 
 def test_categories_come_from_the_config_account_lists_when_they_exist(context):
     assert context.categories["public"]["central_news"] == {"pa1", "pa2", "pa6"}
-    assert context.categories["celebrity"]["演员"] == {"ca1", "ca2"}
+    assert context.categories["celebrity"]["演员"] == {"ca1", "ca2", "xa9"}
     assert context.category_source["public"].endswith("news_user_ids.json")
 
 
@@ -262,6 +286,7 @@ def test_categories_fall_back_to_table_b_with_a_clear_message_when_lists_are_mis
     # 退回路径必须把它拆回成员资格）
     assert context.categories["public"]["central_news"] == {"pa1", "pa2", "pa6"}
     assert context.categories["celebrity"]["歌手"] == {"ca2", "ca3"}
+    assert context.categories["public"]["gov_release_weibo"] == {"pa5", "xa9"}
     assert context.category_source["public"] == acc.CATEGORY_SOURCE_TABLE_B
 
 
@@ -405,6 +430,53 @@ def test_leave_one_account_out_notes_the_truncation_on_the_result_rows(context, 
         assert "excluded_volume_share=" in str(note)
 
 
+def test_excluding_a_public_account_leaves_the_celebrity_domain_untouched(
+    context, tmp_path
+):
+    """剔除按 (账号, 领域) 键，不按账号 ID 全局键
+
+    xa9 同时在两份名单上（真实数据里确有这种账号，表 B 的 manifest 专门
+    记了 overlapping_accounts）。"留一公共事务账号"若按账号 ID 全局剔除，
+    会顺手把 xa9 的**明星**那一列也删掉，于是一个本应只扰动公共事务的
+    变体把明星的转发量也削掉了一块——variant_label 说的和真正跑的就不是
+    一回事。§13.5 要问的是"少了这一个机构账号，公共事务会不会变"。
+    """
+    diag_path = str(tmp_path / "diag.parquet")
+    acc.run_leave_one_account_out(
+        YEAR, top_n=len(_accounts_by_domain("public")), context=context,
+        out_path=None, diag_path=diag_path,
+    )
+    diag = pd.read_parquet(diag_path, columns=list(acc.DIAGNOSTIC_SCHEMA))
+    label = diag.loc[
+        (diag["domain"] == "public") & (diag["excluded_accounts"] == OVERLAP_ACCOUNT),
+        "variant_label",
+    ]
+    assert len(label) == 1
+    celebrity = diag[
+        (diag["variant_label"] == label.iloc[0]) & (diag["domain"] == "celebrity")
+    ].iloc[0]
+    assert celebrity["excluded_volume_share"] == pytest.approx(0.0)
+    assert int(celebrity["n_accounts_excluded"]) == 0
+    assert int(celebrity["n_users_lost_entry"]) == 0
+
+    # 逐用户核对：xa9 的两个转发者在明星领域的计数一个都不能少
+    weights = {
+        "public": {a: (0 if a == OVERLAP_ACCOUNT else 1)
+                   for a in acc.subset_weights(context, "public", None)},
+        "celebrity": acc.subset_weights(context, "celebrity", None),
+    }
+    variant = acc.user_frame_for_weights(context, weights)
+    baseline = context.baseline_frame
+    assert variant["celebrity_source_count"].equals(baseline["celebrity_source_count"])
+    assert variant["celebrity_source_entered"].equals(
+        baseline["celebrity_source_entered"]
+    )
+    # 而公共事务那一侧确实动了
+    assert int(variant["public_source_count"].sum()) < int(
+        baseline["public_source_count"].sum()
+    )
+
+
 # ---------------------------------------------------------------------------
 # 留一类别
 # ---------------------------------------------------------------------------
@@ -486,6 +558,47 @@ def test_concentration_reports_top_k_shares_per_gender(context):
         assert int(row.iloc[0]["n_events"]) == total
 
 
+def test_top_k_share_covers_exactly_k_accounts_where_the_quantile_round_trip_fails():
+    """恰好 k 个，不是 k+1 个
+
+    stats_utils.top_share 的入口是"头部用户占比 q"，内部取 k = ceil(q*n)。
+    把"前 k 个账号"换算成 q = k/n 再喂给它，看上去应该还原成 k，在浮点上
+    并不成立：n=147、k=5 时 ceil((5/147)*147) = 6，报出去的就成了前 6 个
+    账号的份额，而同一行的 top_accounts 只列了 5 个。集中度是读者最可能
+    直接引用的数字，这种"悄悄多算一个账号"正是简报警告的自我夸大。
+    """
+    n, k = 147, 5
+    values = np.arange(n, 0, -1, dtype=float)
+    exact = values[:k].sum() / values.sum()
+
+    assert acc.top_k_share(values, k) == pytest.approx(exact)
+    # 钉死这个 n 上的往返确实会多算一个账号（否则本测试就失去意义了）
+    assert int(np.ceil((k / n) * n)) == k + 1
+    assert su.top_share(values, k / n) == pytest.approx(values[: k + 1].sum() / values.sum())
+    assert acc.top_k_share(values, k) != pytest.approx(su.top_share(values, k / n))
+
+
+def test_top_k_share_edges():
+    assert acc.top_k_share([3.0, 1.0], 0) == 0.0
+    assert acc.top_k_share([3.0, 1.0], 5) == pytest.approx(1.0)
+    assert np.isnan(acc.top_k_share([0.0, 0.0], 1))
+    assert np.isnan(acc.top_k_share([], 1))
+
+
+def test_concentration_share_matches_the_accounts_the_row_lists(context):
+    """每一行的份额必须正好是这一行 top_accounts 里那几个账号的份额"""
+    conc = acc.concentration_by_gender(context, k=(1, 2, 3))
+    for _, row in conc.iterrows():
+        listed = [a for a in str(row["top_accounts"]).split(",") if a]
+        volume = _expected_volume(
+            row["domain"], None if row["gender"] == "all" else {row["gender"]}
+        )
+        assert len(listed) == min(int(row["k"]), int(row["n_accounts"]))
+        assert row["top_k_share"] == pytest.approx(
+            sum(volume[a] for a in listed) / sum(volume.values())
+        )
+
+
 def test_concentration_marks_k_larger_than_the_account_count(context):
     """k 超过该领域账号数时份额恒为 1.0，必须能从 n_accounts 看出这件事"""
     conc = acc.concentration_by_gender(context, k=(10,))
@@ -549,6 +662,17 @@ def test_account_bootstrap_draw_is_reproducible_under_a_seed(context):
     c = acc.bootstrap_draw(context.strata["public"], seed=8)
     assert a == b
     assert a != c
+
+
+def test_account_bootstrap_uses_an_independent_stream_per_domain(context):
+    """两个领域各抽各的：共用一个种子会在两份互不相干的名单之间造出一种
+    没有实质含义的固定对应关系（vocabulary 出于同样的理由逐领域派生）"""
+    replicate_seed = 12345
+    seeds = {domain: acc.domain_seed(replicate_seed, domain) for domain in acc.DOMAINS}
+    assert seeds["public"] != seeds["celebrity"]
+    assert seeds["public"] != replicate_seed
+    # 派生是确定性的
+    assert acc.domain_seed(replicate_seed, "public") == seeds["public"]
 
 
 def test_account_bootstrap_is_stratified_by_category(context):

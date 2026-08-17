@@ -97,7 +97,6 @@ import pandas as pd
 from gender_domain import build_user_tables as but
 from gender_domain import config
 from gender_domain import id_rules as ir
-from gender_domain import stats_utils as su
 from gender_domain.robustness import harness
 from gender_domain.robustness import incidence as inc
 # replicate_seeds / _annotate_note 一律复用 vocabulary 的实现，不另写一份：
@@ -548,6 +547,35 @@ def volume_share(context, domain, account_ids, genders=None):
     return sum(volume.get(a, 0) for a in account_ids) / total
 
 
+def top_k_share(values, k):
+    """转发量最高的 **恰好 k 个**账号占总量的份额
+
+    这里刻意不复用 stats_utils.top_share。那个函数的入口是"头部用户占
+    **比例** q"，内部取 k = ceil(q * n)；把"前 k 个账号"换算成 q = k/n
+    再喂给它，看上去应该恰好还原成 k，**在浮点上并不成立**：k/n 是一个
+    有舍入误差的二进制小数，(k/n)*n 可能略大于 k，ceil 一步就多算一个
+    账号。实测在 n = 1..20000、k=5 上有 399 个 n 会多算一个，例如
+    n=147、k=5 时 ceil((5/147)*147) = 6——报出去的就成了前 6 个账号的
+    份额，而同一行的 top_accounts 只列了 5 个账号。集中度是读者最可能
+    直接引用的数字，"悄悄多算一个账号"正是简报里警告的那种"稳健性检验
+    自我夸大"，所以这里按排序直接求和，不做任何比例往返。
+
+    NaN 视为"该账号此项未定义"，不计入账号数也不计入总量（与
+    stats_utils.top_share 同一约定）；总量为 0 时返回 NaN 而不是 0。
+    """
+    values = np.asarray(values, dtype=float)
+    values = values[~np.isnan(values)]
+    if values.size == 0:
+        return float("nan")
+    total = float(values.sum())
+    if total == 0:
+        return float("nan")
+    k = min(max(int(k), 0), int(values.size))
+    if k == 0:
+        return 0.0
+    return float(np.sort(values)[::-1][:k].sum() / total)
+
+
 def concentration_by_gender(context, k=DEFAULT_CONCENTRATION_K):
     """各领域转发量前 k 个账号占比，逐性别
 
@@ -559,8 +587,9 @@ def concentration_by_gender(context, k=DEFAULT_CONCENTRATION_K):
       再算它们占该性别转发量的比例——"男女是不是被同一批账号带动的"。
       两个数差得远，说明两性各自集中在不同的账号上。
 
-    份额的计算复用 stats_utils.top_share（传 q=k/账号数，它取
-    ceil(q*n) 恰好等于 k），不另写一份排序求和。
+    份额由 top_k_share 直接按排序求和算出，**不走 stats_utils.top_share**
+    ——原因见 top_k_share 的文档：那个函数的入口是"头部用户占比 q"，把
+    k 换算成 q=k/n 再让它取 ceil(q*n) 在浮点上并不恒等于 k。
     """
     rows = []
     for domain in DOMAINS:
@@ -573,10 +602,9 @@ def concentration_by_gender(context, k=DEFAULT_CONCENTRATION_K):
             for k_value in k:
                 k_value = int(k_value)
                 ordered = sorted(volume, key=lambda a: (-volume[a], a))[:k_value]
-                share = (
-                    su.top_share(values, k_value / n_accounts)
-                    if n_accounts else float("nan")
-                )
+                # 份额与 top_accounts 必须来自同一个 k：同一行里列了 5 个
+                # 账号、份额却是 6 个账号的，是这张表最坏的一种错法
+                share = top_k_share(values, k_value)
                 rows.append({
                     "domain": domain,
                     "gender": gender,
@@ -791,19 +819,34 @@ def _run_variant(context, weights_by_domain, variant_label, out_path, diag_path,
     return rows
 
 
-def _run_exclusion(context, excluded_ids, variant_label, out_path, diag_path,
+def _run_exclusion(context, excluded_by_domain, variant_label, out_path, diag_path,
                    considered=None, note=None):
-    """确定性变体的公共动作：给一组被剔账号，其余全留"""
-    all_ids = set(context.volume["r_user_id"].astype(str))
-    retained = all_ids - set(excluded_ids)
-    weights = {
-        domain: subset_weights(context, domain, retained) for domain in DOMAINS
-    }
-    # 0/1 的情形一次列选择就够，不必按重数分档
-    user_df = user_frame_for_subset(context, retained)
+    """确定性变体的公共动作：给 {领域: 被剔账号集合}，其余全留
+
+    **被剔的键是 (账号, 领域)，不是账号本身。** 两份名单是有交集的（表 B
+    的 manifest 专门记了 overlapping_accounts），而一个账号同时在两份名单
+    里时，它在矩阵里是两列。如果按账号 ID 全局剔除（
+    `incidence.account_subset_vector` 的语义正是如此，它一次作用于两个
+    领域），那么"留一公共事务账号"会顺手把这个账号的**明星**那一列也删掉，
+    于是一个本应只扰动公共事务的变体把明星领域的转发量也削掉了一块——
+    variant_label 说的和真正跑的就不是一回事了。§13.5 要问的是"少了这一个
+    机构账号，公共事务的估计会不会变"，明星侧应当纹丝不动。
+
+    因此这里一律走 `user_frame_for_weights` 的逐领域路径（0/1 权重），
+    与 `run_account_bootstrap` 用的是同一套账号身份口径；代价只是每个变体
+    多一次稀疏矩阵乘法。
+    """
+    weights = {}
+    for domain in DOMAINS:
+        excluded = {str(a) for a in excluded_by_domain.get(domain, set())}
+        retained = {
+            account_id for account_id in subset_weights(context, domain, None)
+            if account_id not in excluded
+        }
+        weights[domain] = subset_weights(context, domain, retained)
     return _run_variant(
         context, weights, variant_label, out_path, diag_path,
-        considered=considered, note=note, user_df=user_df,
+        considered=considered, note=note,
     )
 
 
@@ -832,7 +875,7 @@ def run_leave_one_account_out(year=config.YEAR, top_n=DEFAULT_TOP_N, context=Non
         )
         for rank, account_id in enumerate(candidates, start=1):
             frames.append(_run_exclusion(
-                context, {account_id},
+                context, {domain: {account_id}},
                 "loo_{}_rank{:02d}_{}".format(domain, rank, account_id),
                 out_path, diag_path,
                 considered={domain: (len(candidates), coverage)},
@@ -868,7 +911,7 @@ def run_leave_one_category_out(year=config.YEAR, context=None, out_path=None,
         for category in sorted(categories):
             members = set(categories[category])
             frames.append(_run_exclusion(
-                context, members,
+                context, {domain: members},
                 "{}_without_{}".format(domain, category),
                 out_path, diag_path,
                 note="left_out_category:{}:{}".format(domain, category),
@@ -901,7 +944,7 @@ def run_exclude_top_accounts(year=config.YEAR, k=DEFAULT_EXCLUDE_K, context=None
             print("{} 剔除前 {} 个账号，占该领域转发量 {:.1%}".format(
                 domain, len(excluded), share))
             frames.append(_run_exclusion(
-                context, set(excluded),
+                context, {domain: set(excluded)},
                 "{}_exclude_top{}".format(domain, k_value),
                 out_path, diag_path,
                 note="exclude_top_k={};domain={}".format(k_value, domain),
@@ -924,8 +967,10 @@ def run_core_national_media_only(year=config.YEAR,
     "中央级"取的是 configs/cn_news_sources_lists.py 里的 central_theory_website
     与 central_news 两类（见 CORE_NATIONAL_CATEGORIES 上方对这个判断的说明），
     类别名写进 variant_label 与 note，作者想换一种读法只要换参数。
-    明星领域不受影响，但它的诊断行照样写：这样读者能直接看到
-    excluded_volume_share=0，而不是在表里找不到明星那一行、只好猜。
+    明星领域**真的**不受影响：剔除按 (账号, 领域) 键，所以哪怕某个中央级
+    媒体账号同时出现在明星名单里（两份名单确实有交集），它的明星那一列也
+    原样保留。明星的诊断行照样写，读者能直接看到 excluded_volume_share=0，
+    而不是在表里找不到明星那一行、只好猜。
     """
     context = context or build_context(year)
     public_categories = context.categories.get("public", {})
@@ -945,7 +990,7 @@ def run_core_national_media_only(year=config.YEAR,
     print("只保留中央级官方媒体: 公共事务保留 {} / {} 个账号".format(
         len(public_ids) - len(excluded), len(public_ids)))
     return _run_exclusion(
-        context, excluded,
+        context, {"public": excluded, "celebrity": set()},
         "core_national_media_only",
         out_path, diag_path,
         note="core_categories:{}".format("+".join(categories)),
@@ -955,6 +1000,24 @@ def run_core_national_media_only(year=config.YEAR,
 # ---------------------------------------------------------------------------
 # 变体五：账号 bootstrap（按类别分层，对账号有放回）
 # ---------------------------------------------------------------------------
+
+# _domain_seed 的 stream 取值。vocabulary 已经占了 0（抽词）和 1（抽帖子
+# 做随机检验）；账号 bootstrap 用 2，这样即使两个 family 用同一个
+# replicate 种子，两边的随机流也不会是同一条。
+_STREAM_ACCOUNTS = 2
+
+
+def domain_seed(replicate_seed, domain):
+    """同一个 replicate 下、每个领域各自的随机流
+
+    两个领域的账号名单互不相干，必须各抽各的：共用一个种子会让
+    "第 k 层抽到第几个账号"在两个领域之间产生固定的对应关系，而这种对应
+    关系没有任何实质含义。派生规则复用 vocabulary._domain_seed（同一套
+    SeedSequence 派生，两个 family 的可复现性口径因此完全一致），只有
+    replicate 种子写进结果表，领域种子由它确定性派生。
+    """
+    return voc._domain_seed(replicate_seed, domain, stream=_STREAM_ACCOUNTS)
+
 
 def bootstrap_draw(strata, seed):
     """按分层对**账号**有放回重抽，返回 {账号: 抽到几次}
@@ -986,7 +1049,8 @@ def run_account_bootstrap(year=config.YEAR, n_replicates=DEFAULT_N_REPLICATES,
     """按类别分层、对账号有放回重抽的 bootstrap，逐 replicate 落盘
 
     每个 replicate 记自己的 seed；子 seed 由主 seed 经 SeedSequence 派生
-    （复用 vocabulary.replicate_seeds，两个 family 用同一套派生规则）。
+    （复用 vocabulary.replicate_seeds，两个 family 用同一套派生规则），
+    两个领域再各自从 replicate 种子派生一条独立的流（见 domain_seed）。
     """
     context = context or build_context(year)
     seeds = voc.replicate_seeds(seed, n_replicates)
@@ -996,7 +1060,10 @@ def run_account_bootstrap(year=config.YEAR, n_replicates=DEFAULT_N_REPLICATES,
     for replicate in range(n_replicates):
         replicate_seed = seeds[replicate]
         draw = {
-            domain: bootstrap_draw(context.strata[domain], seed=replicate_seed)
+            domain: bootstrap_draw(
+                context.strata[domain],
+                seed=domain_seed(replicate_seed, domain),
+            )
             for domain in DOMAINS
         }
         # 诊断行要的是"该领域每个账号被抽到几次"的完整账本：没抽到的账号
