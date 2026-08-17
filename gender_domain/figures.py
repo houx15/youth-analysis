@@ -712,7 +712,9 @@ def fig1_core_outcomes(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
             OUTCOME_LABELS[outcome], DENOMINATOR_LABELS[denominator]), fontsize=8)
         ax.set_title(OUTCOME_LABELS[outcome], fontsize=9)
         ax.grid(axis="x", alpha=0.25, linewidth=0.5)
-        ax.legend(handles=_gender_legend_handles(), fontsize=7, loc="lower right")
+        # loc="best" 而不是钉死在 lower right：图 1 的公共事务行正好落在
+        # 右下角，固定位置的图例会把女性那个点连同它的样本量标注一起盖住。
+        ax.legend(handles=_gender_legend_handles(), fontsize=7, loc="best")
         _annotate_missing(ax, flags, prefix="flagged rows")
 
     fig.suptitle("Figure 1. Core participation outcomes by gender, {}".format(year),
@@ -928,6 +930,13 @@ def fig3_interaction(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
                 lines.append("  {} gap ({}) = {:+.3f} [{:+.3f}, {:+.3f}]".format(
                     DOMAIN_LABELS[domain], model, row["estimate"],
                     row["ci_low"], row["ci_high"]))
+        # 标注框固定贴在面板左上角（transAxes），而公共事务那一格的点恰好
+        # 也落在上方——两者直接压在一起，男性预测点被框盖掉。按行数往上留白，
+        # 把数据压下去给框腾地方，而不是把框挪走：框一旦离开左上角，四个格子
+        # 里总有一个会被它盖住，挪动只是换一个受害者。
+        y_low, y_high = ax.get_ylim()
+        headroom = min(0.6, max(0.25, 0.06 * len(lines)))
+        ax.set_ylim(y_low, y_high + (y_high - y_low) * headroom)
         ax.text(0.02, 0.98, "\n".join(lines), transform=ax.transAxes,
                 fontsize=6.5, va="top", ha="left",
                 bbox=dict(boxstyle="round", facecolor="#f5f5f5",
@@ -1113,7 +1122,10 @@ def fig5_combinations(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
                   "with a known source combination; 95% Wilson CI)", fontsize=7)
     ax.set_title("Observed distribution", fontsize=9)
     ax.grid(axis="x", alpha=0.25, linewidth=0.5)
-    ax.legend(handles=_gender_legend_handles(), fontsize=6.5, loc="lower right")
+    # "Neither domain" 是占比最大的一类（八成以上用户），它的点正好落在
+    # 右下角——钉死在 lower right 的图例会把这一整类连同区间一起盖掉，
+    # 读者只能看见旁边那个孤零零的样本量标注。交给 loc="best" 自己避让。
+    ax.legend(handles=_gender_legend_handles(), fontsize=6.5, loc="best")
     _annotate_missing(ax, flags, prefix="flagged rows")
 
     # --- 面板 2：多项 logit 的预测概率 ---
@@ -1143,7 +1155,7 @@ def fig5_combinations(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
     ax.set_title("Model-predicted probabilities ({})".format(model), fontsize=9)
     ax.grid(axis="x", alpha=0.25, linewidth=0.5)
     ax.legend(handles=_gender_legend_handles(" (predicted)"), fontsize=6.5,
-              loc="lower right")
+              loc="best")
     _annotate_missing(ax, flags, prefix="flagged cells")
 
     # --- 面板 3：各层的性别 AME ---
@@ -1235,6 +1247,7 @@ def fig6_monthly(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
             ax = axes[r, c]
             rows = monthly_rows(monthly, outcome, domain)
             missing = []
+            absent_months = set()
             for gender in GENDER_ORDER:
                 series = select(rows, term=gender).sort_values("month")
                 if series.empty:
@@ -1248,8 +1261,6 @@ def fig6_monthly(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
                 high = pd.to_numeric(series["ci_high"],
                                      errors="coerce").to_numpy(dtype=float)
                 color = GENDER_COLORS[gender]
-                ax.plot(months, values, color=color, marker=GENDER_MARKERS[gender],
-                        markersize=4, linewidth=1.3, label=GENDER_LABELS[gender])
 
                 # 每个月单独判成色，与图 1/2/3/5 用的是同一条规则
                 # （estimate_status）。这张图原来自己画 fill_between、
@@ -1259,9 +1270,34 @@ def fig6_monthly(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
                 # 读者没有任何办法知道它的不确定性是缺失的。
                 statuses = [estimate_status(row) for _, row in series.iterrows()]
                 banded = np.array([s in ("ok", "clipped") for s in statuses])
+
+                # 整月缺席时折线必须断开。monthly_rates 里没有那一行，months
+                # 就直接从 9 跳到 11，matplotlib 把两点连成一条直线——读者看到
+                # 的是一段横跨该月的平滑过渡，而那个月根本不在面板里。这跟
+                # "区间缺失被相邻月份脑补"是同一类错误，只是发生在点估计上。
+                # 把序列重排到完整的 1..12 网格，缺席月份取 NaN，折线自己断开，
+                # 缺口于是成为图上可见的事实，并在下面写进说明。
+                grid = np.arange(1, 13)
+                present = {int(m) for m in months}
+                absent_months.update(int(m) for m in grid
+                                     if int(m) not in present)
+                g_values = np.full(len(grid), np.nan)
+                g_low = np.full(len(grid), np.nan)
+                g_high = np.full(len(grid), np.nan)
+                g_banded = np.zeros(len(grid), dtype=bool)
+                for i, month in enumerate(months):
+                    j = int(month) - 1
+                    g_values[j] = values[i]
+                    g_low[j] = low[i]
+                    g_high[j] = high[i]
+                    g_banded[j] = banded[i]
+
+                ax.plot(grid, g_values, color=color,
+                        marker=GENDER_MARKERS[gender],
+                        markersize=4, linewidth=1.3, label=GENDER_LABELS[gender])
                 # where= 让缺界的月份在带子上留一个缺口，而不是让 NaN 被
                 # 相邻月份的界脑补过去
-                ax.fill_between(months, low, high, where=banded, color=color,
+                ax.fill_between(grid, g_low, g_high, where=g_banded, color=color,
                                 alpha=0.15, linewidth=0)
                 for (_, row), month, status in zip(series.iterrows(), months,
                                                    statuses):
@@ -1286,6 +1322,12 @@ def fig6_monthly(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
                 ax.set_xlabel("Month of {}".format(year), fontsize=8)
             ax.grid(alpha=0.25, linewidth=0.5)
             ax.legend(fontsize=7, loc="best")
+            # 缺席的月份要单独说明：折线上的断口告诉读者"这里没有点"，
+            # 但没告诉他"为什么"。它与拟合失败（红色 ✕）不是一回事——
+            # 那是试过了没成，这是整月数据就不在面板里。
+            if absent_months:
+                missing.append("month(s) {} absent from the panel entirely".format(
+                    ", ".join("{:02d}".format(m) for m in sorted(absent_months))))
             _annotate_missing(ax, missing)
 
     fig.suptitle(

@@ -884,6 +884,85 @@ def test_fig6_marks_a_month_with_no_estimate_at_all(figure_data):
     assert os.path.getsize(path) > 1000
 
 
+def _capture_saved_figure(monkeypatch):
+    """截下交给 _save_fig 的 Figure 对象
+
+    _save_fig 保存完就 plt.close(fig)，所以事后 plt.gcf() 拿到的是一张空图。
+    但 close 只是把图从管理器里摘掉，Figure 本身连同坐标轴和 artist 都还在，
+    截住引用就能照常查坐标——这样测试查的是真正画出来的那张图。
+    """
+    captured = {}
+    original = fg._save_fig
+
+    def spy(fig, name, fig_dir):
+        captured[name] = fig
+        return original(fig, name, fig_dir)
+
+    monkeypatch.setattr(fg, "_save_fig", spy)
+    return captured
+
+
+def test_fig6_breaks_the_line_across_a_month_that_is_absent_entirely(figure_data,
+                                                                     monkeypatch):
+    """整月缺席时折线必须断开，不能把缺口两端连成一条直线
+
+    2020 年的真实数据里 10 月整月不在面板中（manifest_temporal 的 months 是
+    [1..9, 11, 12]）。原来的画法直接把 month 数组喂给 ax.plot，数组从 9 跳到
+    11，matplotlib 于是画出一条横跨 10 月的线段——读者看到的是一段平滑过渡，
+    而那个月根本没有数据。这跟"区间缺失被相邻月份脑补"是同一类错误，只是
+    发生在点估计上，而且更隐蔽：断口没有任何视觉提示。
+
+    这里直接查 Line2D 的坐标，不看 PDF 字节数——原来的两个 fig6 测试只断言
+    文件大小，所以这个 bug 从它们眼皮底下过去了。
+    """
+    data_dir, fig_dir = figure_data
+    monthly = _monthly()
+    absent = ((monthly["model"] == "month=10")
+              & (monthly["outcome"] == "monthly_source_entered_rate")
+              & (monthly["domain"] == "public"))
+    assert absent.sum() > 0
+    monthly = monthly[~absent]
+    monthly.to_parquet(os.path.join(data_dir, "monthly_rates.parquet"),
+                       engine="pyarrow", index=False)
+
+    captured = _capture_saved_figure(monkeypatch)
+    fg.fig6_monthly(year=2020, data_dir=data_dir, fig_dir=fig_dir)
+    ax = captured["fig6_monthly"].axes[0]   # 第一个面板就是 public / entry rate
+    series = [ln for ln in ax.get_lines() if len(ln.get_xdata()) >= 12]
+    assert series, "没有找到月度折线"
+    for line in series:
+        x = np.asarray(line.get_xdata(), dtype=float)
+        y = np.asarray(line.get_ydata(), dtype=float)
+        # 10 月必须在 x 网格上占一个位置，且取值为 NaN——占位保证断开，
+        # 缺席保证不被脑补。两者缺一都会让缺口重新被连起来。
+        assert 10 in set(x.astype(int)), "10 月被挤出了 x 网格，折线会重新连上"
+        assert np.isnan(y[list(x.astype(int)).index(10)]), \
+            "10 月有取值，折线跨过了一个没有数据的月份"
+        assert np.isfinite(y[list(x.astype(int)).index(9)])
+        assert np.isfinite(y[list(x.astype(int)).index(11)])
+    plt.close("all")
+
+
+def test_fig6_says_out_loud_which_month_is_absent(figure_data, monkeypatch):
+    """缺口本身不解释自己：图上必须写明是哪个月不在面板里
+
+    折线断开只告诉读者"这里没有点"，不告诉他为什么。整月缺席与拟合失败
+    （红色 ✕）不是一回事，说明文字要把这件事讲清楚，否则读者只能猜。
+    """
+    data_dir, fig_dir = figure_data
+    monthly = _monthly()
+    monthly = monthly[monthly["model"] != "month=10"]
+    monthly.to_parquet(os.path.join(data_dir, "monthly_rates.parquet"),
+                       engine="pyarrow", index=False)
+
+    captured = _capture_saved_figure(monkeypatch)
+    fg.fig6_monthly(year=2020, data_dir=data_dir, fig_dir=fig_dir)
+    texts = " ".join(t.get_text() for ax in captured["fig6_monthly"].axes
+                     for t in ax.texts)
+    assert "10" in texts and "absent" in texts.lower()
+    plt.close("all")
+
+
 def test_fig6_flags_a_missing_interval_through_draw_estimate():
     """区间缺失的月份走的是 draw_estimate 的 ci_unavailable 分支
 
