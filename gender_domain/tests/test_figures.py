@@ -884,6 +884,119 @@ def test_fig6_marks_a_month_with_no_estimate_at_all(figure_data):
     assert os.path.getsize(path) > 1000
 
 
+# ---------------------------------------------------------------------------
+# 图例只描述图上真的画了什么
+# ---------------------------------------------------------------------------
+
+def _legend_labels(fig):
+    """这张图（含 fig 级图例）上所有图例键的文字"""
+    labels = []
+    for ax in fig.axes:
+        legend = ax.get_legend()
+        if legend is not None:
+            labels += [t.get_text() for t in legend.get_texts()]
+    for legend in fig.legends:
+        labels += [t.get_text() for t in legend.get_texts()]
+    return labels
+
+
+def _drawn_failure_states(fig):
+    """图上真的画出来的失败标记——按 draw_estimate 自己写的旁注判定
+
+    draw_estimate 给 ci_unavailable 写 "CI n/a"、给 missing 写 "no estimate"，
+    这两句话只有它会写，所以拿它们当"这张图上确实有这种点"的证据，比去猜
+    marker 的样式可靠。
+    """
+    texts = [t.get_text() for ax in fig.axes for t in ax.texts]
+    return {"ci_unavailable": "CI n/a" in texts,
+            "missing": "no estimate" in texts}
+
+
+# 只有这四张图用代理句柄拼图例（_gender_legend_handles / _state_handles）。
+# 图 6 的图例是从 artist 取的男女两条线，从来不带失败状态键；图 4 是堆积条形，
+# 图 A1 是 ECDF，都不走 draw_estimate。
+PROXY_LEGEND_FIGURES = ("fig1_core_outcomes", "fig2_adjusted_effects",
+                        "fig3_interaction", "fig5_combinations")
+
+
+def test_a_failure_key_appears_exactly_when_that_failure_is_on_the_figure(
+        figure_data, monkeypatch):
+    """图例里有没有失败键，必须与图上有没有那种点严格一致
+
+    这两个键原来无条件挂在图 1/2/3/5 上。2020 年的真实结果里两种情况一次都
+    没发生，于是每张图都带着两个指向空处的键——读者会去图上找那个空心圈或
+    红叉，找不到，只能怀疑是自己漏看了。图例是对图上内容的说明，不是所有
+    可能状态的目录。
+
+    写成双向断言而不是"不许出现"，是因为反方向同样要命：真出现了却没有键，
+    图上那个红叉就没人看得懂。合成数据里 models_entry 故意留了一行 NaN，
+    所以图 2 这一侧断言的是"键必须在"。
+    """
+    data_dir, fig_dir = figure_data
+    captured = _capture_saved_figure(monkeypatch)
+    fg.all(year=2020, data_dir=data_dir, fig_dir=fig_dir)
+    assert captured, "没有截到任何图"
+
+    checked = 0
+    for name in PROXY_LEGEND_FIGURES:
+        fig = captured[name]
+        labels = _legend_labels(fig)
+        drawn = _drawn_failure_states(fig)
+        assert ("No CI available" in labels) == drawn["ci_unavailable"], \
+            (name, labels, drawn)
+        assert ("No estimate" in labels) == drawn["missing"], \
+            (name, labels, drawn)
+        checked += 1
+    assert checked == 4
+    plt.close("all")
+
+
+def test_the_no_ci_key_comes_back_when_a_point_really_has_no_interval(figure_data,
+                                                                      monkeypatch):
+    """真的出现缺区间的点时，键必须在——否则图上那个空心圈没人看得懂
+
+    这条守的是上一条测试不能靠"把键删掉"通过：键是按实际成色开关的，
+    不是被移除的。
+    """
+    data_dir, fig_dir = figure_data
+    table2 = _table2()
+    mask = ((table2["outcome"] == "source_entered")
+            & (table2["domain"] == "public")
+            & (table2["term"] == "male")
+            & (table2["model"] == fg.PRIMARY_TABLE2_MODEL["source_entered"]))
+    assert mask.sum() == 1
+    table2.loc[mask, ["ci_low", "ci_high"]] = np.nan
+    table2.to_parquet(os.path.join(data_dir, "table2_raw_gender_gaps.parquet"),
+                      engine="pyarrow", index=False)
+
+    captured = _capture_saved_figure(monkeypatch)
+    fg.fig1_core_outcomes(year=2020, data_dir=data_dir, fig_dir=fig_dir)
+    labels = _legend_labels(captured["fig1_core_outcomes"])
+    assert "No CI available" in labels
+    assert "No estimate" not in labels        # 这一格有点估计，只是没有区间
+    plt.close("all")
+
+
+def test_the_no_estimate_key_comes_back_when_a_row_has_no_estimate(figure_data,
+                                                                   monkeypatch):
+    """整行没估出来时，红叉的图例键必须在"""
+    data_dir, fig_dir = figure_data
+    table2 = _table2()
+    mask = ((table2["outcome"] == "topical_share")
+            & (table2["domain"] == "celebrity")
+            & (table2["term"] == "female"))
+    assert mask.sum() == 1
+    table2.loc[mask, ["estimate", "ci_low", "ci_high"]] = np.nan
+    table2.to_parquet(os.path.join(data_dir, "table2_raw_gender_gaps.parquet"),
+                      engine="pyarrow", index=False)
+
+    captured = _capture_saved_figure(monkeypatch)
+    fg.fig1_core_outcomes(year=2020, data_dir=data_dir, fig_dir=fig_dir)
+    labels = _legend_labels(captured["fig1_core_outcomes"])
+    assert "No estimate" in labels
+    plt.close("all")
+
+
 def _capture_saved_figure(monkeypatch):
     """截下交给 _save_fig 的 Figure 对象
 

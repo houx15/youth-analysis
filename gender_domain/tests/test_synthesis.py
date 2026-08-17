@@ -874,6 +874,51 @@ def test_slurm_array_jobs_between_them_run_one_task_per_family():
     assert "n_per_cell" in light
 
 
+def test_run_all_actually_reaches_the_robustness_suite():
+    """run_all 必须把稳健性套件也带上，而不是跑完主结果就收工
+
+    这条守的是一个真实的疏漏：run_all 原来一路跑到导出绘图数据就结束，
+    §13 的五个族一个都没投。表面上"全流程一次跑完"，实际上稳健性要另外
+    手工投两个数组再手工跑综合层——而漏投不会有任何报错，只会在写论文时
+    发现稳健性一栏是空的。
+    """
+    _, run_all = _slurm_text("run_all.slurm")
+    for script in ("run_robustness.slurm", "run_robustness_light.slurm",
+                   "run_robustness_synthesis.slurm"):
+        assert script in run_all, script
+
+
+def test_run_all_chains_synthesis_behind_both_robustness_arrays():
+    """综合层必须 afterok 挂在两个数组之后，且两个数组都在依赖里
+
+    综合层读五张族表。少挂一个数组，它就会在那一族还没写完时启动，
+    load_all 按"缺哪族就少哪族"出一份看起来正常、其实不完整的综合表——
+    这是本套件里最安静的一种错。
+    """
+    _, run_all = _slurm_text("run_all.slurm")
+    assert "--dependency=" in run_all
+    assert "afterok:${heavy}:${light}" in run_all, \
+        "综合层的依赖必须同时包含重量数组与轻量数组"
+    # 依赖串里的两个变量确实是那两次提交的返回值，不是空字符串
+    assert "heavy=$(sbatch" in run_all
+    assert "light=$(sbatch" in run_all
+    assert "--parsable" in run_all, "没有 --parsable 就拿不到纯作业号"
+
+
+def test_run_all_survives_a_cluster_that_refuses_compute_node_submission():
+    """提交失败不能把一个已经算完全部主结果的作业判成失败
+
+    run_all 开头是 set -euo pipefail，一条没兜住的 sbatch 失败会让整个作业
+    以非零码退出——前面几个小时的主结果全都在盘上，作业却报"失败"，
+    --mail-type 也照着失败发信。所以提交段必须显式兜住并打印手工投递命令。
+    """
+    _, run_all = _slurm_text("run_all.slurm")
+    assert "set -euo pipefail" in run_all
+    assert "if ! submit_robustness; then" in run_all
+    # 三次提交任意一次失败都要整段失败，不能只投出去一半
+    assert run_all.count("|| return 1") == 3
+
+
 def test_the_light_slurm_script_really_asks_for_less_than_the_heavy_one():
     """拆脚本的意义就在额度上：时间、核数都必须更低，任务号还不能重叠
 

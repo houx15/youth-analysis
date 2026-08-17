@@ -560,12 +560,41 @@ def _errorbar(ax, x, y, low, high, color, marker, label=None, horizontal=True):
                     capsize=3, linewidth=1.2, label=label)
 
 
-def _gender_legend_handles(suffix="", with_observed=False):
+def _state_handles(states):
+    """只为图上真的出现过的失败成色配图例键
+
+    图例是对这张图上画了什么的说明，不是所有可能状态的目录。这两个键原来
+    无条件加，于是每张图都挂着 "No CI available" 与 "No estimate"，而 2020 年
+    的结果里两种情况一次都没出现——读者看到键就会去图上找那个点，找不到
+    只能怀疑是自己没看见，或者怀疑图漏画了。空着的图例键比没有图例键更糟。
+
+    反过来，一旦真的出现，键必须在：那时它标的是一个实心点缺席的位置，
+    没有键就没人知道那个空心圈或红叉是什么意思。所以这里按实际成色开关，
+    而不是干脆删掉。
+    """
+    handles = []
+    if "ci_unavailable" in states:
+        handles.append(Line2D([], [], color="#555555", marker="o",
+                              linestyle="none", markersize=6,
+                              markerfacecolor="none", markeredgewidth=1.6,
+                              label="No CI available"))
+    if "missing" in states:
+        handles.append(Line2D([], [], color="#b22222", marker="x",
+                              linestyle="none", markersize=7,
+                              label="No estimate"))
+    return handles
+
+
+def _gender_legend_handles(suffix="", with_observed=False, states=()):
     """用固定的代理句柄拼图例，不从画出来的 artist 里取
 
     从 artist 取图例有一个安静的坑：如果某一格恰好是 ci_unavailable，
     那一格画的是空心点，图例键就会变成空心的，与图上其余实心点自相矛盾。
     代理句柄描述的是"这类点应该长什么样"，与某一格的成色无关。
+
+    states 是这张图（或这个面板）上实际出现过的成色集合，只用来决定要不要
+    挂失败状态的键——见 _state_handles。男女两个键与 Observed 键永远都在，
+    它们描述的是这张图的构图，不是某一格的运气。
     """
     handles = [
         Line2D([], [], color=GENDER_COLORS[gender], marker=GENDER_MARKERS[gender],
@@ -578,11 +607,7 @@ def _gender_legend_handles(suffix="", with_observed=False):
                               marker=OBSERVED_MARKER, linestyle="none",
                               markersize=6, markerfacecolor="none",
                               label="Observed (raw)"))
-    handles.append(Line2D([], [], color="#555555", marker="o", linestyle="none",
-                          markersize=6, markerfacecolor="none",
-                          markeredgewidth=1.6, label="No CI available"))
-    handles.append(Line2D([], [], color="#b22222", marker="x", linestyle="none",
-                          markersize=7, label="No estimate"))
+    handles.extend(_state_handles(states))
     return handles
 
 
@@ -690,6 +715,7 @@ def fig1_core_outcomes(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
         rows = select(table2, outcome=outcome,
                       model=PRIMARY_TABLE2_MODEL[outcome], denominator=denominator)
         y_ticks, y_labels, flags = [], [], []
+        states = set()
         for i, domain in enumerate(DOMAIN_ORDER):
             y_ticks.append(i)
             y_labels.append(DOMAIN_LABELS[domain])
@@ -699,12 +725,12 @@ def fig1_core_outcomes(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
                 if cell is None:
                     flags.append("{}/{}: row absent".format(domain, gender))
                     continue
-                draw_estimate(
+                states.add(draw_estimate(
                     ax, cell, y, GENDER_COLORS[gender],
                     GENDER_MARKERS[gender], orientation="h",
                     label=GENDER_LABELS[gender] if i == 0 else None,
                     flags=flags, tag="{}/{}".format(domain, gender),
-                    annotate_n=True, unit_scale=True)
+                    annotate_n=True, unit_scale=True))
         ax.set_yticks(y_ticks)
         ax.set_yticklabels(y_labels)
         ax.set_ylim(-0.6, len(DOMAIN_ORDER) - 0.4)
@@ -714,7 +740,8 @@ def fig1_core_outcomes(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
         ax.grid(axis="x", alpha=0.25, linewidth=0.5)
         # loc="best" 而不是钉死在 lower right：图 1 的公共事务行正好落在
         # 右下角，固定位置的图例会把女性那个点连同它的样本量标注一起盖住。
-        ax.legend(handles=_gender_legend_handles(), fontsize=7, loc="best")
+        ax.legend(handles=_gender_legend_handles(states=states), fontsize=7,
+                  loc="best")
         _annotate_missing(ax, flags, prefix="flagged rows")
 
     fig.suptitle("Figure 1. Core participation outcomes by gender, {}".format(year),
@@ -753,6 +780,9 @@ def fig2_adjusted_effects(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
     ]
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.8))
+    # 图例是整张图共用的（fig.legend），所以成色要跨两个面板累计：
+    # 只要任一面板出现过缺区间/缺估计，键就得挂上。
+    states = set()
     for ax, (_scale, xlabel, specs) in zip(axes, panels):
         y_ticks, y_labels, flags = [], [], []
         y = 0
@@ -774,9 +804,10 @@ def fig2_adjusted_effects(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
                 # 颜色编码"谁更高"；估计值缺失时按中性灰画缺口标记
                 color = "#777777" if pd.isna(row["estimate"]) else (
                     MALE_COLOR if row["estimate"] >= 0 else FEMALE_COLOR)
-                draw_estimate(ax, row, y + offset, color, LAYER_MARKERS[layer],
-                              orientation="h", flags=flags,
-                              tag="{}/{}/{}".format(outcome, domain, layer))
+                states.add(draw_estimate(
+                    ax, row, y + offset, color, LAYER_MARKERS[layer],
+                    orientation="h", flags=flags,
+                    tag="{}/{}/{}".format(outcome, domain, layer)))
                 if pd.notna(row["estimate"]):
                     ax.annotate(layer, (row["estimate"], y + offset),
                                 textcoords="offset points", xytext=(7, -2),
@@ -797,12 +828,8 @@ def fig2_adjusted_effects(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
     handles += [Line2D([], [], color=MALE_COLOR, marker="s", linestyle="none",
                        label="Male higher"),
                 Line2D([], [], color=FEMALE_COLOR, marker="s", linestyle="none",
-                       label="Female higher"),
-                Line2D([], [], color="#555555", marker="o", linestyle="none",
-                       markerfacecolor="none", markeredgewidth=1.6,
-                       label="No CI available"),
-                Line2D([], [], color="#b22222", marker="x", linestyle="none",
-                       label="No estimate")]
+                       label="Female higher")]
+    handles += _state_handles(states)
     fig.legend(handles=handles, fontsize=7, loc="lower center", ncol=4,
                frameon=False)
     fig.suptitle(
@@ -857,6 +884,7 @@ def fig3_interaction(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
         cells = predicted_cells(inter, outcome, model)
         facets = domain_facets(cells) or list(DOMAIN_ORDER)
         flags = []
+        states = set()
         n_predicted, n_observed = set(), set()
         for i, domain in enumerate(facets):
             for gender in GENDER_ORDER:
@@ -886,10 +914,11 @@ def fig3_interaction(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
                     continue
                 if pd.notna(row.get("n_obs")):
                     n_predicted.add(int(row["n_obs"]))
-                draw_estimate(ax, row, x, color, GENDER_MARKERS[gender],
-                              orientation="v", flags=flags,
-                              tag="{}/{} predicted".format(domain, gender),
-                              annotate_n=True, unit_scale=True)
+                states.add(draw_estimate(
+                    ax, row, x, color, GENDER_MARKERS[gender],
+                    orientation="v", flags=flags,
+                    tag="{}/{} predicted".format(domain, gender),
+                    annotate_n=True, unit_scale=True))
 
             # 域内的性别差直接读结果表的 gap 行，不在图里自己相减：
             # 恒等式虽然成立，但读表里的那一行才能顺带把区间一起写出来
@@ -961,7 +990,8 @@ def fig3_interaction(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
         # 标注框占满，硬塞进去只会盖住数据。图例用固定代理句柄，不从画出来的
         # artist 里取——某一格恰好是 ci_unavailable 时，取到的会是一个空心键。
         ax.legend(handles=_gender_legend_handles(" (predicted)",
-                                                 with_observed=True),
+                                                 with_observed=True,
+                                                 states=states),
                   fontsize=6.5, loc="upper center", bbox_to_anchor=(0.5, -0.09),
                   ncol=3, frameon=False)
         _annotate_missing(ax, flags, prefix="flagged cells", y=-0.34, va="top")
@@ -1104,6 +1134,7 @@ def fig5_combinations(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
     # --- 面板 1：观测分布 ---
     ax = axes[0]
     flags = []
+    states = set()
     for i, category in enumerate(COMBO_CATEGORIES):
         for gender in GENDER_ORDER:
             cell = select_one(observed, term="{}_{}".format(category, gender))
@@ -1111,10 +1142,11 @@ def fig5_combinations(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
             if cell is None:
                 flags.append("{}/{}: row absent".format(category, gender))
                 continue
-            draw_estimate(ax, cell, y, GENDER_COLORS[gender],
-                          GENDER_MARKERS[gender], orientation="h", flags=flags,
-                          tag="{}/{} observed".format(category, gender),
-                          annotate_n=True, unit_scale=True)
+            states.add(draw_estimate(
+                ax, cell, y, GENDER_COLORS[gender],
+                GENDER_MARKERS[gender], orientation="h", flags=flags,
+                tag="{}/{} observed".format(category, gender),
+                annotate_n=True, unit_scale=True))
     ax.set_yticks(range(len(COMBO_CATEGORIES)))
     ax.set_yticklabels([COMBO_LABELS[c] for c in COMBO_CATEGORIES])
     ax.set_ylim(-0.6, len(COMBO_CATEGORIES) - 0.4)
@@ -1125,12 +1157,14 @@ def fig5_combinations(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
     # "Neither domain" 是占比最大的一类（八成以上用户），它的点正好落在
     # 右下角——钉死在 lower right 的图例会把这一整类连同区间一起盖掉，
     # 读者只能看见旁边那个孤零零的样本量标注。交给 loc="best" 自己避让。
-    ax.legend(handles=_gender_legend_handles(), fontsize=6.5, loc="best")
+    ax.legend(handles=_gender_legend_handles(states=states), fontsize=6.5,
+              loc="best")
     _annotate_missing(ax, flags, prefix="flagged rows")
 
     # --- 面板 2：多项 logit 的预测概率 ---
     ax = axes[1]
     flags = []
+    states = set()
     cells = predicted_combo_cells(multinomial, model)
     n_pred = set()
     for i, category in enumerate(COMBO_CATEGORIES):
@@ -1142,10 +1176,11 @@ def fig5_combinations(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
                 continue
             if pd.notna(row.get("n_obs")):
                 n_pred.add(int(row["n_obs"]))
-            draw_estimate(ax, row, y, GENDER_COLORS[gender],
-                          GENDER_MARKERS[gender], orientation="h", flags=flags,
-                          tag="{}/{} predicted".format(category, gender),
-                          unit_scale=True)
+            states.add(draw_estimate(
+                ax, row, y, GENDER_COLORS[gender],
+                GENDER_MARKERS[gender], orientation="h", flags=flags,
+                tag="{}/{} predicted".format(category, gender),
+                unit_scale=True))
     ax.set_yticks(range(len(COMBO_CATEGORIES)))
     ax.set_yticklabels([COMBO_LABELS[c] for c in COMBO_CATEGORIES])
     ax.set_ylim(-0.6, len(COMBO_CATEGORIES) - 0.4)
@@ -1154,13 +1189,14 @@ def fig5_combinations(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
                       model, _n_range_label(n_pred)), fontsize=7)
     ax.set_title("Model-predicted probabilities ({})".format(model), fontsize=9)
     ax.grid(axis="x", alpha=0.25, linewidth=0.5)
-    ax.legend(handles=_gender_legend_handles(" (predicted)"), fontsize=6.5,
-              loc="best")
+    ax.legend(handles=_gender_legend_handles(" (predicted)", states=states),
+              fontsize=6.5, loc="best")
     _annotate_missing(ax, flags, prefix="flagged cells")
 
     # --- 面板 3：各层的性别 AME ---
     ax = axes[2]
     flags = []
+    states = set()
     combo_rows = select(multinomial, outcome="source_combo", domain=DOMAIN_BOTH)
     for i, category in enumerate(COMBO_CATEGORIES):
         for k, layer in enumerate(MODEL_LAYERS):
@@ -1172,9 +1208,10 @@ def fig5_combinations(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
                 continue
             color = "#777777" if pd.isna(row["estimate"]) else (
                 MALE_COLOR if row["estimate"] >= 0 else FEMALE_COLOR)
-            draw_estimate(ax, row, i + offset, color, LAYER_MARKERS[layer],
-                          orientation="h", flags=flags,
-                          tag="{}/{} AME".format(category, layer))
+            states.add(draw_estimate(
+                ax, row, i + offset, color, LAYER_MARKERS[layer],
+                orientation="h", flags=flags,
+                tag="{}/{} AME".format(category, layer)))
             if pd.notna(row["estimate"]):
                 ax.annotate(layer, (row["estimate"], i + offset),
                             textcoords="offset points", xytext=(7, -2), fontsize=6,
@@ -1193,11 +1230,7 @@ def fig5_combinations(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
     handles = [Line2D([], [], color="#555555", marker=LAYER_MARKERS[layer],
                       linestyle="none", label=LAYER_LABELS[layer])
                for layer in MODEL_LAYERS]
-    handles += [Line2D([], [], color="#555555", marker="o", linestyle="none",
-                       markerfacecolor="none", markeredgewidth=1.6,
-                       label="No CI available"),
-                Line2D([], [], color="#b22222", marker="x", linestyle="none",
-                       label="No estimate")]
+    handles += _state_handles(states)
     fig.legend(handles=handles, fontsize=7, loc="lower center", ncol=5,
                frameon=False)
     fig.suptitle("Figure 5. Source-combination categories by gender, {}".format(year),
