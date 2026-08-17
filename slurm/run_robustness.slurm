@@ -1,14 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=robust_heavy
+#SBATCH -o job.%A_%a.out
+#SBATCH -p C032M0128G
+#SBATCH --qos=low
 #SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --time=48:00:00
-#SBATCH --mem=192G
+#SBATCH --ntasks-per-node=32
 #SBATCH --array=1-2
-#SBATCH --output=job.%A_%a.robust.out
-#SBATCH --mail-type=end
-#SBATCH --mail-user=2401111059@stu.pku.edu.cn
 
 # §13 稳健性套件的**两个贵族**：一个数组任务跑一个族。
 #   1 vocabulary     -> vocabulary.parquet, vocabulary_diagnostics.parquet
@@ -99,7 +95,8 @@
 
 set -euo pipefail
 
-source ~/miniconda3/etc/profile.d/conda.sh
+module load anaconda/3.11
+source ~/.bash_profile
 conda activate opinion
 
 YEAR="${YEAR:-2020}"

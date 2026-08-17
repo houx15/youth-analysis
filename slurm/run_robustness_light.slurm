@@ -1,14 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=robust_light
+#SBATCH -o job.%A_%a.out
+#SBATCH -p C032M0128G
+#SBATCH --qos=low
 #SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --time=06:00:00
-#SBATCH --mem=96G
+#SBATCH --ntasks-per-node=32
 #SBATCH --array=3-5
-#SBATCH --output=job.%A_%a.robust_light.out
-#SBATCH --mail-type=end
-#SBATCH --mail-user=2401111059@stu.pku.edu.cn
 
 # §13 稳健性套件的**三个轻族**：一个数组任务跑一个族。
 #   3 samples        -> samples.parquet, sample_diagnostics.parquet,
@@ -49,7 +45,8 @@
 #   * 三个任务都在一两个小时内结束，6 小时留了三倍余量。
 # 万一任务 5 真的被 OOM 杀掉（表 A 比预期大），**不要改这个脚本的 #SBATCH**，
 # 单独把它按重族的额度重投一次即可（命令行上的 --mem 覆盖脚本里的 #SBATCH）：
-#   sbatch --export=ALL --array=5 --mem=192G --time=12:00:00 slurm/run_robustness_light.slurm
+#   sbatch --export=ALL --array=5 -p <更大内存的分区> slurm/run_robustness_light.slurm
+#   （本集群用分区名选核数与内存，不接受 --mem/--time；分区列表见 sinfo）
 #
 # --------------------------------------------------------------------------
 # 运行标识（run_id）：拆开之后必须**手工**导出一次
@@ -88,7 +85,8 @@
 
 set -euo pipefail
 
-source ~/miniconda3/etc/profile.d/conda.sh
+module load anaconda/3.11
+source ~/.bash_profile
 conda activate opinion
 
 YEAR="${YEAR:-2020}"

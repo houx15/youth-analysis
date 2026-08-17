@@ -1,13 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=userCD
+#SBATCH -o job.%j.out
+#SBATCH -p C032M0128G
+#SBATCH --qos=low
 #SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --time=6:00:00
-#SBATCH --mem=128G
-#SBATCH --output=job.%j.userCD.out
-#SBATCH --mail-type=end
-#SBATCH --mail-user=2401111059@stu.pku.edu.cn
+#SBATCH --ntasks-per-node=32
 
 # Tables C and D: aggregate the post and event shards into the user master table
 # and the user-month panel. Loads all shards at once, hence the larger memory ask.
@@ -16,7 +12,8 @@
 # Usage:
 #   sbatch slurm/build_user_tables.slurm
 
-source ~/miniconda3/etc/profile.d/conda.sh
+module load anaconda/3.11
+source ~/.bash_profile
 conda activate opinion
 
 python -m gender_domain.build_user_tables build --year=2020
