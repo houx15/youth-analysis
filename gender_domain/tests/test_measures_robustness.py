@@ -71,6 +71,9 @@ LONG_USERS = (("m1", "m"), ("m2", "m"), ("f1", "f"), ("f2", "f"), ("f3", "f"))
 SHORT_USERS = (("m3", "m"), ("f4", "f"))
 # 只活跃 1 个月的用户
 SINGLE_USERS = (("m4", "m"),)
+# 全年只发原创、一条转发都没有的用户：§13.1 的"只看转发过的人"这个分母
+# 必须真的剔掉某个人，否则那个变体在夹具上会退化成基线本身
+POST_ONLY_USERS = (("f5", "f"),)
 
 # 活跃月份限制剔掉的人。**活跃月份数取 n_active_months_panel**（分母含
 # 只转发不发帖的月份，与 build_user_tables 的持续性分母同一列）：f4 只在
@@ -109,6 +112,14 @@ def _raw_posts():
         rows.append((base + "_b", uid, gender, "今天天气不错", "0", date))
         rows.append((base + "_c", uid, gender, "顶流粉丝好多", "1", date))
         rows.append((base + "_d", uid, gender, "转发微博", "1", date))
+
+    # 只发原创、不转发的用户：她全年 12 个月各两条原创，一条命中一条不命中
+    for uid, gender in POST_ONLY_USERS:
+        for month in range(1, 13):
+            date = "{}-{:02d}-05".format(YEAR, month)
+            base = "{}_{:02d}".format(uid, month)
+            rows.append((base + "_a", uid, gender, "复工复产", "0", date))
+            rows.append((base + "_b", uid, gender, "随便写点什么", "0", date))
 
     # 8 月的行为量尖峰：m1 额外发 30 条纯转发
     for index in range(30):
@@ -418,10 +429,80 @@ def test_every_post_type_variant_label_names_the_post_types_and_denominator(
     rows = mea.run_post_type_variants(YEAR, context=context, out_path=out_path,
                                       diag_path=diag_path)
     labels = _labels(rows)
-    assert len(labels) == len(mea.POST_TYPE_VARIANTS)
+    # 主口径那一版不产出（与基线逐字相同），另有一行"发现"行
+    n_emitted = sum(1 for v in mea.POST_TYPE_VARIANTS if not v.is_baseline)
+    assert len(labels) == n_emitted + 1
     for label in labels:
         assert "post_types=" in label, label
         assert "denominator=" in label, label
+
+
+# ---------------------------------------------------------------------------
+# 3b. 与基线逐字相同的口径不许产出结果行，必须改为被核验
+# ---------------------------------------------------------------------------
+
+def test_the_primary_post_type_variant_is_verified_not_emitted(context, tmp_path):
+    """主口径（原创 + 带评论转发）与基线逐字相同，不许作为变体出现在结果表里
+
+    产出它只会在分布正中心多一个幽灵变体，把方向一致率抬高、离散度压低。
+    """
+    out_path = str(tmp_path / "measures.parquet")
+    diag_path = str(tmp_path / "diag.parquet")
+    rows = mea.run_post_type_variants(YEAR, context=context, out_path=out_path,
+                                      diag_path=diag_path)
+    primary = "+".join(mea.PRIMARY_POST_TYPES)
+    assert not any(label.startswith("post_types={};".format(primary))
+                   for label in _labels(rows))
+    # 但它必须被核验过：核验函数存在、跑得通、且返回"已核验相等"
+    report = mea.check_primary_reconstruction(context)
+    assert all(entry["verified_equal_to_table_c"] for entry in report.values())
+
+
+def test_the_expressive_denominator_and_all_users_entry_arm_are_not_emitted(
+    context, tmp_path
+):
+    """§13.1 的两个"就是主口径"的口径同样不许产出结果行"""
+    out_path = str(tmp_path / "measures.parquet")
+    diag_path = str(tmp_path / "diag.parquet")
+    rows = mea.run_denominator_variants(YEAR, context=context, out_path=out_path,
+                                        diag_path=diag_path)
+    labels = _labels(rows)
+    assert not any("entry_sample=all_users" in label for label in labels)
+    assert not any(mea.DEN_EXPRESSIVE_POSTS in label for label in labels)
+    assert any("entry_sample=retweeters_only" in label for label in labels)
+    # 夹具里必须真的有人被这个分母剔掉，否则这个变体在夹具上退化成基线本身
+    retweeters = context.user_table[context.user_table["n_retweets"] > 0]
+    assert 0 < len(retweeters) < len(context.user_table)
+
+
+def test_an_anomaly_rule_that_flags_nothing_is_verified_not_emitted(
+    context, tmp_path, monkeypatch
+):
+    """规则一个月都没选中时，剔除异常月份等于全年重估——不许当成一个变体
+
+    真实数据上这完全可能发生，所以它不是一个理论上的边角情形。
+    """
+    monkeypatch.setattr(mea, "anomalous_months",
+                        lambda volumes: ((), {"median": 1.0, "mad": 0.0,
+                                              "threshold": 1.0}))
+    out_path = str(tmp_path / "measures.parquet")
+    diag_path = str(tmp_path / "diag.parquet")
+    applied = {}
+    rows = mea.run_temporal_restrictions(YEAR, context=context, out_path=out_path,
+                                         diag_path=diag_path, applied=applied)
+    assert not any("anomalous_excluded" in label for label in _labels(rows))
+    assert applied["anomaly_variant"] == "not_emitted:rule_flagged_no_month"
+
+
+def test_full_year_month_reconstruction_check_aborts_on_mismatch(context,
+                                                                 monkeypatch):
+    """全年重聚合的检验必须报错，不能只打印一句警告接着算"""
+    assert mea.check_full_year_reconstruction(context)["verified_equal_to_table_c"]
+
+    broken = context.user_table.copy()
+    broken["n_posts"] = broken["n_posts"] + 1
+    with pytest.raises(ValueError, match="对不上"):
+        mea.check_full_year_reconstruction(context._replace(user_table=broken))
 
 
 def test_every_temporal_variant_label_names_its_denominator(context, tmp_path):
@@ -433,6 +514,167 @@ def test_every_temporal_variant_label_names_its_denominator(context, tmp_path):
     assert len(rows) > 0
     for label in _labels(rows):
         assert "denominator=" in label, label
+
+
+# ---------------------------------------------------------------------------
+# 3c. 按构造动不到的量必须写成 NaN，而不是产出与基线相同的重复估计
+# ---------------------------------------------------------------------------
+
+def _entry_mask(rows):
+    return mea._quantity_row_mask(rows, mea.ENTRY_QUANTITIES)
+
+
+def test_entry_quantities_derive_from_harness_not_a_local_copy():
+    """"六个量里哪几个是 entry"只能有一个来源"""
+    assert set(mea.ENTRY_QUANTITIES) == {
+        "entry_public", "entry_celebrity", "did_entry"}
+    assert set(mea.ENTRY_QUANTITIES) <= set(harness.QUANTITIES)
+
+
+@pytest.mark.parametrize("runner", ["post_type", "denominator"])
+def test_entry_quantities_are_nan_in_variants_that_cannot_touch_entry(
+    context, tmp_path, runner
+):
+    """帖子类型 / 替代测量变体的三个 entry 量必须是 NaN，topical 三个量不是
+
+    照常产出会在分布正中心留下与基线逐字相同的幽灵行；只在 note 里写一个
+    标记不管用，因为 note 是盖整帧贴的，下游按它过滤会把 topical 一起丢掉。
+    """
+    out_path = str(tmp_path / "measures.parquet")
+    diag_path = str(tmp_path / "diag.parquet")
+    run = (mea.run_post_type_variants if runner == "post_type"
+           else mea.run_denominator_variants)
+    rows = run(YEAR, context=context, out_path=out_path, diag_path=diag_path)
+
+    # 只看真正的变体行（"发现"行与被剔样本的变体不在此列）
+    variants = rows[rows["model"].notna()]
+    if runner == "denominator":
+        variants = variants[~variants["variant_label"].str.contains(
+            "entry_sample=", na=False)]
+    assert len(variants) > 0
+
+    entry = variants[_entry_mask(variants)]
+    topical = variants[~_entry_mask(variants)]
+    assert len(entry) > 0 and len(topical) > 0
+    assert entry["estimate"].isna().all()
+    assert entry["note"].str.contains("entry_not_estimated_in_this_variant").all()
+    # topical 三个量必须**没有**被这条 note 波及——这正是"标记盖整帧"那个 bug
+    assert not topical["note"].str.contains(
+        "entry_not_estimated_in_this_variant", na=False).any()
+    # 行数不变量原样成立
+    per_label = variants.groupby("variant_label").size()
+    assert (per_label == len(harness.QUANTITIES) * 2).all()
+
+
+def test_the_entry_is_unaffected_finding_is_stated_once_as_its_own_row(
+    context, tmp_path
+):
+    """这个发现用一行说一次，而不是在每个变体里重复一遍基线估计"""
+    out_path = str(tmp_path / "measures.parquet")
+    diag_path = str(tmp_path / "diag.parquet")
+    rows = mea.run_post_type_variants(YEAR, context=context, out_path=out_path,
+                                      diag_path=diag_path)
+    finding = rows[rows["variant_label"] == mea.FINDING_ENTRY_UNAFFECTED_POST_TYPE]
+    assert len(finding) == 1
+    assert finding["estimate"].isna().all()
+    assert "entry_is_a_table_B_retweet_event" in finding.iloc[0]["note"]
+
+
+def test_no_emitted_variant_reproduces_the_whole_baseline_estimate_vector(
+    context, tmp_path
+):
+    """整体守卫：不该有任何一个变体的整组估计与基线逐字相同
+
+    钉的是"整组"而不是"某一格"：单独一格与基线相等在小样本上完全可能是巧合
+    （两个不同的分母恰好给出同一个数），而幽灵变体的定义是**它跑出来的东西
+    与基线一模一样**——这正是复核在四个帖子类型变体与三个基线口径上发现的
+    那件事。
+    """
+    out_path = str(tmp_path / "measures.parquet")
+    diag_path = str(tmp_path / "diag.parquet")
+    frames = [
+        mea.run_denominator_variants(YEAR, context=context, out_path=out_path,
+                                     diag_path=diag_path),
+        mea.run_post_type_variants(YEAR, context=context, out_path=out_path,
+                                   diag_path=diag_path),
+    ]
+    rows = pd.concat(frames, ignore_index=True)
+    baseline = harness.baseline(context.user_table)
+    keys = ["outcome", "domain", "model", "term"]
+    reference = baseline.set_index(keys)["estimate"]
+
+    phantoms = []
+    for label, block in rows[rows["model"].notna()].groupby("variant_label"):
+        comparable = 0
+        identical = 0
+        for record in block.to_dict("records"):
+            key = tuple(record[column] for column in keys)
+            if key not in reference.index:
+                continue
+            expected, got = reference.loc[key], record["estimate"]
+            if pd.isna(got) or pd.isna(expected):
+                continue
+            comparable += 1
+            identical += int(float(got) == float(expected))
+        if comparable and identical == comparable:
+            phantoms.append((label, comparable))
+    assert phantoms == [], phantoms
+
+
+# ---------------------------------------------------------------------------
+# 3d. label 上写的分母，必须就是这一行真的算出来的东西
+# ---------------------------------------------------------------------------
+
+def test_every_measure_spec_is_registered_against_an_authoritative_column():
+    """六条 spec 条条必须登记在册，否则"查不到就不检查"会变成静默逃生口"""
+    for spec in mea.MEASURE_SPECS:
+        assert (spec.numerator, spec.denominator) in mea.LABEL_TO_TABLE_C
+
+
+def test_swapping_two_denominator_labels_is_caught(context, tmp_path,
+                                                   monkeypatch):
+    """只对调两条 spec 的分母字符串（不动计算），必须当场报错
+
+    一个自信地写错的分母比一个没写分母更糟：结果表上"分母 = 全部帖子"那一行
+    会装着表达帖口径的份额，而这一族存在的唯一意义就是分母。
+    """
+    original = list(mea.MEASURE_SPECS)
+    swapped = []
+    for spec in original:
+        if spec.key == mea.MEASURE_EXPRESSIVE_SHARE:
+            swapped.append(spec._replace(denominator=mea.DEN_ALL_POSTS))
+        elif spec.key == mea.MEASURE_ALLPOSTS_SHARE:
+            swapped.append(spec._replace(denominator=mea.DEN_EXPRESSIVE_POSTS))
+        else:
+            swapped.append(spec)
+    monkeypatch.setattr(mea, "MEASURE_SPECS", tuple(swapped))
+
+    out_path = str(tmp_path / "measures.parquet")
+    diag_path = str(tmp_path / "diag.parquet")
+    with pytest.raises(ValueError):
+        mea.run_denominator_variants(YEAR, context=context, out_path=out_path,
+                                     diag_path=diag_path)
+
+
+def test_pointing_a_label_at_the_wrong_column_is_caught(context, monkeypatch):
+    """把登记表指向另一列（计算不动），逐用户比对必须发现不一致"""
+    tampered = dict(mea.LABEL_TO_TABLE_C)
+    tampered[(mea.NUM_HIT_POSTS, mea.DEN_ALL_POSTS)] = mea.LabelCheck(
+        "{}_topical_share", 1.0)
+    monkeypatch.setattr(mea, "LABEL_TO_TABLE_C", tampered)
+    spec = mea.MEASURE_BY_KEY[mea.MEASURE_ALLPOSTS_SHARE]
+    with pytest.raises(ValueError, match="label 与实际测量对不上"):
+        mea.check_measure_matches_its_label(context, spec)
+
+
+def test_primary_reconstruction_check_aborts_and_covers_the_denominator(
+    context, monkeypatch
+):
+    """许可整个族的那条检验必须报错停下，而且必须覆盖分母而不只是分子"""
+    broken = context.user_table.copy()
+    broken["n_expressive_posts"] = broken["n_expressive_posts"] + 1
+    with pytest.raises(ValueError, match="对不上"):
+        mea.check_primary_reconstruction(context._replace(user_table=broken))
 
 
 # ---------------------------------------------------------------------------
@@ -671,7 +913,9 @@ def test_rows_carry_the_full_variant_identity_and_the_row_count_invariant(
     assert list(rows.columns) == list(harness.ROBUSTNESS_SCHEMA)
     assert rows["variant_family"].eq(mea.VARIANT_FAMILY_POST_TYPE).all()
     assert rows["seed"].isna().all()
-    per_label = rows.groupby("variant_label").size()
+    # "发现"行只有一行（走 _note_only_rows），变体行仍然恰好 6 × 2
+    variants = rows[rows["model"].notna()]
+    per_label = variants.groupby("variant_label").size()
     assert (per_label == len(harness.QUANTITIES) * 2).all()
 
     written = _read_results(out_path)
@@ -700,6 +944,34 @@ def test_build_writes_results_diagnostics_and_a_manifest_recording_the_rule(
     assert SPIKE_MONTH in params["anomalous_months"]
     assert params["anomaly_volume_variable"] == mea.ANOMALY_VOLUME_VARIABLE
     assert len(params["monthly_behaviour_volume"]) == 12
+    # 与基线逐字相同的口径不产出结果行，改为在 manifest 里留下"已核验相等"
+    checks = params["reconstruction_checks"]
+    assert checks["primary_post_type_reconstruction"]["public"][
+        "verified_equal_to_table_c"] is True
+    assert checks["full_year_month_reconstruction"]["verified_equal_to_table_c"] is True
+    assert checks["entry_denominator_all_users_is_the_baseline"]["n_users"] > 0
+    assert checks["measure_label_matches_measurement"][
+        mea.MEASURE_ALLPOSTS_SHARE]["public"]["verified"] is True
+
+
+def test_manifest_records_the_anomaly_selection_that_was_actually_applied(
+    synthetic_project, monkeypatch
+):
+    """manifest 记的必须是这一次真的用了什么，而不是同一段代码再推一遍
+
+    把 anomalous_months 换成一个只在被 run_temporal_restrictions 调用时生效
+    的桩：如果 build() 自己又算了一遍，manifest 里就会是另一组月份。
+    """
+    monkeypatch.setattr(mea, "anomalous_months",
+                        lambda volumes: ((2,), {"median": 30.0, "mad": 0.0,
+                                                "threshold": 15.0}))
+    mea.build(YEAR)
+    manifest_path = os.path.join(mea.manifest_dir(YEAR), "manifest.json")
+    with open(manifest_path, "r", encoding="utf-8") as handle:
+        params = json.load(handle)["params"]
+    assert params["anomalous_months"] == [2]
+    assert params["anomaly_retained_months"] == [m for m in range(1, 13) if m != 2]
+    assert params["anomaly_variant"] == "estimated"
 
 
 def test_output_stays_under_the_robustness_directory(synthetic_project):

@@ -67,10 +67,19 @@ is_expressive 逐帖相等，重聚合必须逐用户重现表 C——这与 Tas
 分别写明这一点。
 
 一条必须说明的性质：帖子类型只作用于内容测量，进入指示来自表 B 的转发
-事件，**按构造不受帖子类型影响**。因此这四个变体的 entry / did_entry 两组
-行与主口径逐字相同。这不是漏跑，而是这个变体本身的性质，note 里写明
-`entry_quantities_unchanged_by_construction`，让下游按 note 就能识别，
-不必去猜为什么四个变体的 entry 估计一模一样。
+事件，**按构造不受帖子类型影响**。因此这些变体的 entry / did_entry 三个量
+若照常产出，会与基线逐字相同——那是坐在分布正中心的幽灵行，会同时抬高
+synthesis 的方向一致率、压低离散度。所以它们**逐行写成 NaN**（行数不变），
+"进入指示不受帖子类型影响"这个发现用一行注明原因的行说一次。
+完整理由见下方 ENTRY_QUANTITIES 上方的长注释——特别是"为什么只在 note 里
+写一个标记不管用"。同一条处理也适用于 §13.1 的替代测量变体：把字符密度
+写进 topical_share 列同样碰不到进入指示。
+
+与此配套的一条：**与基线逐字相同的口径一律不产出结果行**（进入指示以全部
+同性别用户为分母、话题占比以表达帖为分母、以及异常月份规则一个月都没选中
+时的全年重估）。它们改为作为**重建检验**运行——断言重现表 C，把"已核验
+相等"写进 manifest。这与 Task 2 的全集重建是同一条纪律，而且比一行重复的
+估计有信息量得多：它证明重聚合这条路本身是对的。
 
 --------------------------------------------------------------------------
 §13.7：留一月与分月估计**从 models_temporal 的输出里读**，绝不重算
@@ -194,27 +203,85 @@ PRIMARY_POST_TYPES = tuple(tr.EXPRESSIVE_TYPES)
 PLAIN_POST_TYPE = "retweet_plain"
 ALL_TEXT_POST_TYPES = PRIMARY_POST_TYPES + (PLAIN_POST_TYPE,)
 
-# 每个变体：(key, 选中的帖子类型, 是否要求字符数 > 0, 分母的人话描述)
+# 每个变体：(key, 选中的帖子类型, 是否要求字符数 > 0, 分母的人话描述,
+# 是否就是主口径)。`is_baseline=True` 的那一条**不作为变体产出结果行**：
+# 它与基线逐字相同，摆一行进结果表只会在分布正中心多一个幽灵变体，把方向
+# 一致率抬高、把离散度压低（samples.py 拒绝复制 untreated 结果去冒充 log1p
+# 变体，是同一条纪律）。它改为作为**重建检验**运行：断言它重现表 C，并把
+# "已核验相等"写进 manifest——这比多一行重复的估计有用得多。
 PostTypeVariant = namedtuple(
-    "PostTypeVariant", ["key", "post_types", "require_nonzero_chars", "denominator"]
+    "PostTypeVariant",
+    ["key", "post_types", "require_nonzero_chars", "denominator", "is_baseline"],
 )
 
 POST_TYPE_VARIANTS = (
     PostTypeVariant("original_only", ("original",), True,
-                    "original_posts_with_nonzero_chars"),
+                    "original_posts_with_nonzero_chars", False),
     PostTypeVariant("primary", PRIMARY_POST_TYPES, True,
-                    "expressive_posts(original+commented_retweets,nonzero_chars)"),
+                    "expressive_posts(original+commented_retweets,nonzero_chars)",
+                    True),
     PostTypeVariant("plain_retweets_only", (PLAIN_POST_TYPE,), True,
-                    "plain_retweets_with_nonzero_chars"),
+                    "plain_retweets_with_nonzero_chars", False),
     PostTypeVariant("all_text", ALL_TEXT_POST_TYPES, True,
-                    "all_post_types_with_nonzero_chars"),
+                    "all_post_types_with_nonzero_chars", False),
 )
 
-# 帖子类型只作用于内容测量：进入指示来自表 B 的转发事件，按构造不受影响。
-# 写进 note 让下游按字符串就能识别，不必去猜为什么四个变体的 entry 相同。
-NOTE_ENTRY_UNCHANGED = (
-    "entry_quantities_unchanged_by_construction:"
-    "post_type_filter_does_not_touch_table_B_events"
+# ---------------------------------------------------------------------------
+# 「这个变体按构造动不到哪几个量」必须写成 NaN，不能只写进 note
+# ---------------------------------------------------------------------------
+#
+# 帖子类型过滤只作用于内容测量；把替代测量写进 topical_share 列同样只作用于
+# 内容测量。两者都碰不到进入指示——它来自表 B 的转发事件，不是内容测量。
+# 于是这些变体的 entry_public / entry_celebrity / did_entry 三个量会给出与
+# 基线**逐字相同**的估计。
+#
+# 早先的做法是照常产出这三个量、在 note 里写一句"按构造不变"。这不管用，
+# 有两个各自独立的理由：
+#
+# 1. **散文到不了算术。** synthesis 的方向一致率数的是"与基线同号的行"，
+#    一堆坐在正中心的重复行会同时抬高一致率、压低离散度——一句只有人能读到
+#    的 note 拦不住这件事。
+# 2. **那个标记本身就不可用。** note 是通过 voc._annotate_note 贴的，它按
+#    设计**盖整帧**：标记会同时落在 topical 的三个量上。下游若按这个字符串
+#    过滤，会把 §13.8 真正要检验的 topical_public / topical_celebrity /
+#    did_topical 一起丢掉，除非它自己在字符串匹配背后重新推导"六个量里哪
+#    几个是 entry"——那等于把 harness 的映射抄一遍。
+#
+# 因此改为**逐行**把这三个量写成 NaN（行数不变，estimate_all 的行数不变量
+# 原样成立），NaN 本来就是本套件"这里没测"的既有信号，不需要任何新约定；
+# 而"进入指示不受影响"这个发现，按既有做法用**一行**注明原因的行说一次。
+#
+# 哪几个量算 entry 从 harness.QUANTITY_META 现场推导，不在这里另抄一份：
+# 六个量的定义只能有一个来源。
+ENTRY_QUANTITIES = tuple(
+    key for key, meta in harness.QUANTITY_META.items()
+    if meta["outcome"] == mt.OUTCOME_ENTRY
+)
+# 这三个量在这类变体里被写成 NaN 时，行内 note 写的原因
+NOTE_ENTRY_NOT_ESTIMATED = (
+    "entry_not_estimated_in_this_variant:"
+    "the_variant_only_changes_the_content_measure;"
+    "entry_comes_from_table_B_retweet_events_and_is_identical_to_the_baseline;"
+    "emitted_as_NaN_so_it_is_not_counted_as_an_independent_variant"
+)
+# "进入指示不受帖子类型影响"这个发现，用一行说一次
+FINDING_ENTRY_UNAFFECTED_POST_TYPE = (
+    "post_types=any;denominator=all_same_gender_users(as_in_the_baseline);"
+    "finding=entry_unaffected_by_post_type"
+)
+FINDING_ENTRY_UNAFFECTED_POST_TYPE_NOTE = (
+    "post_type_filtering_cannot_change_entry:"
+    "entry_is_a_table_B_retweet_event_not_a_content_measure;"
+    "stated_once_here_instead_of_duplicating_the_baseline_estimate_in_every_variant"
+)
+FINDING_ENTRY_UNAFFECTED_MEASURE = (
+    "topical_measure=any;denominator=all_same_gender_users(as_in_the_baseline);"
+    "finding=entry_unaffected_by_the_topical_measure"
+)
+FINDING_ENTRY_UNAFFECTED_MEASURE_NOTE = (
+    "substituting_an_alternative_topical_measure_cannot_change_entry:"
+    "entry_is_a_table_B_retweet_event_not_a_content_measure;"
+    "stated_once_here_instead_of_duplicating_the_baseline_estimate_in_every_variant"
 )
 
 # ---------------------------------------------------------------------------
@@ -233,28 +300,82 @@ MEASURE_HITS_PER_CHAR = "hits_per_char"
 MEASURE_SOURCE_MONTHS_PANEL = "source_month_share_panel"
 MEASURE_SOURCE_MONTHS_POSTS = "source_month_share_posts_only"
 
-MeasureSpec = namedtuple("MeasureSpec", ["key", "numerator", "denominator", "note"])
+# 进 label 的分子/分母文字。写成常量而不是散落的字面量，是为了让下面那张
+# 「label -> 权威列」的对照表与 MEASURE_SPECS 只可能一起改。
+NUM_TOPICAL_POSTS = "topical_expressive_posts"
+NUM_HIT_POSTS = "hit_posts"
+NUM_HIT_CHARS = "hit_characters"
+NUM_HIT_COUNT = "hit_count"
+NUM_SOURCE_MONTHS = "domain_source_months"
 
-# 每个替代测量的分子/分母，全部写成人话直接进 label 与 note
+DEN_EXPRESSIVE_POSTS = "expressive_posts(main)"
+DEN_ALL_POSTS = "all_posts_including_zero_char_posts"
+DEN_EXPRESSIVE_CHARS = "expressive_characters"
+DEN_EXPRESSIVE_CHARS_PER_1K = "expressive_characters(reported_per_character)"
+DEN_ACTIVE_MONTHS_PANEL = "active_months_panel(includes_retweet_only_months)"
+DEN_ACTIVE_MONTHS_POSTS = "active_months_from_posts_only"
+
+MeasureSpec = namedtuple(
+    "MeasureSpec", ["key", "numerator", "denominator", "note", "is_baseline"]
+)
+
+# 每个替代测量的分子/分母，全部写成人话直接进 label 与 note。
+# `is_baseline=True` 的那一条与基线逐字相同，因此**不作为变体产出结果行**，
+# 只作为重建检验运行（理由见 PostTypeVariant 上方的说明）。
 MEASURE_SPECS = (
-    MeasureSpec(MEASURE_EXPRESSIVE_SHARE, "topical_expressive_posts",
-                "expressive_posts(main)", None),
-    MeasureSpec(MEASURE_ALLPOSTS_SHARE, "hit_posts",
-                "all_posts_including_zero_char_posts",
-                "parallel_column_in_table_C:{domain}_topical_share_allposts"),
-    MeasureSpec(MEASURE_CHAR_DENSITY, "hit_characters",
-                "expressive_characters", None),
-    MeasureSpec(MEASURE_HITS_PER_CHAR, "hit_count",
-                "expressive_characters",
+    MeasureSpec(MEASURE_EXPRESSIVE_SHARE, NUM_TOPICAL_POSTS,
+                DEN_EXPRESSIVE_POSTS, None, True),
+    MeasureSpec(MEASURE_ALLPOSTS_SHARE, NUM_HIT_POSTS, DEN_ALL_POSTS,
+                "parallel_column_in_table_C:{domain}_topical_share_allposts", False),
+    MeasureSpec(MEASURE_CHAR_DENSITY, NUM_HIT_CHARS,
+                DEN_EXPRESSIVE_CHARS, None, False),
+    MeasureSpec(MEASURE_HITS_PER_CHAR, NUM_HIT_COUNT,
+                DEN_EXPRESSIVE_CHARS_PER_1K,
                 "reported_per_character;multiply_by_1000_for_hits_per_1k_scale;"
-                "fractional_logit_requires_a_proportion"),
-    MeasureSpec(MEASURE_SOURCE_MONTHS_PANEL, "domain_source_months",
-                "active_months_panel(includes_retweet_only_months)", None),
-    MeasureSpec(MEASURE_SOURCE_MONTHS_POSTS, "domain_source_months",
-                "active_months_from_posts_only",
-                "clipped_at_1_like_build_user_tables_source_share"),
+                "fractional_logit_requires_a_proportion", False),
+    MeasureSpec(MEASURE_SOURCE_MONTHS_PANEL, NUM_SOURCE_MONTHS,
+                DEN_ACTIVE_MONTHS_PANEL, None, False),
+    MeasureSpec(MEASURE_SOURCE_MONTHS_POSTS, NUM_SOURCE_MONTHS,
+                DEN_ACTIVE_MONTHS_POSTS,
+                "clipped_at_1_like_build_user_tables_source_share", False),
 )
 MEASURE_BY_KEY = {spec.key: spec for spec in MEASURE_SPECS}
+
+# ---------------------------------------------------------------------------
+# 把 label 与它实际算出来的东西绑在一起
+# ---------------------------------------------------------------------------
+#
+# MEASURE_SPECS 里的 `key` 决定算什么，`numerator`/`denominator` 决定 label
+# 写什么，两者之间原本没有任何东西相连——把两条 spec 的分母字符串对调一下，
+# 结果表上"分母 = 全部帖子"那一行装的就会是表达帖口径的份额，而整套测试
+# 一条都不会失败。**一个自信地写错的分母比一个没写分母更糟**：这一族存在的
+# 唯一意义就是证明分母的选择没有推着结论走，而主流水线已经为同一类错误付过
+# 一次复核的代价。
+#
+# 下面这张表按 **(分子, 分母) 这一对进 label 的字符串** 反查表 C 里的权威
+# 列，`check_measure_matches_its_label` 逐用户比对。对调分母会让查表落空
+# （或查到另一列），当场报错。**六条 spec 必须条条有登记**：查不到就报错，
+# 否则"对调之后查不到、于是不检查"会变成一个静默的逃生口。
+#
+# column 为 None 的那一条是表 C 里确实没有对应列的口径（只看发帖的活跃月份
+# 分母正是这个变体要引入的东西），它仍然必须登记在册，只是检查内容改成
+# "断言表 C 里没有这一列"，而不是跳过。
+LabelCheck = namedtuple("LabelCheck", ["column", "scale"])
+
+LABEL_TO_TABLE_C = {
+    (NUM_TOPICAL_POSTS, DEN_EXPRESSIVE_POSTS):
+        LabelCheck("{}_topical_share", 1.0),
+    (NUM_HIT_POSTS, DEN_ALL_POSTS):
+        LabelCheck("{}_topical_share_allposts", 1.0),
+    (NUM_HIT_CHARS, DEN_EXPRESSIVE_CHARS):
+        LabelCheck("{}_char_density", 1.0),
+    (NUM_HIT_COUNT, DEN_EXPRESSIVE_CHARS_PER_1K):
+        LabelCheck("{}_hits_per_1k", 1000.0),
+    (NUM_SOURCE_MONTHS, DEN_ACTIVE_MONTHS_PANEL):
+        LabelCheck("{}_source_month_share", 1.0),
+    (NUM_SOURCE_MONTHS, DEN_ACTIVE_MONTHS_POSTS):
+        LabelCheck(None, 1.0),
+}
 
 # ---------------------------------------------------------------------------
 # §13.7 时间限制
@@ -455,30 +576,188 @@ def build_context(year=config.YEAR, domains=DOMAINS):
             "monthly_rates": monthly_rates_path(),
         },
     )
-    _check_primary_reconstruction_matches_table_c(context, domains)
+    check_primary_reconstruction(context, domains)
     return context
 
 
-def _check_primary_reconstruction_matches_table_c(context, domains=DOMAINS):
-    """主口径的帖子类型重聚合必须与表 C 逐用户相等，不等就大声说出来
+# ---------------------------------------------------------------------------
+# 重建检验：与基线逐字相同的那几个"变体"改成在这里被核验，而不是产出重复行
+# ---------------------------------------------------------------------------
+
+def _mismatch_count(expected, got, tolerance=0.0):
+    """逐元素比对两个已经对齐的数组，NaN 与 NaN 算相等，返回不一致的个数
+
+    占比列里 NaN 有确切含义（分母为 0），把它当成"对不上"会让每一次重建
+    检验都在零表达帖用户身上假报警；把它当成"随便什么都算相等"又会漏掉真的
+    错误。所以两边都是 NaN 才算相等，一边是 NaN 一边不是就算不一致。
+    """
+    expected = np.asarray(expected, dtype=float)
+    got = np.asarray(got, dtype=float)
+    both_nan = np.isnan(expected) & np.isnan(got)
+    close = np.isclose(expected, got, rtol=0.0, atol=tolerance, equal_nan=False)
+    return int((~(both_nan | close)).sum())
+
+
+def check_primary_reconstruction(context, domains=DOMAINS, tolerance=1e-9):
+    """主口径的帖子类型重聚合必须与表 C 逐用户相等——**对不上直接报错**
 
     这是本模块的"全集重建"检验（词表侧的同名检验在 incidence，账号侧在
-    accounts）：过滤器取主口径时重聚合都对不上表 C，那么另外三个帖子类型
-    变体、以及全部按月过滤的变体都会在同一个方向上错。
+    accounts）。它同时也是 §13.8 主口径那一"变体"的去处：它与基线逐字相同，
+    因此不产出结果行，改为在这里被核验（结论写进 manifest）。
+
+    三样都要比：分子（topical_posts）、**分母（n_expressive_posts）**、以及
+    占比本身。只比分子会让"分子分母同时错、比值恰好对上"的情形溜过去，而
+    分母正是这一族全部要害所在。
+
+    这个检验licenses 本族每一个按帖子类型或按月份重新聚合的变体，因此它
+    **不能只打印一句警告然后接着算**：对不上就说明后面每一个数都在同一个
+    方向上错，接着算出来的东西没有任何人应该读。
     """
+    report = {}
     for domain in domains:
         result = topical_for_post_types(context, domain, PRIMARY_POST_TYPES)
-        expected = context.user_table.set_index("user_id")[
-            "{}_topical_posts".format(domain)]
-        got = result.set_index("user_id")["topical_posts"]
-        mismatch = int((expected.reindex(got.index).fillna(-1).to_numpy()
-                        != got.to_numpy()).sum())
-        if mismatch:
-            print(
-                "警告: {} 的主口径帖子类型重聚合与表 C 有 {} 个用户对不上——"
-                "§13.8 的四个变体与 §13.7 的按月重聚合都会在同一个方向上错，"
-                "请先查 incidence 的重建口径".format(domain, mismatch)
+        expected = context.user_table.set_index("user_id")
+        got = result.set_index("user_id")
+        expected = expected.reindex(got.index)
+        if int(expected.index.isna().sum()) or len(got) != len(context.user_table):
+            raise ValueError(
+                "{} 的主口径重聚合覆盖的用户集合与表 C 不一致（重聚合 {} 人、"
+                "表 C {} 人）：分母的用户全集对不上，后面每一个变体都会错。".format(
+                    domain, len(got), len(context.user_table))
             )
+        checks = {
+            "topical_posts": _mismatch_count(
+                expected["{}_topical_posts".format(domain)], got["topical_posts"]),
+            "n_expressive_posts": _mismatch_count(
+                expected["n_expressive_posts"], got["n_expressive_posts"]),
+            "topical_share": _mismatch_count(
+                expected["{}_topical_share".format(domain)], got["topical_share"],
+                tolerance=tolerance),
+        }
+        bad = {name: n for name, n in checks.items() if n}
+        if bad:
+            raise ValueError(
+                "{} 的主口径帖子类型重聚合与表 C 对不上（逐列不一致用户数 {}）——"
+                "§13.8 的帖子类型变体与 §13.7 的按月重聚合都会在同一个方向上错，"
+                "请先查 incidence 的重建口径，不要读本次的任何结果。".format(domain, bad)
+            )
+        report[domain] = {"n_users": int(len(got)), "verified_equal_to_table_c": True}
+        print("{} 主口径重聚合 == 表 C（{} 个用户，分子/分母/占比三者全等）".format(
+            domain, len(got)))
+    return report
+
+
+def check_measure_matches_its_label(context, spec, domains=DOMAINS, tolerance=1e-9):
+    """label 上写的分子/分母，必须就是这一行真的算出来的东西
+
+    做法见 LABEL_TO_TABLE_C 上方的说明：按 **(分子, 分母) 这一对进 label 的
+    字符串** 反查表 C 里的权威列，逐用户比对。把两条 spec 的分母对调之后，
+    查表会落空或查到另一列，这里当场报错——否则一个自信地写错的分母会一路
+    走到结果表上，而这一族存在的唯一意义就是分母。
+    """
+    key = (spec.numerator, spec.denominator)
+    if key not in LABEL_TO_TABLE_C:
+        raise ValueError(
+            "替代测量 {} 的 (分子, 分母) = {} 没有在 LABEL_TO_TABLE_C 里登记。"
+            "每一条 spec 都必须登记，否则'改了 label 就查不到、于是不检查'会变成"
+            "一个静默的逃生口——而 label 与实际测量对不上正是本族最不能出的错。"
+            .format(spec.key, key)
+        )
+    check = LABEL_TO_TABLE_C[key]
+    report = {}
+    for domain in domains:
+        computed = topical_for_measure(context, domain, spec.key)
+        if check.column is None:
+            # 表 C 里确实没有对应列（只看发帖的活跃月份分母正是这个变体要
+            # 引入的东西）。仍然登记在册、仍然算一遍，只是没有可对照的真值。
+            report[domain] = {"authoritative_column": None,
+                              "n_users": int(len(computed)),
+                              "verified": "no_column_in_table_c_by_design"}
+            continue
+        column = check.column.format(domain)
+        if column not in context.user_table.columns:
+            raise ValueError(
+                "{} 声称对应表 C 的 {} 列，但表 C 里没有这一列".format(spec.key, column))
+        merged = context.user_table[["user_id", column]].merge(
+            computed[["user_id", "topical_share"]], on="user_id", how="left")
+        mismatch = _mismatch_count(
+            merged[column], merged["topical_share"] * check.scale,
+            tolerance=tolerance)
+        if mismatch:
+            raise ValueError(
+                "label 与实际测量对不上: {} 的 label 写着 numerator={} / "
+                "denominator={}，按这个 label 应当等于表 C 的 {} 列，但有 {} 个"
+                "用户对不上。一个写错的分母比一个没写的分母更糟——本族存在的"
+                "唯一意义就是分母。".format(
+                    domain, spec.numerator, spec.denominator, column, mismatch)
+            )
+        report[domain] = {"authoritative_column": column, "scale": check.scale,
+                          "verified": True}
+    return report
+
+
+def check_full_year_reconstruction(context, tolerance=1e-9):
+    """保留全部 12 个月的按月重聚合必须回到表 C
+
+    §13.7 的"剔除异常月份"在规则一个月都没选中时，退化成一个与基线逐字相同
+    的全年重估。那一版不作为变体产出（幽灵变体的道理见 PostTypeVariant 上方
+    的说明），改为在这里被核验：全月份窗口的活动量与进入指示必须等于表 C。
+    """
+    frame = user_frame_for_months(context, ALL_MONTHS)
+    expected = context.user_table.set_index("user_id").reindex(
+        frame.set_index("user_id").index)
+    got = frame.set_index("user_id")
+    if len(got) != len(context.user_table):
+        raise ValueError(
+            "保留全部 12 个月的重聚合覆盖 {} 人，表 C 有 {} 人：按月重聚合的"
+            "用户全集对不上。".format(len(got), len(context.user_table)))
+    bad = {}
+    for column in ("n_posts", "n_retweets", "n_active_days"):
+        n = _mismatch_count(expected[column], got[column])
+        if n:
+            bad[column] = n
+    for domain in DOMAINS:
+        column = "{}_source_entered".format(domain)
+        n = _mismatch_count(expected[column].astype(float),
+                            got[column].astype(float))
+        if n:
+            bad[column] = n
+    if bad:
+        raise ValueError(
+            "保留全部 12 个月的重聚合与表 C 对不上（逐列不一致用户数 {}）——"
+            "§13.7 的半年限制与异常月份限制都会在同一个方向上错。".format(bad))
+    print("全年（12 个月）按月重聚合 == 表 C（{} 个用户）".format(len(got)))
+    return {"n_users": int(len(got)), "verified_equal_to_table_c": True}
+
+
+def verify_reconstructions(context, domains=DOMAINS):
+    """本族全部"与基线逐字相同"的口径都在这里被核验，结论进 manifest
+
+    这三条替代的是三个原本会被产出、却与基线一模一样的"变体"：
+      - §13.1 的 entry_sample=all_users（帧原样不动，就是基线本身）；
+      - §13.1 的 topical_measure=expressive_posts（主口径）与 §13.8 的
+        post_types=original+retweet_comment（同一件事的两个入口）；
+      - §13.7 在异常月份规则一个月都没选中时的全年重估。
+    产出重复行会在分布正中心多出幽灵变体；核验相等并把结论记下来，既去掉了
+    幽灵、又比那一行重复的估计更有信息量（它证明重建路径是对的）。
+    """
+    report = {
+        "primary_post_type_reconstruction": check_primary_reconstruction(
+            context, domains),
+        "full_year_month_reconstruction": check_full_year_reconstruction(context),
+        "entry_denominator_all_users_is_the_baseline": {
+            "n_users": int(len(context.user_table)),
+            "n_male": int((context.user_table["gender"] == "m").sum()),
+            "n_female": int((context.user_table["gender"] == "f").sum()),
+            "note": ("the_main_specification_already_uses_all_same_gender_users;"
+                     "emitting_it_as_a_variant_would_duplicate_the_baseline"),
+        },
+        "measure_label_matches_measurement": {
+            spec.key: check_measure_matches_its_label(context, spec, domains)
+            for spec in MEASURE_SPECS
+        },
+    }
+    return report
 
 
 # ---------------------------------------------------------------------------
@@ -895,18 +1174,84 @@ def _measure_note(diagnostic, extra=None):
     return ";".join(parts)
 
 
+def _quantity_row_mask(rows, quantities):
+    """结果行里属于给定几个量的那些行（按 harness 自己的 (outcome, domain, term)）
+
+    三元组从 harness.QUANTITY_META 现场取，不在本模块另抄一份：六个量分别是
+    什么，只能有一个来源。
+    """
+    mask = np.zeros(len(rows), dtype=bool)
+    for quantity in quantities:
+        meta = harness.QUANTITY_META[quantity]
+        mask |= (
+            (rows["outcome"] == meta["outcome"]).to_numpy(dtype=bool)
+            & (rows["domain"] == meta["domain"]).to_numpy(dtype=bool)
+            & (rows["term"] == meta["term"]).to_numpy(dtype=bool)
+        )
+    return mask
+
+
+def nan_out_quantities(rows, quantities, note, n_input):
+    """把给定几个量的行写成 NaN 并注明原因，**行数不变**
+
+    用途见 ENTRY_QUANTITIES 上方的长注释：一个按构造动不到某个量的变体，
+    若照常产出那个量，会在分布正中心多出一堆与基线逐字相同的行，把方向
+    一致率抬高、把离散度压低。NaN 是本套件既有的"这里没测"信号（harness
+    的 _nan_quantity_row 用的就是它），因此这里沿用同一个形状：数值列全部
+    NaN、n_obs 记 0、n_dropped 记全部输入用户，并在 note 上追加原因。
+
+    保留全部行是刻意的：estimate_all 的"恰好 len(QUANTITIES) × len(layers)
+    行"这条不变量，是下游判断某个变体是否真的跑过的唯一依据。
+    """
+    mask = _quantity_row_mask(rows, quantities)
+    if not mask.any():
+        return rows
+    out = rows.copy()
+    # note 的拼接规则一律走 voc._annotate_note（本套件唯一的那一套），
+    # 只是作用在被选中的这几行上——它按设计盖整帧，所以要先切片再贴回去
+    patched = voc._annotate_note(out.loc[mask], note)
+    for column in ("estimate", "se", "ci_low", "ci_high"):
+        patched[column] = np.nan
+    patched["n_obs"] = 0
+    patched["n_dropped"] = int(n_input)
+    patched["drop_reason"] = None
+    out.loc[mask, list(harness.ROBUSTNESS_SCHEMA)] = patched[
+        list(harness.ROBUSTNESS_SCHEMA)].to_numpy(dtype=object)
+    return out
+
+
 def _run_variant(frame, variant_family, variant_label, diagnostic, out_path,
-                 diag_path, extra_note=None):
-    """一个测量变体：估一次六个量、写一行诊断，两处都立刻落盘"""
+                 diag_path, extra_note=None, nan_quantities=None,
+                 nan_note=None):
+    """一个测量变体：估一次六个量、写一行诊断，两处都立刻落盘
+
+    nan_quantities 不为空时，那几个量的行在落盘前被写成 NaN（行数不变）：
+    这个变体按构造动不到它们，照常产出会在结果表里制造与基线逐字相同的
+    幽灵行。
+    """
     rows = harness.estimate_all(
         frame, variant_family=variant_family, variant_label=variant_label,
         replicate=0, seed=None,
     )
     rows = voc._annotate_note(rows, _measure_note(diagnostic, extra=extra_note))
+    if nan_quantities:
+        rows = nan_out_quantities(rows, nan_quantities, nan_note, len(frame))
     if out_path is not None:
         harness.append_rows(rows, out_path)
     append_diagnostics([diagnostic], diag_path)
     return rows
+
+
+def _finding_row(variant_family, variant_label, note, out_path):
+    """把"这一族按构造动不到某个量"这个发现，用一行说一次
+
+    走 vocabulary._note_only_rows（samples 处理做不到的变体、accounts 处理
+    缺类别时用的同一套做法），不新造第二种"说明性行"。
+    """
+    return voc._note_only_rows(
+        variant_label, note, outcome=mt.OUTCOME_ENTRY, domain="public",
+        out_path=out_path, variant_family=variant_family,
+    )
 
 
 def _apply_measure(context, user_table, measure):
@@ -924,9 +1269,18 @@ def _apply_measure(context, user_table, measure):
 
 def run_denominator_variants(year=config.YEAR, context=None, out_path=None,
                              diag_path=None):
-    """§13.1：进入指示的分母（全部同性别用户 vs 只看转发过的人）、
-    话题占比的分母（表达帖 vs 全部帖子）、字符密度、每字（千字）命中数、
-    领域月份 ÷ 活跃月份
+    """§13.1：进入指示的分母（只看转发过的人）、话题占比的分母（全部帖子）、
+    字符密度、每字（千字）命中数、领域月份 ÷ 活跃月份
+
+    两条口径**不作为变体产出结果行**，因为它们与基线逐字相同：
+      - 进入指示"以全部同性别用户为分母"就是主口径本身（帧原样不动）；
+      - 话题占比"以表达帖为分母"同样是主口径。
+    它们改由 verify_reconstructions 核验并写进 manifest（理由见
+    PostTypeVariant 上方的说明）。
+
+    替代测量只改内容测量，碰不到进入指示，因此这些变体的 entry_public /
+    entry_celebrity / did_entry 三个量一律写成 NaN，"进入指示不受影响"这个
+    发现用一行说一次。
 
     每一个 variant_label 都写成 `X=...;denominator=...`，见模块文档。
     """
@@ -934,32 +1288,34 @@ def run_denominator_variants(year=config.YEAR, context=None, out_path=None,
     frame = context.user_table
     collected = []
 
-    # --- 进入指示的分母：改的是"这个比例算在谁头上" ---
-    entry_variants = (
-        (ENTRY_DENOMINATOR_ALL, frame,
-         "no_restriction:every_user_of_that_gender_is_in_the_denominator"),
-        (ENTRY_DENOMINATOR_RETWEETERS,
-         frame[frame["n_retweets"].astype(float) > 0].copy(),
-         "restrict_to_users_who_retweeted_at_least_once"),
+    # --- 进入指示的分母：只有"只看转发过的人"是一个真的变体 ---
+    subset = frame[frame["n_retweets"].astype(float) > 0].copy()
+    label = "entry_sample=retweeters_only;denominator={}".format(
+        ENTRY_DENOMINATOR_RETWEETERS)
+    diagnostic = diagnostics_row(
+        VARIANT_FAMILY_DENOMINATOR, label,
+        rule="restrict_to_users_who_retweeted_at_least_once",
+        before=frame, after=subset,
+        measure_column="{domain}_source_entered",
+        numerator="users_who_entered_the_domain",
+        denominator=ENTRY_DENOMINATOR_RETWEETERS,
+        note="the_other_arm(denominator={})_is_the_baseline_itself_and_is_"
+             "verified_rather_than_re_emitted".format(ENTRY_DENOMINATOR_ALL),
     )
-    for denominator, subset, rule in entry_variants:
-        label = "entry_sample={};denominator={}".format(
-            "all_users" if denominator == ENTRY_DENOMINATOR_ALL else "retweeters_only",
-            denominator,
-        )
-        diagnostic = diagnostics_row(
-            VARIANT_FAMILY_DENOMINATOR, label, rule=rule, before=frame, after=subset,
-            measure_column="{domain}_source_entered",
-            numerator="users_who_entered_the_domain", denominator=denominator,
-            note="entry_denominator_variant:topical_measure_unchanged",
-        )
-        print("{}: 保留 {:,} / {:,} 人".format(label, len(subset), len(frame)))
-        collected.append(_run_variant(
-            subset, VARIANT_FAMILY_DENOMINATOR, label, diagnostic, out_path,
-            diag_path))
+    print("{}: 保留 {:,} / {:,} 人".format(label, len(subset), len(frame)))
+    collected.append(_run_variant(
+        subset, VARIANT_FAMILY_DENOMINATOR, label, diagnostic, out_path, diag_path))
 
     # --- 话题占比的分母/测量：全部写进 {domain}_topical_share 这一列 ---
+    emitted = 0
     for spec in MEASURE_SPECS:
+        # label 上写的分子/分母必须就是真的算出来的东西，对不上当场报错。
+        # 主口径那一条也要查——它虽然不产出结果行，重建检验仍然要跑。
+        check_measure_matches_its_label(context, spec)
+        if spec.is_baseline:
+            print("跳过与基线逐字相同的口径 {}（已核验重现表 C，不再产出重复行）"
+                  .format(spec.key))
+            continue
         label = "topical_measure={};denominator={}".format(
             spec.numerator, spec.denominator)
         user_df = _apply_measure(context, frame, spec.key)
@@ -974,7 +1330,14 @@ def run_denominator_variants(year=config.YEAR, context=None, out_path=None,
         print("{}: 已写入 topical_share 列".format(label))
         collected.append(_run_variant(
             user_df, VARIANT_FAMILY_DENOMINATOR, label, diagnostic, out_path,
-            diag_path, extra_note=spec.note))
+            diag_path, extra_note=spec.note,
+            nan_quantities=ENTRY_QUANTITIES, nan_note=NOTE_ENTRY_NOT_ESTIMATED))
+        emitted += 1
+
+    if emitted:
+        collected.append(_finding_row(
+            VARIANT_FAMILY_DENOMINATOR, FINDING_ENTRY_UNAFFECTED_MEASURE,
+            FINDING_ENTRY_UNAFFECTED_MEASURE_NOTE, out_path))
 
     return pd.concat(collected, ignore_index=True)
 
@@ -985,21 +1348,30 @@ def run_denominator_variants(year=config.YEAR, context=None, out_path=None,
 
 def run_post_type_variants(year=config.YEAR, context=None, out_path=None,
                            diag_path=None):
-    """§13.8：只看原创 / 原创 + 带评论转发（主口径）/ 只看纯转发 / 全部有字帖
+    """§13.8：只看原创 / 只看纯转发 / 全部有字帖
 
-    四个变体都按帖子类型重新聚合表 A（复用 Task 2 的逐帖矩阵与 posts 帧）。
-    主口径那一版必须逐用户重现表 C——build_context 里已经检查过一次。
+    三个变体都按帖子类型重新聚合表 A（复用 Task 2 的逐帖矩阵与 posts 帧）。
+    主口径（原创 + 带评论转发）**不在这里产出结果行**：它与基线逐字相同，
+    改由 check_primary_reconstruction 核验它逐用户重现表 C（分子、分母、
+    占比三者），结论写进 manifest。
+
+    帖子类型碰不到进入指示（它来自表 B 的转发事件，不是内容测量），因此
+    每个变体的 entry_public / entry_celebrity / did_entry 三个量一律写成
+    NaN，这个发现用一行说一次——散文到不了下游的算术，NaN 到得了。
     """
     context = context or build_context(year)
     frame = context.user_table
     collected = []
+    emitted = 0
 
     for variant in POST_TYPE_VARIANTS:
+        if variant.is_baseline:
+            print("跳过与基线逐字相同的口径 post_types={}（已核验重现表 C，"
+                  "不再产出重复行）".format("+".join(variant.post_types)))
+            continue
         label = "post_types={};denominator={}".format(
             "+".join(variant.post_types), variant.denominator)
         topical = {}
-        n_selected = 0
-        n_total = 0
         for domain in DOMAINS:
             topical[domain] = topical_for_post_types(
                 context, domain, variant.post_types,
@@ -1021,12 +1393,19 @@ def run_post_type_variants(year=config.YEAR, context=None, out_path=None,
             denominator=variant.denominator,
             post_types=variant.post_types,
             n_posts_selected=n_selected, n_posts_total=n_total,
-            note=NOTE_ENTRY_UNCHANGED,
+            note="entry_quantities_emitted_as_NaN:see_the_finding_row",
         )
         print("{}: 选中帖 {:,} / {:,}".format(label, n_selected, n_total))
         collected.append(_run_variant(
             user_df, VARIANT_FAMILY_POST_TYPE, label, diagnostic, out_path,
-            diag_path, extra_note=NOTE_ENTRY_UNCHANGED))
+            diag_path,
+            nan_quantities=ENTRY_QUANTITIES, nan_note=NOTE_ENTRY_NOT_ESTIMATED))
+        emitted += 1
+
+    if emitted:
+        collected.append(_finding_row(
+            VARIANT_FAMILY_POST_TYPE, FINDING_ENTRY_UNAFFECTED_POST_TYPE,
+            FINDING_ENTRY_UNAFFECTED_POST_TYPE_NOTE, out_path))
 
     return pd.concat(collected, ignore_index=True)
 
@@ -1115,9 +1494,18 @@ def run_leave_one_month_out(year=config.YEAR, context=None, out_path=None):
 
 def run_temporal_restrictions(year=config.YEAR, context=None, out_path=None,
                               diag_path=None,
-                              min_active_months=DEFAULT_MIN_ACTIVE_MONTHS):
+                              min_active_months=DEFAULT_MIN_ACTIVE_MONTHS,
+                              applied=None):
     """§13.7：上半年 vs 下半年、剔除行为量异常的月份、活跃满 3 / 6 个月的用户，
     外加从 models_temporal 读进来的留一月重估
+
+    Args:
+        applied: 可选的 dict，就地填入**这一次实际应用**的异常月份选择
+            （规则、逐月行为量、中位数/MAD/阈值、选中的月份、保留的月份、
+            以及这个变体到底有没有产出）。build() 用它写 manifest，而不是
+            自己再算一遍 anomalous_months——manifest 应当报告"实际用了什么"，
+            不是"照着同一段代码再推一次"。今天两者必然相同，但那是一个巧合，
+            不是一条被保证的性质。
     """
     context = context or build_context(year)
     frame = context.user_table
@@ -1140,10 +1528,20 @@ def run_temporal_restrictions(year=config.YEAR, context=None, out_path=None,
     append_diagnostics(_anomaly_diagnostics(volumes, info, set(flagged)), diag_path)
     retained = tuple(m for m in volumes.index.astype(int) if m not in set(flagged))
     anomaly_label = "months=anomalous_excluded({})".format(_format_months(flagged))
-    if not retained:
-        # 规则把整年都判成异常（真实数据上不该发生，但夹具或极端的一年上
-        # 可能发生）：留一行注明原因的 NaN 行，绝不悄悄退回"不排除任何月份"
-        # ——那会让一个跑不出来的变体伪装成一次通过。
+    emitted_anomaly = None
+    if not flagged:
+        # 规则一个月都没选中：剔除异常月份等于什么都不剔，这一版与基线逐字
+        # 相同（复核时实测确认是一次一模一样的全年重估）。产出它只会在分布
+        # 正中心多一个幽灵变体，因此改为核验"全年重聚合 == 表 C"并把结论写进
+        # manifest——与主口径那一版同一条纪律。这在真实数据上完全可能发生。
+        emitted_anomaly = "not_emitted:rule_flagged_no_month"
+        print("异常月份规则一个月都没选中：这一版与基线逐字相同，改为核验"
+              "全年重聚合是否重现表 C，不产出重复行")
+        check_full_year_reconstruction(context)
+    elif not retained:
+        # 规则把整年都判成异常：留一行注明原因的 NaN 行，绝不悄悄退回
+        # "不排除任何月份"——那会让一个跑不出来的变体伪装成一次通过。
+        emitted_anomaly = "note_only:rule_flagged_every_month"
         collected.append(voc._note_only_rows(
             "{};denominator=user_activity_within_months(none)".format(anomaly_label),
             "anomaly_rule_flagged_every_month:no_window_left_to_estimate_on;"
@@ -1152,6 +1550,7 @@ def run_temporal_restrictions(year=config.YEAR, context=None, out_path=None,
             variant_family=VARIANT_FAMILY_TEMPORAL,
         ))
     else:
+        emitted_anomaly = "estimated"
         collected.append(_month_variant(
             context, retained, anomaly_label,
             rule=ANOMALY_RULE, out_path=out_path, diag_path=diag_path,
@@ -1159,6 +1558,19 @@ def run_temporal_restrictions(year=config.YEAR, context=None, out_path=None,
             extra_note="anomaly_rule_pre_specified;selected_months={}".format(
                 _format_months(flagged)),
         ))
+
+    if applied is not None:
+        applied.update({
+            "anomaly_rule": ANOMALY_RULE,
+            "anomaly_volume_variable": ANOMALY_VOLUME_VARIABLE,
+            "monthly_behaviour_volume": {int(m): float(v) for m, v in volumes.items()},
+            "monthly_volume_median": info["median"],
+            "monthly_volume_mad": info["mad"],
+            "anomaly_threshold": info["threshold"],
+            "anomalous_months": [int(m) for m in flagged],
+            "retained_months": [int(m) for m in retained],
+            "anomaly_variant": emitted_anomaly,
+        })
 
     # --- 活跃月份限制：剔的是用户，逐性别记账 ---
     for minimum in min_active_months:
@@ -1200,20 +1612,23 @@ def build(year=config.YEAR, min_active_months=DEFAULT_MIN_ACTIVE_MONTHS):
     diag_path = diagnostics_path()
     os.makedirs(robustness_dir(), exist_ok=True)
 
+    # 与基线逐字相同的那几个口径在这里被**核验**，而不是被产出成重复的行
+    reconstruction = verify_reconstructions(context)
+
+    applied = {}
     run_denominator_variants(year, context=context, out_path=out_path,
                              diag_path=diag_path)
     run_post_type_variants(year, context=context, out_path=out_path,
                            diag_path=diag_path)
     run_temporal_restrictions(year, context=context, out_path=out_path,
                               diag_path=diag_path,
-                              min_active_months=min_active_months)
+                              min_active_months=min_active_months,
+                              applied=applied)
 
     results = pd.read_parquet(out_path, engine="pyarrow",
                               columns=list(harness.ROBUSTNESS_SCHEMA))
     diagnostics = pd.read_parquet(diag_path, engine="pyarrow",
                                   columns=list(DIAGNOSTIC_SCHEMA))
-    volumes = monthly_behaviour_volume(context.panel)
-    flagged, info = anomalous_months(volumes)
 
     manifest = config.build_manifest(
         step="robustness_measures_{}".format(year),
@@ -1231,33 +1646,46 @@ def build(year=config.YEAR, min_active_months=DEFAULT_MIN_ACTIVE_MONTHS):
                                    ENTRY_DENOMINATOR_RETWEETERS],
             "topical_measures": [
                 {"key": spec.key, "numerator": spec.numerator,
-                 "denominator": spec.denominator}
+                 "denominator": spec.denominator,
+                 "emitted_as_variant": not spec.is_baseline}
                 for spec in MEASURE_SPECS
             ],
             "post_type_variants": [
                 {"key": variant.key,
                  "post_types": list(variant.post_types),
                  "require_nonzero_chars": bool(variant.require_nonzero_chars),
-                 "denominator": variant.denominator}
+                 "denominator": variant.denominator,
+                 "emitted_as_variant": not variant.is_baseline}
                 for variant in POST_TYPE_VARIANTS
             ],
             "primary_post_types": list(PRIMARY_POST_TYPES),
+            # 与基线逐字相同的口径不产出结果行，改为在这里被核验：这一项
+            # 记的就是"核验过、且相等"，它比一行重复的估计有信息量得多。
+            "reconstruction_checks": reconstruction,
+            # 这几个量在替代测量/帖子类型变体里被写成 NaN，因为那些变体按
+            # 构造动不到它们（进入指示来自表 B 的转发事件）
+            "entry_quantities_emitted_as_nan_in_measure_and_post_type_variants":
+                list(ENTRY_QUANTITIES),
             "first_half_months": list(FIRST_HALF_MONTHS),
             "second_half_months": list(SECOND_HALF_MONTHS),
             "min_active_months": [int(m) for m in min_active_months],
             "active_months_column": ACTIVE_MONTHS_COLUMN,
             # 异常月份：规则、它看的是什么量、逐月的量、以及它选中了哪几个月。
             # 这四样缺一不可——看过哪个月不方便再挑月份，读者从输出上分不出来。
-            "anomaly_rule": ANOMALY_RULE,
+            # **全部取自 run_temporal_restrictions 实际应用的那一次**（applied），
+            # 不在这里重新推导一遍：manifest 该报告的是用了什么。
             "anomaly_k": ANOMALY_K,
             "anomaly_mad_scale": MAD_SCALE,
             "anomaly_min_relative_deviation": ANOMALY_MIN_RELATIVE_DEVIATION,
-            "anomaly_volume_variable": ANOMALY_VOLUME_VARIABLE,
-            "anomalous_months": [int(m) for m in flagged],
-            "monthly_behaviour_volume": {int(m): float(v) for m, v in volumes.items()},
-            "monthly_volume_median": info["median"],
-            "monthly_volume_mad": info["mad"],
-            "anomaly_threshold": info["threshold"],
+            "anomaly_rule": applied["anomaly_rule"],
+            "anomaly_volume_variable": applied["anomaly_volume_variable"],
+            "anomalous_months": applied["anomalous_months"],
+            "anomaly_retained_months": applied["retained_months"],
+            "anomaly_variant": applied["anomaly_variant"],
+            "monthly_behaviour_volume": applied["monthly_behaviour_volume"],
+            "monthly_volume_median": applied["monthly_volume_median"],
+            "monthly_volume_mad": applied["monthly_volume_mad"],
+            "anomaly_threshold": applied["anomaly_threshold"],
             # §13.7 的留一月估计不在这里算：读 models_temporal 的输出
             "leave_one_month_out_source": os.path.relpath(
                 context.source_paths["leave_one_month_out"], config.OUTPUT_DIR),
