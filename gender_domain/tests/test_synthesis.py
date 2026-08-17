@@ -874,13 +874,11 @@ def test_slurm_array_jobs_between_them_run_one_task_per_family():
     assert "n_per_cell" in light
 
 
-def test_the_two_robustness_scripts_split_the_families_without_overlap():
-    """两个脚本必须覆盖不重叠的任务号，且都只用本集群支持的 SBATCH 指令
+def test_the_light_slurm_script_really_asks_for_less_than_the_heavy_one():
+    """拆脚本的意义就在额度上：时间、核数都必须更低，任务号还不能重叠
 
-    原来这里断言 light 脚本的 --time/--mem/--cpus-per-task 都比 heavy 小。
-    真机上这三个指令都不被接受：本集群用分区名（例如 C032M0128G = 32 核
-    128G）同时选核数与内存。额度差异因此改由分区名承载，而不是这三个开关；
-    在拿到可用分区列表之前两个脚本用同一个分区，能断言的只有任务号划分。
+    本集群唯一不接受的是 --mem（内存跟着分区走），所以两个脚本里都不许出现
+    它；额度差异只能落在 --time 与 --cpus-per-task 上。
     """
     import re
 
@@ -892,20 +890,43 @@ def test_the_two_robustness_scripts_split_the_families_without_overlap():
     _, heavy = _slurm_text("run_robustness.slurm")
     _, light = _slurm_text("run_robustness_light.slurm")
 
+    def _hours(value):
+        parts = value.split(":")
+        return int(parts[0]) + int(parts[1]) / 60.0
+
+    assert _hours(_sbatch(light, "time")) < _hours(_sbatch(heavy, "time"))
+    assert int(_sbatch(light, "cpus-per-task")) <= \
+        int(_sbatch(heavy, "cpus-per-task"))
     # 两个数组的任务号不重叠：`--array=4` 在任何一边都只指向测量族
     assert _sbatch(heavy, "array") == "1-2"
     assert _sbatch(light, "array") == "3-5"
 
-    # 本集群不接受这些指令，写了会直接被拒
+    # 本集群不接受 --mem，写了会直接被拒
     for text, name in ((heavy, "run_robustness"), (light, "run_robustness_light")):
-        for unsupported in ("--mem=", "--time=", "--cpus-per-task=",
-                            "--mail-type=", "--mail-user="):
-            for line in text.splitlines():
+        for line in text.splitlines():
+            if line.strip().startswith("#SBATCH"):
+                assert "--mem=" not in line, (name, line)
+
+
+def test_no_pipeline_slurm_script_asks_for_memory_with_mem():
+    """--mem 是本集群唯一拒绝的指令，一条漏网就是整个作业投不上去
+
+    第一次真机运行时十一个脚本全带着 --mem，全部被拒。这里一次扫完本流水线
+    自己的脚本；sample_weibo_translation.slurm 属于别的分析线，不归这里管。
+    """
+    import glob
+
+    root = os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__))))
+    scripts = sorted(glob.glob(os.path.join(root, "slurm", "*.slurm")))
+    assert len(scripts) >= 10, scripts
+    for path in scripts:
+        if os.path.basename(path) == "sample_weibo_translation.slurm":
+            continue
+        with open(path, encoding="utf-8") as handle:
+            for line in handle:
                 if line.strip().startswith("#SBATCH"):
-                    assert unsupported not in line, (name, unsupported, line)
-        # 分区与队列必须显式写出，否则落到默认队列上
-        assert re.search(r"#SBATCH -p \S+", text), name
-        assert "--qos=" in text, name
+                    assert "--mem" not in line, (path, line)
 
 
 def test_the_two_slurm_scripts_point_at_each_other():

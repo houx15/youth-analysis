@@ -1,10 +1,13 @@
 #!/bin/bash
-#SBATCH -o job.%A_%a.out
-#SBATCH -p C032M0128G
-#SBATCH --qos=low
+#SBATCH --job-name=robust_light
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=32
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --time=06:00:00
 #SBATCH --array=3-5
+#SBATCH --output=job.%A_%a.robust_light.out
+#SBATCH --mail-type=end
+#SBATCH --mail-user=2401111059@stu.pku.edu.cn
 
 # §13 稳健性套件的**三个轻族**：一个数组任务跑一个族。
 #   3 samples        -> samples.parquet, sample_diagnostics.parquet,
@@ -28,25 +31,25 @@
 # --------------------------------------------------------------------------
 # 为什么单独有这个脚本
 # --------------------------------------------------------------------------
-# SLURM 的 --time / --mem 对**整个数组**是同一个值。这三个族原先和词表族、
-# 账号族挤在同一个 1-5 的数组里，于是也按最贵的那个申请了 48 小时 / 192G：
-# 五个任务同时排上队就要占住 960G，而其中三个一两个小时就结束。多占的额度
-# 不会让它们算得更快，只会让整批作业更难排上队。
+# SLURM 的 --time / --cpus-per-task 对**整个数组**是同一个值。这三个族原先
+# 和词表族、账号族挤在同一个 1-5 的数组里，于是也按最贵的那个申请了
+# 48 小时 / 8 核，而它们一两个小时就结束。多占的额度不会让它们算得更快，
+# 只会让整批作业更难排上队。
 #
-# 这里的 6 小时 / 96G / 4 核是这么定出来的：
+# 这里的 6 小时 / 4 核（峰值内存约 96G）是这么定出来的：
 #   * 任务 3（samples）与任务 4（measures）**只读表 C 与面板表**（measures
 #     的 §13.7 留一月还是从 models_temporal 的输出里读，不重算），几个 GB
 #     就够，是这三个里最便宜的两个；
 #   * 任务 5（context_sample）是这个脚本的**内存上限所在**：它要在任务内部
 #     建一份自己的 帖子×词 稀疏矩阵（复用 incidence.build_post_term_incidence，
-#     与词表族同一套结构），96G 是按"这份矩阵 + 表 C"申请的。它比重脚本的
+#     与词表族同一套结构），约 96G 就是"这份矩阵 + 表 C"。它比重脚本的
 #     192G 少，是因为它不像账号族那样要在内存里反复持有改动过的表 C 副本
 #     去跑几百次估计。
 #   * 三个任务都在一两个小时内结束，6 小时留了三倍余量。
+# 本集群不接受 --mem，内存跟着分区走，上面的内存数字是实测占用而非申请额度。
 # 万一任务 5 真的被 OOM 杀掉（表 A 比预期大），**不要改这个脚本的 #SBATCH**，
-# 单独把它按重族的额度重投一次即可（命令行上的 --mem 覆盖脚本里的 #SBATCH）：
-#   sbatch --export=ALL --array=5 -p <更大内存的分区> slurm/run_robustness_light.slurm
-#   （本集群用分区名选核数与内存，不接受 --mem/--time；分区列表见 sinfo）
+# 单独把它重投一次即可（命令行参数覆盖脚本里的 #SBATCH），必要时换更大内存的分区：
+#   sbatch --export=ALL --array=5 --time=12:00:00 slurm/run_robustness_light.slurm
 #
 # --------------------------------------------------------------------------
 # 运行标识（run_id）：拆开之后必须**手工**导出一次
@@ -85,8 +88,7 @@
 
 set -euo pipefail
 
-module load anaconda/3.11
-source ~/.bash_profile
+source ~/miniconda3/etc/profile.d/conda.sh
 conda activate opinion
 
 YEAR="${YEAR:-2020}"

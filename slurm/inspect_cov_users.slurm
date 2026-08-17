@@ -1,9 +1,12 @@
 #!/bin/bash
-#SBATCH -o job.%j.out
-#SBATCH -p C032M0128G
-#SBATCH --qos=low
+#SBATCH --job-name=users
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=32
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=2
+#SBATCH --time=4:00:00
+#SBATCH --output=job.%j.users.out
+#SBATCH --mail-type=end
+#SBATCH --mail-user=2401111059@stu.pku.edu.cn
 
 # Reconcile the analysis sample: scan every daily file in cleaned_weibo_cov/{year}
 # reading only user_id + gender, then report unique users, gender composition, and
@@ -14,8 +17,7 @@
 # Usage:
 #   sbatch slurm/inspect_cov_users.slurm
 
-module load anaconda/3.11
-source ~/.bash_profile
+source ~/miniconda3/etc/profile.d/conda.sh
 conda activate opinion
 
 python inspect_cov_schema.py users 2020

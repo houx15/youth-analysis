@@ -1,9 +1,12 @@
 #!/bin/bash
-#SBATCH -o job.%j.out
-#SBATCH -p C032M0128G
-#SBATCH --qos=low
+#SBATCH --job-name=results
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=32
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --time=24:00:00
+#SBATCH --output=job.%j.results.out
+#SBATCH --mail-type=end
+#SBATCH --mail-user=2401111059@stu.pku.edu.cn
 
 # Server-side results layer, run in dependency order: profile join first
 # (Table C -> user_domain_2020_with_profile.parquet), then the descriptive
@@ -42,18 +45,19 @@
 # （720 小时与不设上限），并列写进 delay_quantiles.parquet 的不同 model 变体，
 # 让阈值这条裁定的代价直接可读；口径可用 --delay_thresholds 覆盖。
 #
-# 资源额度（M18）：statsmodels 本身是单线程的，分区自带的核数只对底层 BLAS
+# 资源额度（M18）：statsmodels 本身是单线程的，cpus-per-task 只对底层 BLAS
 # （零截断负二项与 GEE 的矩阵运算）有用，因此 4 -> 8 只是给 BLAS 一点余量，
 # 不指望线性加速。真正的瓶颈是墙钟与内存：最贵的一步是 §9 的 26 次留一月
 # 重估（两个域各 13 次），每一次都在两百多万行的用户—月面板上拟合并算按
 # 用户聚类的标准误；再加上 §10 的簇 bootstrap 与 §7/§8 的 bootstrap。原来
-# 的 8 小时 / 64G 没有任何余量——一旦撞墙钟被杀，盘上留下的就是一组半新
-# 半旧的结果表（正是下面 set -e 与运行标识要防的那种局面），而重跑一次的
-# 代价远高于多申请的这点额度。因此提到 24 小时 / 192G。
+# 的 8 小时没有任何余量——一旦撞墙钟被杀，盘上留下的就是一组半新半旧的
+# 结果表（正是下面 set -e 与运行标识要防的那种局面），而重跑一次的代价
+# 远高于多申请的这点额度。因此提到 24 小时。内存峰值约 192G；本集群不接受
+# --mem，内存跟着分区走，所以这是实测占用，要挑一个装得下的分区投。
 #
 # 失败处理（C1）：set -euo pipefail 必须有。此前六条命令顺序执行、没有任何
 # 错误处理，models_core 崩掉之后后面几步照常运行，作业的退出码是最后一条
-# 命令的退出码，作业无论如何都以最后一条命令的状态收尾。于是盘上留下
+# 命令的退出码，--mail-type=end 无论如何都报告"结束"。于是盘上留下
 # "describe 是本次的、models_entry 是上一次的"这种组合，而导出层当时只检查
 # 文件在不在——旧文件同样在。现在两道闸门一起上：
 #   1) set -euo pipefail：任何一步非零退出，作业立刻停下，退出码传出去；
@@ -72,8 +76,7 @@
 
 set -euo pipefail
 
-module load anaconda/3.11
-source ~/.bash_profile
+source ~/miniconda3/etc/profile.d/conda.sh
 conda activate opinion
 
 # 同一次作业的六个步骤共用一个运行标识。用 SLURM_JOB_ID 是因为它天然唯一

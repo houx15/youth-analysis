@@ -1,9 +1,12 @@
 #!/bin/bash
-#SBATCH -o job.%j.out
-#SBATCH -p C032M0128G
-#SBATCH --qos=low
+#SBATCH --job-name=figdata
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=32
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=2
+#SBATCH --time=2:00:00
+#SBATCH --output=job.%j.figdata.out
+#SBATCH --mail-type=end
+#SBATCH --mail-user=2401111059@stu.pku.edu.cn
 
 # 把服务器上的结果导出成一小撮"能下载"的文件，供本地画 §12 的图。
 # 必须排在 run_results.slurm 之后：本步骤只搬运结果表，不重算任何数字，
@@ -33,7 +36,8 @@
 #
 # 内存：延迟分布要把表 B 的清理结果读进内存（复用
 # models_temporal.load_clean_events 的同一套清理规则，绝不另写一遍），
-# 因此内存按 models_temporal 的量级要 64G；只跑一个阈值口径（720 小时），
+# 因此峰值内存在 models_temporal 的量级，约 64G（本集群不接受 --mem，内存
+# 跟着分区走，这里记的是实测占用）；只跑一个阈值口径（720 小时），
 # 比 models_temporal 少一份驻留。
 # 抽样：每个 性别 × 领域 格子最多 5 万点，seed 固定为 20200101 并写进
 # manifest 与 distribution_summary.parquet，换台机器也能抽出逐点相同的样本。
@@ -47,8 +51,7 @@
 
 set -euo pipefail
 
-module load anaconda/3.11
-source ~/.bash_profile
+source ~/miniconda3/etc/profile.d/conda.sh
 conda activate opinion
 
 python -m gender_domain.export_figure_data build --year=2020

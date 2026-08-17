@@ -1,9 +1,12 @@
 #!/bin/bash
-#SBATCH -o job.%j.out
-#SBATCH -p C032M0128G
-#SBATCH --qos=low
+#SBATCH --job-name=genderall
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=32
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --time=48:00:00
+#SBATCH --output=job.%j.genderall.out
+#SBATCH --mail-type=end,fail
+#SBATCH --mail-user=2401111059@stu.pku.edu.cn
 
 # 全流程一次跑完：原始帖子 -> 四张分析表 -> 结果层 -> 绘图数据。
 #
@@ -20,6 +23,10 @@
 #   post_table  retweet_table  user_tables  reconcile
 #   profile_join  describe  models_core  interaction  combination  temporal  export
 #
+# 内存：整条流水线的峰值出现在结果层（约 192G），逐月分片阶段只要几十 G。
+# 本集群不接受 --mem，内存跟着分区走，所以这里记的是实测占用而非申请额度——
+# 要挑一个装得下 192G 的分区投，否则跑到结果层才被 OOM 杀掉。
+#
 # run_id：结果层各步骤会往 analysis_data/results/run_stamps.json 里写同一个 run_id，
 # 导出阶段据此拒绝把不同批次的结果表混在一起。本脚本把 run_id 存到
 # analysis_data/.run_all_run_id，续跑时自动复用，所以不需要手工导出环境变量；
@@ -27,8 +34,7 @@
 
 set -euo pipefail
 
-module load anaconda/3.11
-source ~/.bash_profile
+source ~/miniconda3/etc/profile.d/conda.sh
 conda activate opinion
 
 YEAR="${YEAR:-2020}"
