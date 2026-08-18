@@ -726,3 +726,82 @@ def test_build_prints_shape_nnz_and_memory(synthetic_tables, capsys):
     inc.build_user_account_incidence(YEAR)
     out = capsys.readouterr().out
     assert "形状" in out and "非零" in out and "MB" in out
+
+
+# ---------------------------------------------------------------------------
+# 峰值内存：压缩必须发生在 concat 之前
+# ---------------------------------------------------------------------------
+
+def test_每个分片在进入concat之前就已经压好(synthetic_tables, monkeypatch):
+    """pd.concat 拿到的分片必须已经是压过的 dtype，不能是 object 字符串
+
+    这一条守的是一次真实的 OOM。压缩原来全写在 pd.concat **后面**，于是
+    循环里堆的是原始 dtype——三个字符串列都是 object，每个值一个独立的
+    Python 字符串对象。2020 年表 A 一亿四千七百万帖，光这三列就堆到约
+    26 GB，concat 再翻一倍到约 59 GB，而作业内存上限是
+    cpus-per-task × 4000M（8 核 32 GB / 4 核 16 GB）。词表、测量、语境抽样
+    三个族全部在读分片的中途被杀，谁都没活到那几行压缩。
+
+    所以断言必须落在**顺序**上：只查最终 posts 的 dtype 是查不出这个 bug 的，
+    压缩写在 concat 之后同样能得到一模一样的最终结果。这里把 pd.concat
+    换成一个探针，检查它收到的那些分片本身。
+    """
+    seen = []
+    real_concat = pd.concat
+
+    def spy(objs, *args, **kwargs):
+        frames = list(objs)
+        seen.extend(dict(f.dtypes) for f in frames)
+        return real_concat(frames, *args, **kwargs)
+
+    monkeypatch.setattr(inc.pd, "concat", spy)
+    inc.build_post_term_incidence(YEAR, "public")
+
+    assert seen, "没有截到 pd.concat 收到的分片"
+    for dtypes in seen:
+        for column in ("weibo_id", "user_id", "post_type"):
+            assert dtypes[column] != object, (
+                f"{column} 还是 object dtype 就进了 concat："
+                "压缩又被挪回 concat 之后了"
+            )
+        assert dtypes["n_chars"] == np.int32
+        assert dtypes["month"] == np.int8
+
+
+def test_压缩之后最终的posts列类型没有变(synthetic_tables):
+    """把压缩挪到循环里，不能顺手改掉下游看到的 dtype
+
+    user_id / post_type 仍然要在 concat 之后转成 category（码表要等所有
+    分片到齐才好定），weibo_id 仍然是 string[pyarrow]——§13.4 要靠它回溯
+    原帖。这条是纯粹的回归护栏。
+    """
+    posts = inc.build_post_term_incidence(YEAR, "public").posts
+    assert isinstance(posts["user_id"].dtype, pd.CategoricalDtype)
+    assert isinstance(posts["post_type"].dtype, pd.CategoricalDtype)
+    assert posts["weibo_id"].dtype == "string[pyarrow]"
+    assert posts["n_chars"].dtype == np.int32
+    assert posts["month"].dtype == np.int8
+    assert posts["is_expressive"].dtype == bool
+
+
+def test_不要weibo_id时它根本不进内存(synthetic_tables):
+    """keep_weibo_id=False 必须让这一列连读都不读，而不是读进来再 drop
+
+    weibo_id 逐帖唯一，是 posts 帧里最大的一列（真实规模约 3.4 GB，占整帧
+    一半以上），而只有 §13.4 语境抽样用得到它。读进来再删等于峰值照付，
+    所以断言落在"列不存在"上，并且 parquet 的 columns= 也不该点它。
+    """
+    inc_kept = inc.build_post_term_incidence(YEAR, "public", keep_weibo_id=True)
+    assert "weibo_id" in inc_kept.posts.columns
+
+    inc_pruned = inc.build_post_term_incidence(YEAR, "public", keep_weibo_id=False)
+    assert "weibo_id" not in inc_pruned.posts.columns
+
+    # 剪掉一列不许动到结果：矩阵与每个用户的重聚合份额必须完全一致
+    assert inc_pruned.matrix.shape == inc_kept.matrix.shape
+    kept = inc.topical_by_user(inc_kept, PUBLIC_VOCAB, inc_kept.posts)
+    pruned = inc.topical_by_user(inc_pruned, PUBLIC_VOCAB, inc_pruned.posts)
+    pd.testing.assert_frame_equal(
+        kept.sort_values("user_id").reset_index(drop=True),
+        pruned.sort_values("user_id").reset_index(drop=True),
+    )

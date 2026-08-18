@@ -919,6 +919,54 @@ def test_run_all_survives_a_cluster_that_refuses_compute_node_submission():
     assert run_all.count("|| return 1") == 3
 
 
+def test_both_robustness_scripts_buy_enough_memory_for_the_post_term_matrix():
+    """本集群 内存 = cpus-per-task x 4000M，所以核数不够 = 内存不够 = OOM
+
+    这条守的是一次真实的失败：五个族里有三个（词表 / 测量 / 语境抽样）都要
+    建 incidence.build_post_term_incidence 的帖子×词结构，2026-08-18 那一批
+    全部被 OOM 杀掉——重脚本 8 核买到 32 GB，轻脚本 4 核只买到 16 GB，而当时
+    那个函数的峰值约 59 GB。压缩挪进循环之后峰值降到约 17 GB。
+
+    默认分区 C064M0256G 是 256000M / 64 核 = 4000M 每核，所以 12 核 = 48000M，
+    对 17 GB 有接近两倍余量。核数在这里不是为了并行——statsmodels 是单线程
+    的——纯粹是内存旋钮，这也是为什么"少申请几个核省点队列时间"在这个集群上
+    是错的。
+    """
+    import re
+
+    MB_PER_CORE = 4000                 # C064M0256G: 256000M / 64 核
+    PEAK_GB = 17                       # 修好压缩之后 build_post_term_incidence 的峰值
+
+    for name in ("run_robustness.slurm", "run_robustness_light.slurm"):
+        _, text = _slurm_text(name)
+        match = re.search(r"#SBATCH --cpus-per-task=(\d+)", text)
+        assert match, name
+        cores = int(match.group(1))
+        got_gb = cores * MB_PER_CORE / 1024
+        assert got_gb >= PEAK_GB, (
+            f"{name}: {cores} 核只买到 {got_gb:.0f} GB，装不下约 {PEAK_GB} GB 的"
+            "帖子×词结构（内存 = cpus-per-task x 4000M）"
+        )
+
+
+def test_the_light_script_gets_enough_wall_clock_for_two_hundred_replicates():
+    """任务 3 是 200 个 replicate，6 小时装不下——实测就是 TIMEOUT
+
+    samples 族默认 DEFAULT_N_REPLICATES=200，每个 replicate 一次
+    harness.estimate_all。accounts 族实测 326 次估计用了 22 小时 15 分，
+    合每次约 4.1 分钟；samples 在减半的等量样本上快一些，但 200 次怎么算
+    也在十小时量级。原来给 6 小时，作业在 06:00:12 被杀。
+    """
+    import re
+    from gender_domain.robustness import samples as smp
+
+    assert smp.DEFAULT_N_REPLICATES == 200
+    _, light = _slurm_text("run_robustness_light.slurm")
+    match = re.search(r"#SBATCH --time=(\d+):", light)
+    assert match
+    assert int(match.group(1)) >= 12, "200 个 replicate 至少要十几个小时"
+
+
 def test_the_light_slurm_script_really_asks_for_less_than_the_heavy_one():
     """拆脚本的意义就在额度上：时间、核数都必须更低，任务号还不能重叠
 

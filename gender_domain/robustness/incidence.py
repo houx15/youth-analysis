@@ -448,7 +448,31 @@ def _decode_shard(encoded, term_index, rows, cols, vals, row_offset):
     return row
 
 
-def build_post_term_incidence(year=config.YEAR, domain="public"):
+def _compress_post_columns(frame):
+    """把一份表 A 分片就地压到最省的表示，供 concat **之前**逐分片调用
+
+    每一列的取值范围都是确定的，所以压缩不丢信息：month 只有 1-12，int8
+    就够；n_chars 与 matrix_row 都远小于 2^31，int32 足够。三个字符串列
+    统一走 string[pyarrow]——weibo_id 逐帖唯一，category 只会更差（码表和
+    值一样长），而 user_id / post_type 虽然重复度高，却要等所有分片到齐
+    才好定码表，逐分片转 category 会让 concat 去做类别并集。这一列不能删：
+    §13.4 的抽样与精确重扫复核都要靠 weibo_id 回溯到原帖。
+
+    就地改而不是返回新帧：调用方紧接着就要把它挂进 post_frames，多一份
+    拷贝就多一份峰值，而峰值正是这个函数存在的理由。
+    """
+    if "weibo_id" in frame.columns:
+        frame["weibo_id"] = frame["weibo_id"].astype("string[pyarrow]")
+    frame["user_id"] = frame["user_id"].astype("string[pyarrow]")
+    frame["post_type"] = frame["post_type"].astype("string[pyarrow]")
+    frame["n_chars"] = frame["n_chars"].astype(np.int32)
+    frame["is_expressive"] = frame["is_expressive"].astype(bool)
+    frame["month"] = frame["month"].astype(np.int8)
+    return frame
+
+
+def build_post_term_incidence(year=config.YEAR, domain="public",
+                              keep_weibo_id=True):
     """表 A -> (帖子 × 词 稀疏计数矩阵, 词 -> 列号, 逐帖附表)
 
     Args:
@@ -470,8 +494,15 @@ def build_post_term_incidence(year=config.YEAR, domain="public"):
         raise ValueError(f"未知的 domain: {domain}，只支持 {DOMAINS}")
 
     files = _shard_files("post_domain_measures", year)
-    columns = POST_FRAME_COLUMNS + [f"{domain}_term_counts"]
-    print(f"读取 {len(files)} 个表 A 分片，构建 {domain} 领域的帖子×词矩阵")
+    # weibo_id 逐帖唯一，是 posts 帧里最大的一列——真实规模下约 3.4 GB，占
+    # 整帧的一半以上。而**只有 §13.4 语境抽样**用得到它（要靠它回溯原帖去
+    # 重扫正文）；词表族与测量族从头到尾没碰过这一列，却一直替它付内存。
+    # 所以让调用方声明自己要不要，不要的就连读都不读。
+    frame_columns = [c for c in POST_FRAME_COLUMNS
+                     if keep_weibo_id or c != "weibo_id"]
+    columns = frame_columns + [f"{domain}_term_counts"]
+    print(f"读取 {len(files)} 个表 A 分片，构建 {domain} 领域的帖子×词矩阵"
+          f"（weibo_id: {'保留' if keep_weibo_id else '不载入'}）")
 
     term_index = {}
     # array.array 而不是 Python list：非零元素在真实数据上是千万量级，
@@ -508,28 +539,32 @@ def build_post_term_incidence(year=config.YEAR, domain="public"):
             encoded[has_hit], term_index, rows, cols, vals, n_matrix_rows
         )
 
-        part = frame[POST_FRAME_COLUMNS].copy()
+        part = frame[frame_columns].copy()
         part["matrix_row"] = matrix_row
+        # **压缩必须在这里做，不能留到 concat 之后。**
+        # 这几个 astype 原来全写在 pd.concat 后面，于是循环里堆的是原始
+        # dtype：user_id / weibo_id / post_type 三列都是 object，每个值都是
+        # 一个独立的 Python 字符串对象（60 字节起步）。2020 年表 A 是 1.47
+        # 亿帖，光这三列就堆到约 26 GB，concat 时再翻一倍到约 59 GB——而作业
+        # 的内存上限是 cpus-per-task × 4000M（8 核 32 GB、4 核 16 GB）。
+        # 压缩写在 concat 之后，压出来确实只有约 6 GB，但那个峰值早就付掉了：
+        # 用到本函数的三个族（词表 / 测量 / 语境抽样）全部在读分片的中途被
+        # OOM 杀掉，谁都没活到 concat 那一行。
+        _compress_post_columns(part)
         post_frames.append(part)
         # 展开完立刻丢掉这一份 term_counts 字符串列，不让它们跨分片堆积
         del frame, encoded
 
     posts = pd.concat(post_frames, ignore_index=True)
-    # 逐列压到最省的表示：user_id / post_type 是三千多万行的重复字符串，
-    # categorical 只存一份码表加一列整数码；month 只有 1-12，int8 就够；
-    # n_chars / matrix_row 用 int32 足够（单帖字符数与命中帖行号都远小于
-    # 2^31）。真实规模下这几处合起来能省掉数百 MB，而 posts 帧要在整个
-    # array task 的生命周期里一直驻留。
+    # concat 之后立刻放掉分片列表：它与 posts 是两份独立的缓冲，不放掉等于
+    # 让整个 array task 的余生一直背着一份多余的拷贝。
+    del post_frames
+    # 只剩这两列要等所有分片到齐才好定码表：user_id / post_type 重复度极高，
+    # category 只存一份码表加一列整数码。循环里它们先转 string[pyarrow] 而不是
+    # 直接转 category，是因为各分片的类别集合不同，concat 要做一次类别并集，
+    # 那一步比推迟到这里更贵。
     posts["user_id"] = posts["user_id"].astype("category")
-    # weibo_id 逐帖唯一，categorical 只会更差（码表和值一样长）；但它没有
-    # 理由留在 object dtype 上——每个值都是一个独立的 Python 字符串对象。
-    # string[pyarrow] 把同一列压到约 1/2.7，真实规模下省 1.2-1.7 GB。
-    # 这一列不能删：§13.4 的抽样与精确重扫复核都要靠它回溯到原帖。
-    posts["weibo_id"] = posts["weibo_id"].astype("string[pyarrow]")
-    posts["n_chars"] = posts["n_chars"].astype(np.int32)
-    posts["is_expressive"] = posts["is_expressive"].astype(bool)
     posts["post_type"] = posts["post_type"].astype("category")
-    posts["month"] = posts["month"].astype(np.int8)
 
     n_terms = len(term_index)
     matrix = sparse.coo_matrix(

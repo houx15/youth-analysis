@@ -2,8 +2,8 @@
 #SBATCH --job-name=robust_light
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --time=06:00:00
+#SBATCH --cpus-per-task=12
+#SBATCH --time=24:00:00
 #SBATCH --array=3-5
 #SBATCH --output=job.%A_%a.robust_light.out
 #SBATCH --mail-type=end
@@ -36,7 +36,10 @@
 # 48 小时 / 8 核，而它们一两个小时就结束。多占的额度不会让它们算得更快，
 # 只会让整批作业更难排上队。
 #
-# 这里的 6 小时 / 4 核（峰值内存约 96G）是这么定出来的：
+# 这里的 24 小时 / 12 核（= 48000M，见 run_robustness.slurm 里那张实测表）
+# 是这么定出来的：任务 3 用 6 小时跑不完（实测 TIMEOUT，200 个 replicate
+# 至少要十几个小时），任务 4/5 用 4 核买到的 16 GB 装不下帖子×词矩阵
+# （实测 OOM）。原来的 6 小时 / 4 核两头都不够：
 #   * 任务 3（samples）与任务 4（measures）**只读表 C 与面板表**（measures
 #     的 §13.7 留一月还是从 models_temporal 的输出里读，不重算），几个 GB
 #     就够，是这三个里最便宜的两个；

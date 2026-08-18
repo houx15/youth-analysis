@@ -426,6 +426,9 @@ def build_context(year=config.YEAR, domains=DOMAINS):
     risk_pairs = {}
     for domain in domains:
         vocab[domain] = load_vocabulary(domain, year)
+        # 这里**必须**保留 weibo_id：§13.3 的重扫校准要先从 posts 帧挑出
+        # 待复核的帖子（weibo_id + month），再交给 load_post_texts 定向读原文。
+        # 少了它整条校准链直接 KeyError——试过，测试当场就拦下来了。
         incidences[domain] = inc.build_post_term_incidence(year, domain)
         risk_pairs[domain] = inc.at_risk_pairs(vocab[domain])
         n_pairs = sum(len(v) for v in risk_pairs[domain].values())

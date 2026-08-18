@@ -561,7 +561,10 @@ def build_context(year=config.YEAR, domains=DOMAINS):
     incidences = {}
     for domain in domains:
         vocab[domain] = voc.load_vocabulary(domain, year)
-        incidences[domain] = inc.build_post_term_incidence(year, domain)
+        # 本族从头到尾没读过 posts["weibo_id"]（§13.4 才需要它回溯原帖），
+        # 那是 posts 帧里最大的一列，不载入直接省掉真实规模下的约 3.4 GB。
+        incidences[domain] = inc.build_post_term_incidence(
+            year, domain, keep_weibo_id=False)
 
     lomo = _read_temporal_output(leave_one_month_out_path(), "留一月重估")
     monthly = _read_temporal_output(monthly_rates_path(), "分月参与率")
