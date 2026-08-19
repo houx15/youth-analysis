@@ -293,6 +293,119 @@ def test_load_all_handles_the_three_domain_values(robustness_project):
 
 
 # ---------------------------------------------------------------------------
+# 重跑追加出来的重复行：append_rows 是纯追加写，重跑一族就多一份
+# ---------------------------------------------------------------------------
+
+def _double_family_file(directory, filename):
+    """把一份族结果原样再追加一遍，模拟"这一族被重跑过"的磁盘状态"""
+    path = os.path.join(directory, filename)
+    frame = pd.read_parquet(path, engine="pyarrow")
+    pd.concat([frame, frame], ignore_index=True).to_parquet(
+        path, engine="pyarrow", index=False)
+    return len(frame)
+
+
+def test_a_family_that_was_rerun_does_not_get_counted_twice(robustness_project):
+    """重跑一族会让它的行整份翻倍，去重之后行数必须与只跑一次时相同
+
+    这是 2026-08-19 那批真实结果踩到的坑：accounts 族被重跑过一次，
+    accounts.parquet 里每一行都有一份逐字段相同的副本，一致率、Wilson 区间
+    与 FDR 的 n_tested 因此全部按翻倍后的行数算。
+    """
+    rob = os.path.join(config.OUTPUT_DIR, "robustness")
+    before = syn.load_all(2020)
+    n_accounts = _double_family_file(rob, "accounts.parquet")
+    assert n_accounts > 0
+
+    after = syn.load_all(2020)
+    assert len(after) == len(before)
+    assert after.attrs["dedup_report"]["rows_dropped_rerun_duplicates"] == n_accounts
+    # 无害的重复：两份逐字段相同，不算版本冲突
+    assert after.attrs["dedup_report"]["conflicting_duplicate_rows"] == 0
+
+
+def test_the_direction_share_is_unchanged_by_a_rerun(robustness_project):
+    """去重之后，逐族一致率与行池一致率都不受"这一族被跑过两次"影响"""
+    rob = os.path.join(config.OUTPUT_DIR, "robustness")
+    before = syn.direction_by_family(syn.load_all(2020))
+    _double_family_file(rob, "accounts.parquet")
+    after = syn.direction_by_family(syn.load_all(2020))
+
+    key = ["quantity", "model", "variant_family"]
+    merged = before.merge(after, on=key, suffixes=("_before", "_after"))
+    assert len(merged) == len(before)
+    pd.testing.assert_series_equal(
+        merged["n_live_before"], merged["n_live_after"], check_names=False)
+    pd.testing.assert_series_equal(
+        merged["share_of_pooled_live_rows_before"],
+        merged["share_of_pooled_live_rows_after"], check_names=False)
+
+
+def test_duplicate_rows_that_disagree_are_counted_as_a_version_conflict(
+    robustness_project
+):
+    """同一身份下两个不同的估计值不是无害重复，必须单独数出来
+
+    保留最后写入的那一份——磁盘上的追加顺序是唯一可用的判据——但"这批结果
+    混着两个版本"这件事不能只体现为行数变少。
+    """
+    rob = os.path.join(config.OUTPUT_DIR, "robustness")
+    path = os.path.join(rob, "accounts.parquet")
+    frame = pd.read_parquet(path, engine="pyarrow")
+    conflicting = frame.copy()
+    conflicting["estimate"] = conflicting["estimate"] + 0.5
+    pd.concat([frame, conflicting], ignore_index=True).to_parquet(
+        path, engine="pyarrow", index=False)
+
+    df = syn.load_all(2020)
+    report = df.attrs["dedup_report"]
+    assert report["rows_dropped_rerun_duplicates"] == len(frame)
+    assert report["conflicting_duplicate_rows"] > 0
+    # 保留的是后写入的那一份
+    kept = df[(df["variant_family"] == acc.VARIANT_FAMILY)
+              & df["estimate"].notna()]
+    original = frame[frame["estimate"].notna()]
+    assert kept["estimate"].max() > original["estimate"].max()
+
+
+def test_floating_point_noise_between_two_runs_is_not_a_version_conflict(
+    robustness_project
+):
+    """同一个变体跑两遍，估计值只在浮点末位上不同——那不是两个版本
+
+    2026-08-19 那批真实结果里，重跑的 accounts / samples 两族有 2128 组重复
+    的相对差落在 1e-16 ~ 1e-12（BLAS 求和次序与优化器迭代路径都不保证逐位
+    可复现）。用精确相等判冲突会把它们全部报成"混着两个版本"，真正的版本
+    冲突就淹没在噪声里了。
+    """
+    rob = os.path.join(config.OUTPUT_DIR, "robustness")
+    path = os.path.join(rob, "accounts.parquet")
+    frame = pd.read_parquet(path, engine="pyarrow")
+    jittered = frame.copy()
+    jittered["estimate"] = jittered["estimate"] * (1.0 + 1e-14)
+    pd.concat([frame, jittered], ignore_index=True).to_parquet(
+        path, engine="pyarrow", index=False)
+
+    report = syn.load_all(2020).attrs["dedup_report"]
+    assert report["rows_dropped_rerun_duplicates"] == len(frame)
+    assert report["conflicting_duplicate_rows"] == 0
+
+
+def test_the_dedup_count_reaches_the_manifest(robustness_project):
+    """去重了多少行必须落进 manifest：它等于哪几族被跑过不止一次"""
+    rob = os.path.join(config.OUTPUT_DIR, "robustness")
+    n_accounts = _double_family_file(rob, "accounts.parquet")
+    syn.build(2020)
+
+    manifest_path = os.path.join(syn.manifest_dir(2020), "manifest.json")
+    with open(manifest_path, "r", encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    counts = manifest["counts"]
+    assert counts["rows_dropped_rerun_duplicates"] == n_accounts
+    assert counts["conflicting_duplicate_rows"] == 0
+
+
+# ---------------------------------------------------------------------------
 # direction_consistency：分母只数活着的估计
 # ---------------------------------------------------------------------------
 

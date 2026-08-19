@@ -154,6 +154,26 @@ BASELINE_STAMP_COLUMNS = ("baseline_run_id", "baseline_git_sha",
 
 # 五个族各自的落盘文件。键是 SLURM 数组任务的那个"族"，值是结果表文件名。
 # 一个文件里可以有多个 variant_family（samples 里有四个），两者刻意分开。
+# 一行结果的身份：同一个族、同一个变体标签、同一个 replicate/seed，对同一个
+# (outcome, domain, model, term) 只应该存在一行。harness.append_rows 是"读旧的、
+# 拼新的、原子改名覆盖"的纯追加写——它保住了被墙钟杀掉的作业里已完成的
+# replicate，代价是**重跑同一族会把整份结果再追加一遍**，磁盘上于是出现两份
+# 逐字段相同的行。这种重复没有任何一层会报错：行数翻倍、估计值一模一样，
+# 图和表都照画照算，只是每一个"按行汇总"的量都被悄悄改写了——
+#   * 行池口径的方向一致率按族加权时，被追加过的族获得双倍话语权；
+#   * 一致率的 Wilson 区间按 n 计算，n 翻倍则区间窄了约 √2 倍；
+#   * FDR 的 n_tested 翻倍，q 值随之改变。
+# 所以读进来的第一件事就是按身份去重，并把去掉了多少行说出来。
+ROW_IDENTITY_COLUMNS = ("source_file", "variant_family", "variant_label",
+                        "replicate", "seed", "outcome", "domain", "model",
+                        "term")
+# 判定"两份重复行是不是同一个数"的相对容差。**不能用精确相等**：同一个变体
+# 跑两遍，估计值只在浮点末位上不同（BLAS 的求和次序、优化器的迭代路径都不保
+# 证逐位可复现），2026-08-19 那批真实结果里 2128 组重复的相对差全部落在
+# 1e-16 ~ 1e-12 之间。精确相等会把这些全部报成"版本冲突"，于是真正的版本冲突
+# ——代码或输入在两次运行之间变了，估计值差在有效数字上——就淹没在噪声里了。
+DUPLICATE_ESTIMATE_RTOL = 1e-9
+
 FAMILY_FILES = OrderedDict([
     ("vocabulary", "vocabulary.parquet"),
     ("accounts", "accounts.parquet"),
@@ -642,6 +662,60 @@ def _layers_of(frame):
 # load_all
 # ---------------------------------------------------------------------------
 
+def _estimate_disagrees(values):
+    """一组重复行的估计值是否真的不是同一个数（相对容差，NaN 不参与比较）
+
+    全是 NaN 或只剩一个有效值时判为不冲突：没有两个数可比，谈不上分歧。
+    """
+    live = pd.Series(values).dropna()
+    if len(live) < 2:
+        return False
+    low, high = float(live.min()), float(live.max())
+    scale = max(abs(low), abs(high))
+    if scale == 0.0:
+        return False
+    return (high - low) / scale > DUPLICATE_ESTIMATE_RTOL
+
+
+def drop_rerun_duplicates(frame):
+    """按 ROW_IDENTITY_COLUMNS 去掉重跑追加出来的重复行，返回 (帧, 报告)
+
+    保留最后一次出现的那一份：`append_rows` 把新一批追加在旧一批后面，最后
+    一份就是最近一次跑出来的结果。
+
+    重复行里如果**估计值差在有效数字上**，那就不是"同一份结果被写了两遍"，而是
+    同一个身份下有两个不同的数——多半意味着两次运行之间代码或输入变了。这种情况
+    仍然保留最后一份（磁盘上的时间顺序是唯一可用的判据），但必须单独数出来、单独
+    打印：它和无害的重复是两回事，前者只是浪费，后者说明这批结果混着两个版本。
+    判定用相对容差而不是精确相等，理由见 DUPLICATE_ESTIMATE_RTOL。
+    """
+    if not len(frame):
+        return frame, {"rows_dropped_rerun_duplicates": 0,
+                       "conflicting_duplicate_rows": 0}
+    subset = [c for c in ROW_IDENTITY_COLUMNS if c in frame.columns]
+    duplicated = frame.duplicated(subset=subset, keep=False)
+    n_dup_groups_conflicting = 0
+    if duplicated.any():
+        # 只在重复的那一小撮行里比估计值，不对整张表做 groupby
+        dup_rows = frame[duplicated]
+        spread = dup_rows.groupby(subset, dropna=False)["estimate"].agg(
+            _estimate_disagrees)
+        n_dup_groups_conflicting = int(spread.sum())
+    deduped = frame.drop_duplicates(subset=subset, keep="last")
+    report = {
+        "rows_dropped_rerun_duplicates": int(len(frame) - len(deduped)),
+        "conflicting_duplicate_rows": n_dup_groups_conflicting,
+    }
+    if report["rows_dropped_rerun_duplicates"]:
+        print("按变体身份去重：丢弃 {} 行重跑追加出来的重复行（{} -> {} 行）".format(
+            report["rows_dropped_rerun_duplicates"], len(frame), len(deduped)))
+    if n_dup_groups_conflicting:
+        print("警告: 其中 {} 组重复行的估计值互不相同——这批结果混着两个版本，"
+              "保留的是最后写入的那一份，但请核对是哪两次运行".format(
+                  n_dup_groups_conflicting))
+    return deduped.reset_index(drop=True), report
+
+
 def load_all(year=config.YEAR, directory=None, main_results_dir=None,
              allow_recompute=True):
     """把五个族的结果行读成一张表，并显式补上参照行
@@ -683,6 +757,8 @@ def load_all(year=config.YEAR, directory=None, main_results_dir=None,
         variants = pd.DataFrame(
             columns=list(harness.ROBUSTNESS_SCHEMA) + ["source_file"])
 
+    variants, dedup_report = drop_rerun_duplicates(variants)
+
     variants["quantity"] = [
         quantity_of(o, d, t)
         for o, d, t in zip(variants["outcome"], variants["domain"], variants["term"])
@@ -712,6 +788,10 @@ def load_all(year=config.YEAR, directory=None, main_results_dir=None,
     # "和哪一批主结果比的"，而不只是"和哪几个文件名比的"
     for name in BASELINE_STAMP_COLUMNS:
         out[name] = stamp[name]
+    # 去重报告跟着帧走：build 要把它写进 manifest，而 load_all 的返回值
+    # 只有一张表。attrs 在 copy/筛选后可能丢失，所以下游只在 load_all 的
+    # 直接返回值上读它，读不到时退化成"这批没有去重记录"。
+    out.attrs["dedup_report"] = dict(dedup_report)
     print("综合层共读入 {} 行（其中参照 {} 行），缺失的族: {}".format(
         len(out), int((out["variant_family"] == BASELINE_FAMILY).sum()),
         missing or "无"))
@@ -1688,6 +1768,7 @@ def build(year=config.YEAR, threshold=DEFAULT_INFLUENCE_THRESHOLD, alpha=0.05,
     """读五个族的结果 -> 四条准则 + FDR + 规格曲线数据 -> 落盘 + manifest"""
     os.makedirs(robustness_dir(), exist_ok=True)
     df = load_all(year, allow_recompute=allow_recompute)
+    dedup_report = dict(df.attrs.get("dedup_report", {}))
     source = str(df["baseline_source"].iloc[0]) if len(df) else None
     stamp = _stamp_of(_prepare(df))
 
@@ -1749,6 +1830,12 @@ def build(year=config.YEAR, threshold=DEFAULT_INFLUENCE_THRESHOLD, alpha=0.05,
         counts={
             "quantities": len(harness.QUANTITIES),
             "rows_loaded": int(len(df)),
+            # 重跑某一族会把它的结果整份追加一遍（append_rows 是纯追加写）。
+            # 去掉了多少行必须记下来：它等于"这一批里有哪几族被跑过不止一次"
+            "rows_dropped_rerun_duplicates": int(
+                dedup_report.get("rows_dropped_rerun_duplicates", 0)),
+            "conflicting_duplicate_rows": int(
+                dedup_report.get("conflicting_duplicate_rows", 0)),
             "variant_rows": int(len(pool)),
             "live_variant_rows": int(pool["estimate"].notna().sum()),
             "variant_labels": int(pool["variant_label"].nunique()),
