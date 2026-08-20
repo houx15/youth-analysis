@@ -18,21 +18,27 @@
 
 ### （一）数字不平等中的性别差异：从接入到使用
 
-数字鸿沟研究最初主要用设备拥有和网络接入识别不平等。随着互联网普及，研究者开始强调接入之后的差异，包括使用自主性、数字技能、使用目的和由网络使用获得的收益（DiMaggio和Hargittai，2001；Hargittai，2002；van Deursen和van Dijk，2014）。性别差异也沿着这一脉络发生变化。早期研究讨论女性较低的互联网使用率及其社会经济来源（Bimber，2000），后续研究则发现，男女在实际网络技能、自我评价和使用方式上的差异并不完全一致，单纯询问是否会使用互联网可能低估或误判性别差异（Hargittai和Shafer，2006）。因此，网络普及并没有使数字性别不平等自动消失，而是把研究对象从接入条件推进到具体的能力、实践和结果。
+数字鸿沟研究最初主要用设备拥有和网络接入识别不平等。随着互联网普及，研究者开始强调接入之后的差异，包括使用自主性、数字技能、使用目的和由网络使用获得的收益（DiMaggio和Hargittai，2001；Hargittai，2002；van Deursen和van Dijk，2014）。Scheerder、van Deursen和van Dijk（2017）的系统综述进一步将这一变化概括为第二层次和第三层次数字鸿沟：前者关注技能和使用差异，后者关注不同使用能否转化为社会、文化、经济和政治收益。这一研究进展意味着，共同接入互联网只提供了相似的技术起点，不能据此推断不同群体拥有相同的数字实践及其结果。
 
-社交媒体使这种“接入之后的不平等”呈现出新的形式。平台把多种信息对象放入同一技术环境，用户可以接触相同的功能，却通过关注、转发和发帖形成不同的信息路径。数字技能回答用户能否有效使用平台，使用频率回答用户投入多少时间，而信息领域参与进一步回答这些使用被配置到哪些来源和议题。因而，考察数字性别差异需要同时识别参与对象和参与方式，避免把所有网络使用合并为一个无差别的总体指标。
+性别差异也沿着这一脉络发生变化。早期研究主要讨论女性较低的互联网使用率及其社会经济来源（Bimber，2000），后续研究则发现，男女在实际网络技能、自我评价和具体使用上的差异并不完全一致。Hargittai和Shafer（2006）发现，女性对自身网络技能的评价低于男性，但实际操作能力并没有出现同等幅度的差异。Helsper（2010）进一步指出，性别差异会随生命阶段、就业和家庭状况发生变化，不同网络用途中的差异也并不一致。因此，网络普及并没有使数字性别不平等自动消失，而是使差异更可能表现为技能评价、使用安排和参与方向的组合。
+
+社交媒体使这种接入之后的不平等呈现出新的形式。平台把新闻、公共议题、娱乐内容和人际交往放入同一技术环境，用户可以使用相同的功能，却通过关注、转发和发帖形成不同的信息路径。现有数字不平等研究通常把新闻、娱乐、社交或内容生产分别归入不同的使用类型，但较少在同一批用户中同时比较他们进入哪些信息领域，以及在各领域中采取何种参与方式。数字技能回答用户能否有效使用平台，使用频率回答用户投入多少时间，信息领域参与则进一步回答这些使用被配置到哪些来源和议题。本文据此把信息领域和参与方式同时纳入性别差异的分析。
 
 ### （二）公共事务参与的性别差异
 
-政治兴趣既是公共信息接触的动机，也是政治参与的重要前置条件。既有研究发现，女性在一般政治兴趣、政治知识和政治效能感上的平均水平通常低于男性，这一差异无法完全由教育、收入和可支配时间解释，并可能在较早的社会化阶段形成（Bennett和Bennett，1989；Verba、Burns和Schlozman，1997；Fraile和Sánchez-Vítores，2020）。不过，政治兴趣并非单一对象。Coffé（2013）区分地方、国家和国际议题后发现，男女在地方议题上的差异很小；Ferrín等（2020）让受访者报告具体关心的问题后，一般政治兴趣中的性别差距也明显缩小。研究将哪些内容划入“政治”，会直接影响观察到的性别差异。
+政治兴趣既是公共信息接触的动机，也是政治参与的重要前置条件。既有研究发现，女性在一般政治兴趣、政治知识和政治效能感上的平均水平通常低于男性，这一差异无法完全由教育、收入和可支配时间解释，并可能在较早的社会化阶段形成（Bennett和Bennett，1989；Verba、Burns和Schlozman，1997；Fraile和Sánchez-Vítores，2020）。不过，政治兴趣并非单一对象。Coffé（2013）区分地方、国家和国际议题后发现，男女在地方议题上的差异很小；Ferrín等（2020）让受访者报告具体关心的问题后，一般政治兴趣中的性别差距也明显缩小。研究将哪些内容划入政治，会直接影响观察到的性别差异。因此，公共事务领域需要覆盖与社会生活相关的议题，而不能只用狭义的政党政治代表公共参与。
 
-媒介环境进一步改变了公共事务参与的实现方式。选择空间扩大后，新闻偏好者与娱乐偏好者在政治知识和投票上的差距随之扩大（Prior，2005），政治兴趣对新闻消费的影响也会随着媒介选择增加而增强（Strömbäck、Djerf-Pierre和Shehata，2013）。社交媒体则把新闻接触、转发和公开表达连接起来，使较低成本的信息传播也能进入政治参与的观察范围。Bode（2017）发现，社交媒体上的若干政治参与形式呈现出比线下参与更小的性别差距；Koc-Michalska等（2021）同时指出，公开政治发帖仍受到性别化互动环境的影响。公共事务领域中的性别差异由此既取决于议题边界，也取决于研究观察的是信息接触、传播还是公开表达。
+新闻消费研究进一步说明，公共信息接触中的性别差异与日常时间安排和社会角色有关。Benesch（2012）发现，美国的新闻消费性别差异不能完全由教育、收入或内容偏好解释，女性同时承担有偿劳动和家庭劳动所形成的时间约束可能是重要机制。Toff和Palmer（2019）对英国新闻回避者的访谈也表明，新闻被理解为男性事务的文化观念，以及女性较多承担照护责任，共同影响了新闻接触。不过，社交媒体并不必然延续传统新闻渠道中的差距。Haugsgjerd和Karlsen（2024）对挪威选举期的追踪研究发现，社交媒体能够向较少使用传统新闻的群体提供政治信息，并在特定时期缩小部分新闻使用差距。这些研究提示，观察公共事务参与既要考虑社会角色造成的限制，也要考虑平台降低信息进入门槛的可能性。
+
+信息接触增加也不等于公开表达趋于一致。社交媒体把新闻消费、转发和公开讨论连接起来，使低成本的信息传播能够进入政治参与的观察范围。Bode（2017）发现，若干社交媒体政治参与形式呈现出比线下参与更小的性别差距。Lilleker、Koc-Michalska和Bimber（2021）也发现，女性并非普遍较少分享或评论政治信息，但在开放的公共政治讨论中，她们的声音仍可能更弱。Koc-Michalska等（2021）进一步指出，公开政治发帖会受到性别化互动环境的影响。因此，公共事务领域中的性别差异既取决于议题边界，也取决于研究观察的是信息消费还是内容表达。将两种参与方式分开，才能判断共同的信息入口是否转化为相似的公开发声。
 
 ### （三）信息消费、内容表达与明星文化
 
-信息消费和内容表达对应平台参与的不同环节。公共连接研究强调，媒介接触、注意、公共取向和实际行动应当加以区分（Couldry、Livingstone和Markham，2007）。社交媒体上的转发说明账号至少接触并传播了某类来源，公开发帖则把某类议题写入账号可见内容。两种行为的参与门槛、面对的受众和承担的社会评价不同，因而可能呈现不同的性别差异（Bode，2017；Koc-Michalska等，2021）。本文据此把来源转发视为信息消费的可见痕迹，把公开文字中的议题比例视为内容表达，并分别比较两种参与方式。
+信息消费和内容表达对应平台参与的不同环节。Shah等（2005）在分析互联网与公民参与时，已经把获取公共信息和在线表达视为相互联系但作用不同的过程。公共连接研究同样强调，媒介接触、注意、公共取向和实际行动需要加以区分（Couldry、Livingstone和Markham，2007）。在社交媒体上，转发说明账号至少接触并继续传播了某类来源，公开发帖则把某类议题写入账号的可见内容。两种行为面对的受众、表达成本和社会评价不同，因而可能呈现不同的性别差异。本文据此把来源转发作为信息消费留下的可见痕迹，把公开文字中的议题比例作为内容表达，并分别比较两种参与方式。
 
-明星文化为这种比较提供了公共事务之外的重要领域。中国网络粉丝通过点赞、转发、评论、榜单劳动和内容生产维持社群并参与文化产品的分发，平台指标与算法可见度也使这些活动具有持续的组织性（Yin，2020；Zhang和Negus，2020；He和Li，2023）。刘太石（2025）对B站青年文化趣味的研究进一步表明，平台痕迹能够呈现文化趣味的多元性与社会区隔。明星相关行为因此不能仅被当作公共事务参与之外的剩余类别，而应作为具有独立社会组织方式的信息领域。本文所称明星文化特指以明星姓名和演艺认证来源为边界的可见参与，公共事务与明星文化并非互斥类别，同一账号和同一帖子都可能同时进入两个领域。
+明星文化为这种比较提供了公共事务之外的重要信息领域。中国网络粉丝通过点赞、转发、评论、榜单劳动和内容生产维持社群，并参与文化产品的传播。平台指标和算法可见度使这些活动成为持续、可组织的数据劳动（Yin，2020；Zhang和Negus，2020）。Yin（2021）进一步指出，粉丝的情感投入会通过数据化的应援活动转化为可计量的劳动。Zhai和Wang（2023）对微博粉丝社群的研究则显示，粉丝组织存在分层结构，核心成员运用平台知识和组织能力安排普通成员的数据劳动。He和Li（2023）还发现，这类社群实践可能与公民参与意愿发生联系。明星相关行为因此不能仅被当作公共事务参与之外的剩余类别，而应被理解为具有自身组织逻辑和参与价值的信息领域。
+
+现有粉丝研究解释了明星文化参与如何被组织，却较少回答这种参与在平台账号中是否存在稳定的性别差异，也很少把它与公共事务参与放在同一数据框架中比较。与此相对，政治传播研究通常集中于新闻和公共讨论，娱乐或明星内容往往只作为新闻的竞争对象出现。两组文献之间的分离，使我们尚不清楚不同性别是否分别偏向不同信息领域，也不清楚这种领域差异主要发生在信息消费还是内容表达。本文所称明星文化特指以明星姓名和演艺认证来源为边界的可见参与；公共事务与明星文化并非互斥类别，同一账号和同一帖子都可能同时进入两个领域。对两个领域和两种参与方式进行交叉比较，可以把数字性别差异从总体使用量推进到具体的信息参与结构。
 
 基于上述研究，本文预期男性账号相对更多参与公共事务领域，女性账号相对更多参与明星文化领域；两个领域之间的性别分化在内容表达中强于信息消费；账号构成、使用频率和测量规则可能改变差异幅度，但不会轻易改变两个领域相反的总体方向。这些预期通过描述性模型检验，不预设单一的因果机制。
 
@@ -228,6 +234,8 @@
 
 ## 参考文献
 
+Benesch, Christine. 2012. “An Empirical Analysis of the Gender Gap in News Consumption.” *Journal of Media Economics* 25(3): 147-167.
+
 Bennett, Linda L. M., and Stephen Earl Bennett. 1989. “Enduring Gender Differences in Political Interest: The Impact of Socialization and Political Dispositions.” *American Politics Quarterly* 17(1): 105–122.
 
 Bimber, Bruce. 2000. “Measuring the Gender Gap on the Internet.” *Social Science Quarterly* 81(3): 868-876.
@@ -248,23 +256,39 @@ Hargittai, Eszter. 2002. “Second-Level Digital Divide: Differences in People�
 
 Hargittai, Eszter, and Steven Shafer. 2006. “Differences in Actual and Perceived Online Skills: The Role of Gender.” *Social Science Quarterly* 87(2): 432-448.
 
+Haugsgjerd, Atle, and Rune Karlsen. 2024. “Election Campaigns, News Consumption Gaps, and Social Media: Equalizing Political News Use When It Matters?” *The International Journal of Press/Politics* 29(2): 507-529.
+
 He, Qijun, and Yungeng Li. 2023. “Civic Engagement Intention and the Data-Driven Fan Community.” *Social Media + Society* 9(1).
+
+Helsper, Ellen Johanna. 2010. “Gendered Internet Use Across Generations and Life Stages.” *Communication Research* 37(3): 352-374.
 
 Koc-Michalska, Karolina, Anya Schiffrin, Anamaria Lopez, Shelley Boulianne, and Bruce Bimber. 2021. “From Online Political Posting to Mansplaining.” *Social Science Computer Review* 39(2): 197–210.
 
+Lilleker, Darren G., Karolina Koc-Michalska, and Bruce Bimber. 2021. “Women Learn While Men Talk? Revisiting Gender Differences in Political Engagement in Online Environments.” *Information, Communication & Society* 24(14): 2037-2053.
+
 Prior, Markus. 2005. “News vs. Entertainment: How Increasing Media Choice Widens Gaps in Political Knowledge and Turnout.” *American Journal of Political Science* 49(3): 577–592.
+
+Scheerder, Anique, Alexander van Deursen, and Jan van Dijk. 2017. “Determinants of Internet Skills, Uses and Outcomes: A Systematic Review of the Second- and Third-Level Digital Divide.” *Telematics and Informatics* 34(8): 1607-1624.
 
 Sen, Indira, Fabian Flöck, Katrin Weller, Bernd Weiß, and Claudia Wagner. 2021. “A Total Error Framework for Digital Traces of Human Behavior on Online Platforms.” *Public Opinion Quarterly* 85(S1): 399–422.
 
+Shah, Dhavan V., Jaeho Cho, William P. Eveland Jr., and Nojin Kwak. 2005. “Information and Expression in a Digital Age: Modeling Internet Effects on Civic Participation.” *Communication Research* 32(5): 531-565.
+
 Strömbäck, Jesper, Monika Djerf-Pierre, and Adam Shehata. 2013. “The Dynamics of Political Interest and News Media Consumption.” *International Journal of Public Opinion Research* 25(4): 414–435.
 
-van Deursen, Alexander J. A. M., and Jan A. G. M. van Dijk. 2014. “The Digital Divide Shifts to Differences in Usage.” *New Media & Society* 16(3): 507–526.
-
 Thorson, Kjerstin, Kelley Cotter, Mel Medeiros, and Chankyung Pak. 2021. “Algorithmic Inference, Political Interest, and Exposure to News and Politics on Facebook.” *Information, Communication & Society* 24(2): 183–200.
+
+Toff, Benjamin, and Ruth A. Palmer. 2019. “Explaining the Gender Gap in News Avoidance: ‘News-Is-for-Men’ Perceptions and the Burdens of Caretaking.” *Journalism Studies* 20(11): 1563-1579.
+
+van Deursen, Alexander J. A. M., and Jan A. G. M. van Dijk. 2014. “The Digital Divide Shifts to Differences in Usage.” *New Media & Society* 16(3): 507–526.
 
 Verba, Sidney, Nancy Burns, and Kay Lehman Schlozman. 1997. “Knowing and Caring about Politics: Gender and Political Engagement.” *The Journal of Politics* 59(4): 1051–1072.
 
 Yin, Yiyi. 2020. “An Emergent Algorithmic Culture: The Data-ization of Online Fandom in China.” *International Journal of Cultural Studies* 23(4): 475–492.
+
+Yin, Yiyi. 2021. “‘My Baby Should Feel No Wronged!’: Digital Fandoms and Emotional Capitalism in China.” *Global Media and China* 6(4): 460-475.
+
+Zhai, Haoyang, and Wilfred Yang Wang. 2023. “Fans’ Practice of Reporting: A Study of the Structure of Data Fan Labor on Chinese Social Media.” *International Journal of Communication* 17: 1913-1934.
 
 Zhang, Qian, and Keith Negus. 2020. “East Asian Pop Music Idol Production and the Emergence of Data Fandom in China.” *International Journal of Cultural Studies* 23(4): 493–511.
 
