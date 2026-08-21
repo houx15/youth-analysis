@@ -754,13 +754,14 @@ def fig1_core_outcomes(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
 # 图 2：调整后的性别差异（§12.2）
 # ---------------------------------------------------------------------------
 
-def fig2_adjusted_effects(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
+def fig2_adjusted_effects(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
+                          display_number=2):
     """森林图：性别平均边际效应在 M0 → M1 → M2 之间怎么移动（§12.2）
 
     这张图的全部意义在于让读者看着系数缩水：M0 只有性别，M1 加了一般
     活动量，M2 再加画像。三层并排画在同一行上，缩水（或不缩水）一眼可见。
 
-    横轴按 scale 分成两个面板：概率尺度的进入模型与比例尺度的内容/持续
+    横轴按 scale 分成两个面板：概率尺度的信息消费模型与比例尺度的内容表达
     模型不共用一根轴。整层拟合失败时（估计值 NaN）不画点，改在面板里
     列出缺了哪一层、note 是什么——安静地少画一个点会被读成"这一层与
     上一层重合"。
@@ -769,17 +770,15 @@ def fig2_adjusted_effects(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
     assert_manifest(data_dir, year)
     entry = _read(data_dir, "models_entry.parquet", RESULT_COLUMNS)
     share = _read(data_dir, "models_share.parquet", RESULT_COLUMNS)
-    persistence = _read(data_dir, "models_persistence.parquet", RESULT_COLUMNS)
-
     panels = [
-        ("probability", "Gender AME on entry probability (male − female)",
+        ("probability", "Male - female difference in information consumption "
+         "probability",
          [(entry, "source_entered", d) for d in DOMAIN_ORDER]),
-        ("proportion", "Gender AME on shares (male − female)",
-         [(share, "topical_share", d) for d in DOMAIN_ORDER]
-         + [(persistence, "source_month_share", d) for d in DOMAIN_ORDER]),
+        ("proportion", "Male - female difference in content expression share",
+         [(share, "topical_share", d) for d in DOMAIN_ORDER]),
     ]
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4.8))
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
     # 图例是整张图共用的（fig.legend），所以成色要跨两个面板累计：
     # 只要任一面板出现过缺区间/缺估计，键就得挂上。
     states = set()
@@ -789,10 +788,14 @@ def fig2_adjusted_effects(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
         for frame, outcome, domain in specs:
             rows = select(frame, outcome=outcome, domain=domain, term=TERM_AME)
             y_ticks.append(y)
-            # 每一行自己写出分母：这张图混着三个结果变量，分母各不相同，
+            # 每一行自己写出分母：这张图混着两个结果变量，分母各不相同，
             # 只在横轴上写一句"与表 2 相同"是把分母推给别处，不是说明分母
+            measure_label = (
+                "Information consumption" if outcome == "source_entered"
+                else "Content expression"
+            )
             y_labels.append("{}\n{}\n({})".format(
-                OUTCOME_LABELS[outcome].split(",")[0], DOMAIN_LABELS[domain],
+                measure_label, DOMAIN_LABELS[domain],
                 DENOMINATOR_LABELS[AME_DENOMINATOR[outcome]]))
             for k, layer in enumerate(MODEL_LAYERS):
                 row = select_one(rows, model=layer)
@@ -817,8 +820,7 @@ def fig2_adjusted_effects(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
         ax.set_yticks(y_ticks)
         ax.set_yticklabels(y_labels, fontsize=6.5)
         ax.set_ylim(-0.6, len(specs) - 0.4)
-        ax.set_xlabel(xlabel + "\n(95% CI; each row's denominator is printed "
-                               "with its label)", fontsize=8)
+        ax.set_xlabel(xlabel + "\n(95% CI)", fontsize=8)
         ax.grid(axis="x", alpha=0.25, linewidth=0.5)
         _annotate_missing(ax, flags, prefix="flagged rows")
 
@@ -833,8 +835,8 @@ def fig2_adjusted_effects(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
     fig.legend(handles=handles, fontsize=7, loc="lower center", ncol=4,
                frameon=False)
     fig.suptitle(
-        "Figure 2. Gender average marginal effects across model layers, {}".format(
-            year), fontsize=11)
+        "Figure {}. Gender differences across model specifications, {}".format(
+            display_number, year), fontsize=11)
     fig.tight_layout(rect=[0, 0.10, 1, 0.94])
     return _save_fig(fig, "fig2_adjusted_effects", fig_dir)
 
@@ -844,7 +846,7 @@ def fig2_adjusted_effects(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
 # ---------------------------------------------------------------------------
 
 def fig3_interaction(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
-                     model=HEADLINE_LAYER):
+                     model=HEADLINE_LAYER, display_number=3):
     """四个 性别 × 领域 格子的**模型预测值**，并显式标出差中差（§12.3）
 
     画的是什么：
@@ -997,17 +999,124 @@ def fig3_interaction(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
         _annotate_missing(ax, flags, prefix="flagged cells", y=-0.34, va="top")
 
     fig.suptitle(
-        "Figure 3. Model-predicted gender × domain cells with the "
-        "difference-in-differences, {}".format(year), fontsize=11)
+        "Figure {}. Model-adjusted participation by gender and domain, {}".format(
+            display_number, year), fontsize=11)
     fig.tight_layout(rect=[0, 0, 1, 0.93])
     return _save_fig(fig, "fig3_interaction", fig_dir)
+
+
+def fig3_interaction_publication(year=config.YEAR, data_dir=None,
+                                 fig_dir=FIG_DIR, model=HEADLINE_LAYER,
+                                 display_number=3):
+    """正文简化版交互图：只呈现M1的四个预测水平与跨领域比较。
+
+    完整诊断图仍由 ``fig3_interaction`` 生成；本图服务于正文阅读，因此不再
+    同时叠加原始观察值、三个模型层和样本量注释。读者可以直接比较男女两条
+    线在公共事务与明星文化领域中的相对位置。
+    """
+    data_dir = data_dir or figure_data_dir()
+    assert_manifest(data_dir, year)
+    inter = _read(data_dir, "interaction_gender_domain.parquet", RESULT_COLUMNS)
+
+    outcomes = (
+        ("source_entered", "Adjusted information consumption (%)"),
+        ("topical_share", "Adjusted content expression (%)"),
+    )
+    fig, axes = plt.subplots(1, 2, figsize=(10.8, 4.5))
+    for ax, (outcome, ylabel) in zip(axes, outcomes):
+        x = np.arange(len(DOMAIN_ORDER), dtype=float)
+        for gender in GENDER_ORDER:
+            rows = []
+            for domain in DOMAIN_ORDER:
+                row = select_one(
+                    inter,
+                    outcome=outcome,
+                    domain=domain,
+                    model=model,
+                    term=TERM_PRED[(gender, domain)],
+                )
+                if row is None:
+                    raise ValueError(
+                        "交互正文图缺少 {}/{}/{} 结果".format(
+                            outcome, domain, gender))
+                rows.append(row)
+            values = np.array([row["estimate"] for row in rows]) * 100
+            lows = np.array([row["ci_low"] for row in rows]) * 100
+            highs = np.array([row["ci_high"] for row in rows]) * 100
+            offset = 0.045 if gender == "male" else -0.045
+            ax.errorbar(
+                x + offset,
+                values,
+                yerr=np.vstack([values - lows, highs - values]),
+                color=GENDER_COLORS[gender],
+                marker=GENDER_MARKERS[gender],
+                markersize=6,
+                linewidth=1.5,
+                elinewidth=1.1,
+                capsize=3,
+                label=GENDER_LABELS[gender],
+                zorder=3,
+            )
+            for xpos, value in zip(x + offset, values):
+                ax.annotate(
+                    "{:.1f}%".format(value),
+                    (xpos, value),
+                    textcoords="offset points",
+                    xytext=(0, 7 if gender == "male" else -13),
+                    ha="center",
+                    fontsize=7,
+                    color=GENDER_COLORS[gender],
+                )
+
+        public_gap = select_one(
+            inter, outcome=outcome, domain="public", model=model,
+            term=TERM_GAP["public"])
+        celebrity_gap = select_one(
+            inter, outcome=outcome, domain="celebrity", model=model,
+            term=TERM_GAP["celebrity"])
+        did = select_one(
+            inter, outcome=outcome, domain=DOMAIN_BOTH, model=model,
+            term=TERM_DID)
+        if public_gap is None or celebrity_gap is None or did is None:
+            raise ValueError("交互正文图缺少领域差异结果: {}".format(outcome))
+        ax.text(
+            0.5,
+            -0.22,
+            "Male - female: public {:+.2f} pp; celebrity {:+.2f} pp\n"
+            "Difference between domains {:+.2f} pp [{:+.2f}, {:+.2f}]".format(
+                public_gap["estimate"] * 100,
+                celebrity_gap["estimate"] * 100,
+                did["estimate"] * 100,
+                did["ci_low"] * 100,
+                did["ci_high"] * 100,
+            ),
+            transform=ax.transAxes,
+            ha="center",
+            va="top",
+            fontsize=7,
+            color="#333333",
+        )
+        ax.set_xticks(x)
+        ax.set_xticklabels([DOMAIN_LABELS[d] for d in DOMAIN_ORDER])
+        ax.set_ylabel(ylabel, fontsize=8)
+        ax.grid(axis="y", alpha=0.25, linewidth=0.5)
+        ax.legend(fontsize=7, loc="best", frameon=False)
+
+    fig.suptitle(
+        "Figure {}. Model-adjusted participation by gender and domain, {}".format(
+            display_number, year),
+        fontsize=11,
+    )
+    fig.tight_layout(rect=[0, 0.08, 1, 0.93])
+    return _save_fig(fig, "fig3_interaction_publication", fig_dir)
 
 
 # ---------------------------------------------------------------------------
 # 图 4：来源传播与内容表达（§12.4）
 # ---------------------------------------------------------------------------
 
-def fig4_source_content(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
+def fig4_source_content(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
+                        display_number=4):
     """四类参与（均未 / 只来源 / 只内容 / 两者）的 100% 堆积条形图（§12.4）
 
     §12.4 明确禁止 Sankey：桑基图的流向会被读成"先有来源传播、再转化为
@@ -1079,8 +1188,8 @@ def fig4_source_content(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
               bbox_to_anchor=(0.5, -0.16))
     _annotate_missing(ax, missing)
     fig.suptitle(
-        "Figure 4. Source diffusion and content expression, four participation "
-        "types, {}".format(year), fontsize=11)
+        "Figure {}. Information consumption and content expression by gender "
+        "and domain, {}".format(display_number, year), fontsize=11)
     fig.tight_layout(rect=[0, 0.02, 1, 0.93])
     return _save_fig(fig, "fig4_source_content", fig_dir)
 
@@ -1104,7 +1213,7 @@ def predicted_combo_cells(frame, model=HEADLINE_LAYER):
 
 
 def fig5_combinations(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
-                      model=HEADLINE_LAYER):
+                      model=HEADLINE_LAYER, display_number=5):
     """四类来源组合：观测分布 + 多项 logit 预测概率 + 各层性别边际效应（§12.5）
 
     三个面板，从"数据是什么样"一路走到"控制掉活动量之后还剩多少"：
@@ -1233,8 +1342,9 @@ def fig5_combinations(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
     handles += _state_handles(states)
     fig.legend(handles=handles, fontsize=7, loc="lower center", ncol=5,
                frameon=False)
-    fig.suptitle("Figure 5. Source-combination categories by gender, {}".format(year),
-                 fontsize=11)
+    fig.suptitle(
+        "Figure {}. Cross-domain information consumption profiles by gender, {}".format(
+            display_number, year), fontsize=11)
     fig.tight_layout(rect=[0, 0.08, 1, 0.93])
     return _save_fig(fig, "fig5_combinations", fig_dir)
 
@@ -1243,7 +1353,8 @@ def fig5_combinations(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
 # 图 6：月度趋势（§12.6）
 # ---------------------------------------------------------------------------
 
-def fig6_monthly(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
+def fig6_monthly(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
+                 display_number=6):
     """两个领域的月度参与率与议题比例，并按事前规则标出异常月份（§12.6）
 
     **异常月份的标注规则是事前固定的，不做事后挑选。** 规则只有一条：
@@ -1364,11 +1475,102 @@ def fig6_monthly(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
             _annotate_missing(ax, missing)
 
     fig.suptitle(
-        "Figure 6. Monthly trends by gender, {} (open circles: months beyond "
-        "3 × robust MAD from the yearly median;\nthe rule is fixed ex ante and no "
-        "events are selected post hoc)".format(year), fontsize=9)
+        "Figure {}. Monthly participation by gender and domain, {}".format(
+            display_number, year), fontsize=10)
     fig.tight_layout(rect=[0, 0, 1, 0.92])
     return _save_fig(fig, "fig6_monthly", fig_dir)
+
+
+# ---------------------------------------------------------------------------
+# 正文补充图：转发延迟的性别差异
+# ---------------------------------------------------------------------------
+
+def fig7_retweet_delay(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR,
+                       display_number=7):
+    """用户级中位转发延迟的男女差异及其95%置信区间。
+
+    图只使用 delay_quantiles.parquet 中预先计算的用户级结果，不在绘图阶段
+    重新估计。横轴为男性减女性；正值表示男性账号转发得更慢。领域标签同时
+    给出男女账号各自的用户级中位数，便于读者理解差值来自什么基准水平。
+    """
+    data_dir = data_dir or figure_data_dir()
+    assert_manifest(data_dir, year)
+    delay = _read(data_dir, "delay_quantiles.parquet", RESULT_COLUMNS)
+
+    gap_rows = select(delay, outcome="retweet_delay_hours", term="gender_male")
+    gap_rows = gap_rows[
+        gap_rows["model"].astype("object") == "user_level/gap/max=720h"
+    ]
+
+    fig, ax = plt.subplots(figsize=(8.4, 3.4))
+    y_positions = {"public": 1, "celebrity": 0}
+    y_ticks = []
+    labels = []
+    for domain in DOMAIN_ORDER:
+        row = select_one(gap_rows, domain=domain)
+        male = select_one(
+            delay,
+            outcome="retweet_delay_hours",
+            domain=domain,
+            model="user_level/male/max=720h",
+            term="median_of_user_medians",
+        )
+        female = select_one(
+            delay,
+            outcome="retweet_delay_hours",
+            domain=domain,
+            model="user_level/female/max=720h",
+            term="median_of_user_medians",
+        )
+        if row is None or male is None or female is None:
+            raise ValueError("转发延迟图缺少 {} 领域的用户级结果".format(domain))
+
+        y = y_positions[domain]
+        y_ticks.append(y)
+        labels.append("{}\n(Male {:.2f} h; Female {:.2f} h)".format(
+            DOMAIN_LABELS[domain], male["estimate"], female["estimate"]))
+        x = row["estimate"]
+        xerr = np.array([[x - row["ci_low"]], [row["ci_high"] - x]])
+        ax.errorbar(
+            x,
+            y,
+            xerr=xerr,
+            fmt="o",
+            color="#355c7d",
+            ecolor="#355c7d",
+            elinewidth=1.4,
+            capsize=3,
+            markersize=6,
+            zorder=3,
+        )
+        ax.annotate(
+            "{:+.2f} h [{:+.2f}, {:+.2f}]".format(
+                row["estimate"], row["ci_low"], row["ci_high"]),
+            (x, y),
+            textcoords="offset points",
+            xytext=(7, 6),
+            fontsize=8,
+            color="#333333",
+        )
+
+    ax.axvline(0, color="#888888", linestyle="--", linewidth=0.9)
+    ax.set_yticks(y_ticks)
+    ax.set_yticklabels(labels, fontsize=8)
+    ax.set_ylim(-0.65, 1.65)
+    ax.set_xlim(-0.45, 2.05)
+    ax.set_xlabel(
+        "Difference in user-level median retweet delay "
+        "(male - female, hours; 95% CI)",
+        fontsize=8,
+    )
+    ax.grid(axis="x", alpha=0.25, linewidth=0.5)
+    ax.set_title(
+        "Figure {}. Gender difference in median retweet delay by domain, {}".format(
+            display_number, year),
+        fontsize=10,
+    )
+    fig.tight_layout()
+    return _save_fig(fig, "fig7_retweet_delay", fig_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -1469,6 +1671,7 @@ def all(year=config.YEAR, data_dir=None, fig_dir=FIG_DIR):
         fig4_source_content(year, data_dir, fig_dir),
         fig5_combinations(year, data_dir, fig_dir),
         fig6_monthly(year, data_dir, fig_dir),
+        fig7_retweet_delay(year, data_dir, fig_dir),
         appendix_distributions(year, data_dir, fig_dir),
     ]
     print("\n共生成 {} 张图，输出目录 {}".format(len(paths), fig_dir))
@@ -1481,8 +1684,10 @@ if __name__ == "__main__":
         "fig1": fig1_core_outcomes,
         "fig2": fig2_adjusted_effects,
         "fig3": fig3_interaction,
+        "fig3-publication": fig3_interaction_publication,
         "fig4": fig4_source_content,
         "fig5": fig5_combinations,
         "fig6": fig6_monthly,
+        "fig7": fig7_retweet_delay,
         "appendix": appendix_distributions,
     })
