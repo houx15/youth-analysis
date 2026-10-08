@@ -12,7 +12,8 @@ PROMPT = """你在协助建立用于微博原始文本的领域识别词表。�
 允许多领域；都不是时 domains=["none"]，不能与其他领域并选。
 无法判断时 domains=[]，并在 reason 解释缺少什么信息。都不是与无法判断必须区分。
 草案遗漏的领域写入 suggested_domain。
-逐词返回 JSON 数组，每项含 term, domains, decision, reason, suggested_domain。
+返回 JSON 对象，含 results 数组；数组每项含 term, domains, decision, reason, suggested_domain。
+suggested_domain 无建议时使用空字符串。
 decision 只能为 standalone（可独立识别）、context_required（需要语境）、exclude（通用或无效）。
 不要创造未提供的候选词；不要遗漏词条。此结果仅用于后续人工审核，不是正式词表。
 """

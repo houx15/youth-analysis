@@ -26,7 +26,7 @@
 - 单独判断适用性：`standalone` 可独立匹配；`context_required` 需要语境；`exclude` 为通用或无效词。
 - “都不是”和“排除”不是同一维度。例如健康词可能含义明确但不在当前目标体系，应可建议新增健康领域。
 
-模型输出仅作为审核材料。分类任务将词条和例句明确当作数据，不执行其中的指令。当前只生成任务文件，**没有联网分类、结果导入或正式词表导出功能**。
+模型输出仅作为审核材料。分类任务将词条和例句明确当作数据，不执行其中的指令。实际分类由独立的 `classify` 命令调用 OpenRouter；结果通过结构校验后保存为待审核材料，尚无正式词表导出功能。
 
 ## 小样本使用
 
@@ -65,10 +65,41 @@ python -m cultural_participation prepare \
   --output gender_norms/newspaper_data/cultural_participation/pilot_jobs.jsonl
 ```
 
-修改分类草案后应重新生成任务，使用新文件名。真正调用模型是后续单独阶段，尚未实现或执行。
+修改分类草案后应重新生成任务，使用新文件名。真正调用模型是下面的独立阶段，尚未进行真实调用。
+
+## OpenRouter 单模型运行与一致性比较
+
+同一份任务文件可以传给不同模型，避免词表、例句和说明变化干扰比较。`classify` 每次只接收一个 `--model`，无默认模型。运行环境通过 `OPENROUTER_API_KEY` 提供密钥，不写入源码或结果。
+
+接口采用 [OpenRouter Chat Completions](https://openrouter.ai/docs/api_reference/overview)，要求所选模型端点支持 [JSON Schema 结构化输出](https://openrouter.ai/docs/guides/features/structured-outputs)，并设置 `require_parameters=true`。模型返回后另行校验词条遗漏、重复、额外词、领域标签以及“都不是”互斥规则。
+
+```bash
+# 在已配置密钥的环境执行；MODEL_ID 替换为明确选择的 OpenRouter 模型 ID。
+# 初次只跑一批，检查输出与 usage；完整任务仍须通过 SLURM。
+python -m cultural_participation classify \
+  --jobs /path/to/classification_jobs.jsonl \
+  --output gender_norms/newspaper_data/cultural_participation/model_runs \
+  --model MODEL_ID --max-batches 1
+```
+
+结果路径为 `输出根目录/URL编码后的完整模型ID/UTC日期/时分秒_运行ID/`。例如模型 ID 内的 `/` 编码为 `%2F`，避免不同命名映射到同一目录。每次生成独立目录，不覆盖同日旧运行。
+
+- `run.json`：请求模型 ID、UTC 时间、任务路径、批数与输出 token 上限。
+- `responses.jsonl`：逐批原始响应（包括服务返回的实际模型与 usage）、输入任务、请求参数、校验结果和错误。不保存认证头。
+- 不自动重试；失败保留记录，网络中断时不能推断是否计费。尚未实现断点续跑。请求次数上限由 `--max-batches` 明确指定，不等同于金额预算。
+
+```bash
+python -m cultural_participation compare \
+  --responses /path/to/model_A/run/responses.jsonl /path/to/model_B/run/responses.jsonl \
+  --output gender_norms/newspaper_data/cultural_participation/comparison_v1
+```
+
+比较通过任务哈希及词条对齐，只对完全相同任务中双方有效的条目计算领域标签集合的精确一致率、适用性一致率；同时报告有效与未配对条目数、每次运行成功／失败批数、“都不是”分歧和“无法判断”分歧。输出 `summary.json` 与 `disagreements.jsonl`。没有共同有效条目时一致率为 null，不能记为零或一。
+
+该指标是模型间的一致率，不是准确率或因果证据。不同批次划分、例句、提示词或任务文件内容将导致任务哈希不同，不作直接配对；两个模型应复用完全相同的任务文件。旧版要求返回数组的任务文件应重新 prepare，以采用当前 results 对象格式。
 
 ## 后续边界
 
-后续模块再接入实际模型调用与结构校验、人工审核和版本化词表导出、原始文本匹配、参与汇总及词表子抽样敏感性分析。正式测量需独立定义转发原文、用户新增文字和时间分母。领域数与模型供应商尚未定稿，本轮不提前固定。
+后续模块再接入人工审核和版本化词表导出、原始文本匹配、参与汇总及词表子抽样敏感性分析。正式测量需独立定义转发原文、用户新增文字和时间分母。领域数与模型供应商尚未定稿，本轮不提前固定。
 
-验证目前为人工构造数据上的过滤、来源追踪、重复计数、小样本限额、任务输出和文件保护测试；尚未进行真实榜单全量运行或评估分类准确率。
+验证目前为人工构造数据和模拟 API 响应上的过滤、来源追踪、重复计数、小样本限额、任务输出、文件保护、模型路径隔离、响应校验和一致率测试；尚未进行真实榜单全量运行、真实 API 调用或评估分类准确率。

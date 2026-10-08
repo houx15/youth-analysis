@@ -15,6 +15,7 @@ from pathlib import Path
 import sqlite3
 
 from cultural_participation.classification import prepare
+from cultural_participation.openrouter import classify, compare
 
 
 SCHEMA = """
@@ -232,9 +233,18 @@ def main():
     prepare_parser.add_argument("--output", required=True)
     prepare_parser.add_argument("--taxonomy", default=str(Path(__file__).with_name("taxonomy.json")))
     prepare_parser.add_argument("--batch-size", type=int, default=30)
+    classify_parser = commands.add_parser("classify", help="独立调用 OpenRouter，会产生费用")
+    classify_parser.add_argument("--jobs", required=True)
+    classify_parser.add_argument("--output", required=True)
+    classify_parser.add_argument("--model", required=True)
+    classify_parser.add_argument("--max-batches", type=int, required=True)
+    classify_parser.add_argument("--max-tokens", type=int, default=6000)
+    compare_parser = commands.add_parser("compare")
+    compare_parser.add_argument("--responses", nargs=2, required=True)
+    compare_parser.add_argument("--output", required=True)
     args = vars(parser.parse_args())
     command = args.pop("command")
     try:
-        print(json.dumps({"collect": collect, "extract": extract, "export": export, "prepare": prepare}[command](**args), ensure_ascii=False, indent=2))
+        print(json.dumps({"collect": collect, "extract": extract, "export": export, "prepare": prepare, "classify": classify, "compare": compare}[command](**args), ensure_ascii=False, indent=2))
     except (ValueError, OSError, sqlite3.Error) as exc:
         parser.exit(1, f"操作失败：{exc}\n")
