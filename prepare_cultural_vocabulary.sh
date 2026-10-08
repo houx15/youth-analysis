@@ -4,28 +4,33 @@
 #SBATCH --mem=8G
 #SBATCH --cpus-per-task=1
 #SBATCH --output=job.%j.cultural-vocab.out
-# 词表准备：仅提词与规模报告，不调用大模型。
-# 从仓库根目录运行：sbatch prepare_cultural_vocabulary.sh /path/to/bangdan/2020 run_2020_v1
+# 用法：在仓库根目录直接 sbatch prepare_cultural_vocabulary.sh
+# 路径和规模配置：cultural_participation/vocabulary_job.conf
 set -euo pipefail
-source "${CULTURAL_CONDA_INIT:-$HOME/miniconda3/etc/profile.d/conda.sh}"
-conda activate "${CULTURAL_CONDA_ENV:-opinion}"
-# 使用已安装 jieba 的 Python 环境，从仓库根目录提交。
 : "${SLURM_JOB_ID:?请通过 sbatch 提交此脚本}"
 cd "${SLURM_SUBMIT_DIR:?}"
-input_dir="${1:?需要已解压的榜单目录}"
-run_name="${2:?需要新的运行名称}"
-if [[ ! "$run_name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
-  echo '运行名称只能包含英文字母、数字、下划线和连字符' >&2
+source cultural_participation/vocabulary_job.conf
+source "${CULTURAL_CONDA_INIT:-$HOME/miniconda3/etc/profile.d/conda.sh}"
+conda activate "${CULTURAL_CONDA_ENV:-opinion}"
+if [[ ! "$MAX_LINES" =~ ^(0|[1-9][0-9]*)$ ]]; then
+  echo 'MAX_LINES 必须是非负整数，0 表示全量' >&2
   exit 1
 fi
-output_dir="gender_norms/newspaper_data/cultural_participation/$run_name"
-mkdir -p gender_norms/newspaper_data/cultural_participation
-python -c 'import jieba; print("jieba", jieba.__version__)'
-mkdir "$output_dir"
-collect_options=()
-if [[ -n "${3:-}" ]]; then
-  collect_options+=(--max-lines "$3")
+if [[ ! "$RUN_LABEL" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+  echo 'RUN_LABEL 只能包含英文字母、数字、下划线和连字符' >&2
+  exit 1
 fi
-python -m cultural_participation collect --input-dir "$input_dir" --db "$output_dir/topics.sqlite" "${collect_options[@]}"
+run_name="${RUN_LABEL}_${SLURM_JOB_ID}"
+output_dir="gender_norms/newspaper_data/cultural_participation/$run_name"
+printf '输入目录：%s\n输出目录：%s\n最多读取行数：%s（0表示全量）\n' "$INPUT_DIR" "$output_dir" "$MAX_LINES"
+python -c 'import jieba; print("jieba", jieba.__version__)'
+mkdir -p gender_norms/newspaper_data/cultural_participation
+mkdir "$output_dir"
+# 用非空命令数组，兼容较旧 Bash 的 nounset 行为。
+collect_command=(python -m cultural_participation collect --input-dir "$INPUT_DIR" --db "$output_dir/topics.sqlite")
+if [[ "$MAX_LINES" != 0 ]]; then
+  collect_command+=(--max-lines "$MAX_LINES")
+fi
+"${collect_command[@]}"
 python -m cultural_participation extract --db "$output_dir/topics.sqlite"
 python -m cultural_participation export --db "$output_dir/topics.sqlite" --output "$output_dir/candidates.csv"

@@ -51,7 +51,7 @@ python -m cultural_participation export \
 全量收集、提词和分析必须通过根目录的 `prepare_cultural_vocabulary.sh` 提交 SLURM。数据输出沿用项目约定，进入被忽略的 `gender_norms/newspaper_data/cultural_participation/`，不入 Git。规模核对后才考虑下一阶段。
 
 ```bash
-sbatch prepare_cultural_vocabulary.sh /path/to/bangdan_data/2020 run_2020_v1
+sbatch prepare_cultural_vocabulary.sh
 python -m unittest discover -s cultural_participation/tests -v
 ```
 
@@ -123,9 +123,10 @@ python -m cultural_participation compare \
 词表准备：
 
 ```bash
-# 参数1为已解压的榜单目录；参数3可选，为全局最多读取行数。
-sbatch prepare_cultural_vocabulary.sh /path/to/bangdan_data/2020 pilot_2020 1000
-sbatch prepare_cultural_vocabulary.sh /path/to/bangdan_data/2020 full_2020
+# 配置已写入 cultural_participation/vocabulary_job.conf：
+# INPUT_DIR="bangdan_data/2020"，RUN_LABEL="pilot_2020"，MAX_LINES=1000。
+sbatch prepare_cultural_vocabulary.sh
+# 改全量时，在配置中将 MAX_LINES 改为0、RUN_LABEL改为full_2020，然后仍用同一命令。
 ```
 
 后续内容行为分析（以下路径是占位示例；run 输出目录必须尚不存在）：
