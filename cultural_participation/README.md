@@ -118,7 +118,7 @@ python -m cultural_participation compare \
 
 ### 北大服务器运行
 
-从仓库根目录 `git pull --ff-only origin main`。脚本默认激活 `~/miniconda3` 下的 `opinion` 环境，路径／环境名可用 `CULTURAL_CONDA_INIT`、`CULTURAL_CONDA_ENV` 覆盖。两个新作业脚本沿用用户已验证的北大模板：`-p C032M0128G`、`--qos=low`、`--nodes=1`、`--ntasks-per-node=8`，不设置 `--mem` 或 `--cpus-per-task`。当前 Python 流程仍是单进程，不因申请了8个任务而自动启动8份分析。环境需要 `jieba`（提词）、`numpy`（统计与语义）、`pyarrow`（parquet）。
+从仓库根目录 `git pull --ff-only origin main`。词表脚本按用户的可运行方式仅执行 `conda activate opinion` 和 `python prepare_cultural_vocabulary.py`；路径与规模由 Python 读取固定配置。后续分析脚本仍通过 `~/miniconda3` 初始化环境。两个新作业脚本沿用用户已验证的北大模板：`-p C032M0128G`、`--qos=low`、`--nodes=1`、`--ntasks-per-node=8`，不设置 `--mem` 或 `--cpus-per-task`。当前 Python 流程仍是单进程，不因申请了8个任务而自动启动8份分析。环境需要 `jieba`（提词）、`numpy`（统计与语义）、`pyarrow`（parquet）。
 
 词表准备：
 
