@@ -6,5 +6,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=8
 
+module load anaconda/3.11
+source ~/.bash_profile
 conda activate opinion
 python prepare_cultural_vocabulary.py
