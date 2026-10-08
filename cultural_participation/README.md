@@ -118,7 +118,7 @@ python -m cultural_participation compare \
 
 ### 北大服务器运行
 
-从仓库根目录 `git pull --ff-only origin main`。脚本默认激活 `~/miniconda3` 下的 `opinion` 环境，路径／环境名可用 `CULTURAL_CONDA_INIT`、`CULTURAL_CONDA_ENV` 覆盖。不预设分区或账号，可在 sbatch 参数里指定。环境需要 `jieba`（提词）、`numpy`（统计与语义）、`pyarrow`（parquet）。
+从仓库根目录 `git pull --ff-only origin main`。脚本默认激活 `~/miniconda3` 下的 `opinion` 环境，路径／环境名可用 `CULTURAL_CONDA_INIT`、`CULTURAL_CONDA_ENV` 覆盖。不预设分区或账号。按北大集群约束，两个新作业脚本只指定 `--mem`，不同时指定任务数或 CPU 数；需要其他调度设置时在脚本头部调整。环境需要 `jieba`（提词）、`numpy`（统计与语义）、`pyarrow`（parquet）。
 
 词表准备：
 

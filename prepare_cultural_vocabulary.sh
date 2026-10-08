@@ -2,8 +2,8 @@
 #SBATCH --job-name=cultural-vocab
 #SBATCH --time=04:00:00
 #SBATCH --mem=8G
-#SBATCH --cpus-per-task=1
 #SBATCH --output=job.%j.cultural-vocab.out
+# 北大集群资源参数互斥：只指定 mem，不同时指定任务数或 CPU 数。
 # 用法：在仓库根目录直接 sbatch prepare_cultural_vocabulary.sh
 # 路径和规模配置：cultural_participation/vocabulary_job.conf
 set -euo pipefail
