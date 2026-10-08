@@ -9,7 +9,7 @@ import unittest
 
 from cultural_participation.analysis import database, materialize, ols, subsample, summarize
 from cultural_participation.behavior import build, build_records
-from cultural_participation.semantics import score, survey_check
+from cultural_participation.semantics import link_behavior, score, survey_check
 from cultural_participation.vocabulary import Vocabulary
 
 
@@ -126,3 +126,12 @@ class ResearchTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertAlmostEqual(result["estimate_f_minus_m"], beta[1], places=10)
         self.assertAlmostEqual(result["se"], covariance[1, 1] ** .5, places=10)
+
+    def test_link_requires_same_object_level(self):
+        gaps = self.root / "gaps.csv"
+        gaps.write_text("domain,contrast_domain,metric,model,status,estimate_f_minus_m,ci_low,ci_high\nsports,,expression_share,unadjusted_OLS,ok,0.1,0,0.2\n")
+        scores = self.root / "scores.csv"
+        scores.write_text("object_id,axis,score,coverage\nfootball,gender,0.2,1\nfootball,prestige,0.3,1\n")
+        result = link_behavior(gaps, scores, self.root / "map")
+        self.assertEqual(result["n_objects"], 0)
+        self.assertEqual(result["unmatched_behavior_objects"], ["sports"])

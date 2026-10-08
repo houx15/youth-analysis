@@ -22,6 +22,10 @@ output_dir="gender_norms/newspaper_data/cultural_participation/$run_name"
 mkdir -p gender_norms/newspaper_data/cultural_participation
 python -c 'import jieba; print("jieba", jieba.__version__)'
 mkdir "$output_dir"
-python -m cultural_participation collect --input-dir "$input_dir" --db "$output_dir/topics.sqlite"
+collect_options=()
+if [[ -n "${3:-}" ]]; then
+  collect_options+=(--max-lines "$3")
+fi
+python -m cultural_participation collect --input-dir "$input_dir" --db "$output_dir/topics.sqlite" "${collect_options[@]}"
 python -m cultural_participation extract --db "$output_dir/topics.sqlite"
 python -m cultural_participation export --db "$output_dir/topics.sqlite" --output "$output_dir/candidates.csv"

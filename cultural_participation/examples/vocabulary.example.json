@@ -1,0 +1,9 @@
+{
+  "version": "example-only-not-research-vocabulary",
+  "domains": {"sports": "体育", "technology": "科技"},
+  "terms": [
+    {"term": "足球", "domains": ["sports"], "decision": "standalone", "approved": true, "kind": "topic"},
+    {"term": "芯片", "domains": ["technology"], "decision": "standalone", "approved": true, "kind": "topic"},
+    {"term": "苹果", "domains": ["technology"], "decision": "context_required", "context_any": ["手机", "发布会"], "approved": true, "kind": "organization"}
+  ]
+}

@@ -100,6 +100,106 @@ python -m cultural_participation compare \
 
 ## 后续边界
 
-后续模块再接入人工审核和版本化词表导出、原始文本匹配、参与汇总及词表子抽样敏感性分析。正式测量需独立定义转发原文、用户新增文字和时间分母。领域数与模型供应商尚未定稿，本轮不提前固定。
+人工审核与最终词表由研究者完成，接口见下文。原始文本匹配、参与汇总、跨领域比较、词表子抽样和语义评分已实现第一版，见“后续分析代码”。模型供应商为 OpenRouter，具体模型、最终领域数和中文语义轴仍由研究者确定。
 
 验证目前为人工构造数据和模拟 API 响应上的过滤、来源追踪、重复计数、小样本限额、任务输出、文件保护、模型路径隔离、响应校验和一致率测试；尚未进行真实榜单全量运行、真实 API 调用或评估分类准确率。
+
+## 后续分析代码（2026-10-08）
+
+已实现可运行的第一版：`vocabulary.py` 正式词表与匹配，`behavior.py` 内容行为命中缓存，`analysis.py` 用户汇总、跨领域比较与词表子抽样，`semantics.py` 语义轴／调查对照，统一入口为 `python -m cultural_participation.research`。代码尚未在北大服务器全年语料上验证性能；当前模型是可检查的描述性基线，不是旧版全部统计模型的逐项移植。
+
+### 给词表处理的交接接口
+
+正式输入是 JSON，见 `examples/vocabulary.example.json`（**仅展示格式，不是研究用词表**）。顶层含 `version`、`domains` 和 `terms`。
+
+每词一行对象：`term`、`domains`（多标签列表）、`decision`、`approved: true`；可加 `kind`（如 person/topic/organization），需要上下文的词必须配置 `context_any`。上下文条件为清理后同一正文中至少出现一个指定字符串，不是分类模型的自由文本理由。`none`、尚未审核和 exclude 词条不进入正式词表。领域体系可以包含细分领域，ID 不必限于最初五个草案标签。
+
+行为识别默认区分大小写、字面子串匹配，保留所有嵌套命中；每帖每领域只计一次，多领域可以同时命中。它不计算不重叠字数密度。词表子抽样可以精确保留短词命中，但仍需要抽查误匹配；上下文条件在删词时保持不变。
+
+### 北大服务器运行
+
+从仓库根目录 `git pull --ff-only origin main`。脚本默认激活 `~/miniconda3` 下的 `opinion` 环境，路径／环境名可用 `CULTURAL_CONDA_INIT`、`CULTURAL_CONDA_ENV` 覆盖。不预设分区或账号，可在 sbatch 参数里指定。环境需要 `jieba`（提词）、`numpy`（统计与语义）、`pyarrow`（parquet）。
+
+词表准备：
+
+```bash
+# 参数1为已解压的榜单目录；参数3可选，为全局最多读取行数。
+sbatch prepare_cultural_vocabulary.sh /path/to/bangdan_data/2020 pilot_2020 1000
+sbatch prepare_cultural_vocabulary.sh /path/to/bangdan_data/2020 full_2020
+```
+
+后续内容行为分析（以下路径是占位示例；run 输出目录必须尚不存在）：
+
+```bash
+sbatch run_cultural_analysis.sh build \
+  --input-dir cleaned_weibo_cov/2020 \
+  --vocabulary /path/to/reviewed_vocabulary.json \
+  --output gender_norms/newspaper_data/cultural_participation/behavior_v1 --year 2020
+
+# build 完成后单独提交，不能与前一步无依赖并发运行。
+sbatch run_cultural_analysis.sh summarize \
+  --db gender_norms/newspaper_data/cultural_participation/behavior_v1/behavior.sqlite \
+  --output gender_norms/newspaper_data/cultural_participation/summary_v1
+
+sbatch run_cultural_analysis.sh subsample \
+  --db gender_norms/newspaper_data/cultural_participation/behavior_v1/behavior.sqlite \
+  --output gender_norms/newspaper_data/cultural_participation/subsample_v1 \
+  --fractions 0.5 0.8 0.9 --repeats 100 --seed 2020
+```
+
+输入从 parquet 每次只读八个必要字段、默认5000行，不能用 pandas 整年载入。SQLite 在磁盘保存全局去重帖子及命中关系，汇总使用磁盘临时表。全量运行需要足够磁盘空间；当前单作业无断点续跑，失败输出不具备 complete 标记，不能继续汇总。不要用月度数组后直接加总用户比例；不同月份用户重叠，必须统一分母。
+
+### 行为口径与输出
+
+- 研究总体：指定年份内实际观测到至少一帖且用户性别为一致 m/f 的账户。性别缺失、冲突账户单列报告；不自动推定机构账号身份，也不声称代表所有微博用户。
+- 去重：全局 `weibo_id`，按排序后的输入文件保留第一条。跨用户 ID 冲突直接报错；同用户重复版本采用首条，记重复数。
+- 转发：`is_retweet` 判定，领域由 `r_weibo_content` 清理后的内容判定；该列整体缺失则报错，不回退为来源账号分类。原文缺失的转发仍进入全部转发分母，另报可取得原文的数量。
+- 表达：`weibo_content` 删除转发链和链接后的本人文字；纯转发占位文字及空文本不进入有效表达分母。
+- 转发时间：秒／毫秒归一化，使用北京时间筛选年份；非正延迟及缺失值保留状态、不进入时滞均值。输出 `log_delay` 为用户在该领域正时滞转发的平均 log(1+秒)，是发生转发条件下的指标，不是曝光反应速度。
+- 进入概率：该领域是否至少一次参与，分母为全部有效用户；份额分别以该用户全部转发、全部有效表达为分母。零分母记缺失，不记零。
+- `comment_on_retweet_share`：该领域转发中，用户新增文字也命中同领域的比例；泛泛的“哈哈”不能据原帖算为同领域表达。
+- 性别差异为女性减男性，用户等权。不是直接对比男女人数或女性占比。
+
+`summary_v1` 包含 `user_domain.csv`、`descriptives.csv`、`gender_gaps.csv`、`cross_domain_contrasts.csv`、`coverage.csv`、`user_exclusions.csv` 和口径／来源 manifest。
+
+统计基线为逐领域 OLS（进入变量对应线性概率模型），同时输出原始与控制 log(1+发帖数)、log(1+转发数)、log(1+活跃天数) 后的差异，使用 HC1 标准误。奇异矩阵或样本不足明确留空并标记。暂未接入人口画像控制、原版 logit AME、机构排除或因果模型。区间是点态区间，不作大量跨领域显著性声明。
+
+跨领域对比以同一用户的“领域A指标减领域B指标”为结果，再计算性别差异，保留用户内部的相关性。份额比较使用共同分母；时滞对比只包含在两个领域均有有效时滞的用户，样本可能不同，结果单列人数。
+
+子抽样按全词表无放回抽取，固定随机种子，保存每次保留的词与领域性别描述统计；`repeat=-1` 是完整词表基准。小领域可能被抽空；此时明确得到零命中，不悄悄删掉领域。子抽样结果衡量词表构成敏感性，不是总体抽样置信区间。
+
+### 语义轴与调查验证接口
+
+```bash
+sbatch run_cultural_analysis.sh score \
+  --vectors /path/to/chinese_word_vectors.vec \
+  --axes /path/to/validated_axes.json \
+  --objects /path/to/cultural_objects.json \
+  --output gender_norms/newspaper_data/cultural_participation/semantic_v1
+
+sbatch run_cultural_analysis.sh survey-check \
+  --scores /path/to/semantic_v1/scores.csv \
+  --ratings /path/to/survey_ratings.csv \
+  --output gender_norms/newspaper_data/cultural_participation/survey_check_v1
+```
+
+`axes.json` 格式为 `{"gender":{"positive":["锚词A"],"negative":["锚词B"]},"prestige":{...}}`；由研究者确定正负方向及经验证的中文锚词。此处不会内置未经验证的中文“声望词轴”，不会把 cultivation、potency、morality 自动混合为 prestige。
+
+`objects.json` 是 `[{"object_id":"唯一ID","domain":"领域ID","terms":["对象词1","对象词2"]}]`。行为识别词不自动成为语义锚词或文化对象，二者需要明确对应。向量仅支持有／无首行维度声明的 word2vec 文本格式，逐行扫描、只保留所需词，记录向量全文哈希。锚词缺失直接报错；对象词缺失显示覆盖率，全部缺失留空，不插补。对象分数为各对象词与归一化语义轴的余弦均值。
+
+调查输入 CSV 为 `object_id,axis,rating`，每行一条有效评分（不了解留空）；编码方向应与 embedding 一致。代码输出逐对象平均评分及对象层面的 Pearson 相关，仅作无权重描述性对照，未实现复杂抽样权重、评价者分组或时间差校正。文化女性化与低声望的静态关联不自动等于已识别动态贬值过程。
+
+本轮本地验证：人工语料、真实小型 parquet 分批读取、性别冲突、缺失分母、转发链、嵌套词重采样、秒／毫秒时滞、HC1与直接矩阵计算对照、模拟向量与调查连接。未运行真实全年数据、未调用付费模型、未选择最终中文语义轴。
+
+
+同层级的行为—语义连接：
+
+```bash
+sbatch run_cultural_analysis.sh link-behavior \
+  --gaps /path/to/summary_v1/gender_gaps.csv \
+  --scores /path/to/semantic_v1/scores.csv \
+  --output gender_norms/newspaper_data/cultural_participation/map_v1 \
+  --metric expression_share --model unadjusted_OLS
+```
+
+只将行为词表的领域 ID 与语义对象 `object_id` 完全一致的项配对，输出行为差异／性别关联／声望得分的 `map.csv` 及描述相关；不将“体育”的参与差异复制给“足球”等多个子类。如果研究对象下沉到子类，行为词表也应先在相同层级上编码。正负方向由轴配置定义，一定先核对性别轴的正端是否为女性。小样本领域相关及低向量覆盖不能直接作为贬值结论。

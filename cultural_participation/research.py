@@ -5,7 +5,7 @@ import json
 
 from cultural_participation.analysis import subsample, summarize
 from cultural_participation.behavior import build
-from cultural_participation.semantics import score, survey_check
+from cultural_participation.semantics import link_behavior, score, survey_check
 
 
 def main():
@@ -33,9 +33,16 @@ def main():
     p = sub.add_parser("survey-check")
     for name in ["scores", "ratings", "output"]:
         p.add_argument(f"--{name}", required=True)
+    p = sub.add_parser("link-behavior")
+    for name in ["gaps", "scores", "output"]:
+        p.add_argument(f"--{name}", required=True)
+    p.add_argument("--metric", default="expression_share")
+    p.add_argument("--model", default="unadjusted_OLS")
+    p.add_argument("--gender-axis", default="gender")
+    p.add_argument("--prestige-axis", default="prestige")
     args = vars(parser.parse_args())
     command = args.pop("command")
-    print(json.dumps({"build": build, "summarize": summarize, "subsample": subsample, "score": score, "survey-check": survey_check}[command](**args), ensure_ascii=False, indent=2))
+    print(json.dumps({"build": build, "summarize": summarize, "subsample": subsample, "score": score, "survey-check": survey_check, "link-behavior": link_behavior}[command](**args), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

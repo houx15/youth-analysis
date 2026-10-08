@@ -115,3 +115,49 @@ def survey_check(scores, ratings, output):
         report[axis] = {"n_objects": len(pairs), "pearson_r": r}
     (target / "summary.json").write_text(json.dumps({"axes": report, "note": "unweighted object means, descriptive correlation, no representative-population or historical-validity claim"}, indent=2), encoding="utf-8")
     return {"output": str(target)}
+
+
+def link_behavior(gaps, scores, output, metric="expression_share", model="unadjusted_OLS", gender_axis="gender", prestige_axis="prestige"):
+    """同层级对象的行为差异与语义位置连接；不把大领域结果复制给多个子对象。"""
+    import numpy as np
+
+    behavior = {}
+    with Path(gaps).open(encoding="utf-8") as stream:
+        for row in csv.DictReader(stream):
+            if row["metric"] == metric and row["model"] == model and not row["contrast_domain"]:
+                if row["domain"] in behavior:
+                    raise ValueError("同一领域有多个行为估计，请检查输入")
+                if row["status"] == "ok":
+                    behavior[row["domain"]] = row
+    semantic = {}
+    with Path(scores).open(encoding="utf-8") as stream:
+        for row in csv.DictReader(stream):
+            key = (row["object_id"], row["axis"])
+            if key in semantic:
+                raise ValueError("语义对象／轴重复")
+            semantic[key] = row
+    target = Path(output)
+    target.mkdir(parents=True, exist_ok=False)
+    points = []
+    unmatched = []
+    with (target / "map.csv").open("x", encoding="utf-8", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["object_id", "behavior_f_minus_m", "behavior_ci_low", "behavior_ci_high", "gender_score", "prestige_score", "gender_coverage", "prestige_coverage"])
+        for object_id, estimate in sorted(behavior.items()):
+            gender = semantic.get((object_id, gender_axis))
+            prestige = semantic.get((object_id, prestige_axis))
+            if not gender or not prestige or not gender["score"] or not prestige["score"]:
+                unmatched.append(object_id)
+                continue
+            values = [float(estimate["estimate_f_minus_m"]), float(gender["score"]), float(prestige["score"])]
+            points.append(values)
+            writer.writerow([object_id, values[0], estimate["ci_low"], estimate["ci_high"], *values[1:], gender["coverage"], prestige["coverage"]])
+    correlations = {}
+    for i, j, label in [(0, 1, "behavior_gender"), (0, 2, "behavior_prestige"), (1, 2, "gender_prestige")]:
+        values = np.array(points)
+        correlations[label] = float(np.corrcoef(values[:, i], values[:, j])[0, 1]) if len(points) >= 3 and values[:, i].std() > 0 and values[:, j].std() > 0 else None
+    report = {"n_objects": len(points), "unmatched_behavior_objects": unmatched, "metric": metric, "model": model,
+              "gender_axis": gender_axis, "prestige_axis": prestige_axis, "pearson_correlations": correlations,
+              "note": "exact domain-to-object_id match only; unweighted descriptive associations; inspect axis direction and coverage; not causal devaluation"}
+    (target / "summary.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"output": str(target), **report}

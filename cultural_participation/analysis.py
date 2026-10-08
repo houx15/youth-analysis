@@ -16,6 +16,8 @@ METRICS = ["retweet_entry", "expression_entry", "retweet_share", "expression_sha
 @contextmanager
 def database(path):
     conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
+    conn.execute("PRAGMA temp_store=FILE")
+    conn.execute("PRAGMA cache_size=-32768")
     conn.create_function("log1p", 1, lambda x: math.log1p(x) if x is not None else None)
     try:
         manifest = conn.execute("SELECT value FROM metadata WHERE key='manifest'").fetchone()
@@ -155,7 +157,14 @@ def summarize(db, output):
         write_rows(target / "descriptives.csv", descriptives(conn))
         write_rows(target / "gender_gaps.csv", contrasts(conn))
         write_rows(target / "cross_domain_contrasts.csv", contrasts(conn, paired=True))
-        write_query(conn, "SELECT gender,COUNT(*) n_users,SUM(total_posts) posts,SUM(total_retweets) retweets,SUM(available_retweets) available_retweets,SUM(total_expression) expressive_posts FROM totals GROUP BY gender", target / "coverage.csv")
+        write_query(conn, """SELECT t.gender,COUNT(*) n_users,SUM(total_posts) posts,SUM(total_retweets) retweets,
+          SUM(available_retweets) available_retweets,SUM(total_expression) expressive_posts,
+          SUM(COALESCE(c.matched_retweets,0)) matched_retweets,SUM(COALESCE(c.matched_expression,0)) matched_expression
+          FROM totals t LEFT JOIN (
+            SELECT p.user_id,COUNT(DISTINCT CASE WHEN m.rt_hit THEN m.post_id END) matched_retweets,
+              COUNT(DISTINCT CASE WHEN m.expr_hit THEN m.post_id END) matched_expression
+            FROM matched m JOIN posts p USING(post_id) GROUP BY p.user_id
+          ) c USING(user_id) GROUP BY t.gender""", target / "coverage.csv")
         write_query(conn, "SELECT gender,conflict,COUNT(*) users FROM users GROUP BY gender,conflict", target / "user_exclusions.csv")
         source_manifest = json.loads(conn.execute("SELECT value FROM metadata WHERE key='manifest'").fetchone()[0])
     report = {"source_manifest": source_manifest, "units": "user equally weighted", "gap": "female minus male",

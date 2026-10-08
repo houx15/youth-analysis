@@ -35,7 +35,12 @@ def normalize_id(value):
         if abs(value) > 2 ** 53 or not value.is_integer():
             raise ValueError("浮点 ID 精度不安全")
         return str(int(value))
-    return str(value).strip()
+    value = str(value).strip()
+    if value.lower() in {"", "nan", "none", "null"}:
+        return ""
+    if value.endswith(".0") and value[:-2].isdigit():
+        return value[:-2]
+    return value
 
 
 def timestamp(value):
@@ -135,5 +140,6 @@ def build(input_dir, vocabulary, output, year=2020, batch_size=5000, pattern="*.
         revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     except (OSError, subprocess.CalledProcessError):
         revision = "unknown"
-    provenance = {"git_sha": revision, "files": [{"path": str(p.resolve()), "bytes": p.stat().st_size, "mtime_ns": p.stat().st_mtime_ns} for p in files], "batch_size": batch_size}
+    dirty = subprocess.run(["git", "diff", "--quiet", "HEAD", "--", "cultural_participation"], check=False).returncode != 0 if revision != "unknown" else None
+    provenance = {"git_sha": revision, "module_tracked_dirty": dirty, "files": [{"path": str(p.resolve()), "bytes": p.stat().st_size, "mtime_ns": p.stat().st_mtime_ns} for p in files], "batch_size": batch_size, "python_reading": "pyarrow.iter_batches"}
     return build_records(parquet_rows(files, batch_size), vocabulary, output, year, provenance)
