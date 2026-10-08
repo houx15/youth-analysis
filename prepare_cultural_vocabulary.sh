@@ -3,7 +3,12 @@
 #SBATCH --time=04:00:00
 #SBATCH --mem=8G
 #SBATCH --cpus-per-task=1
+#SBATCH --output=job.%j.cultural-vocab.out
+# 词表准备：仅提词与规模报告，不调用大模型。
+# 从仓库根目录运行：sbatch prepare_cultural_vocabulary.sh /path/to/bangdan/2020 run_2020_v1
 set -euo pipefail
+source "${CULTURAL_CONDA_INIT:-$HOME/miniconda3/etc/profile.d/conda.sh}"
+conda activate "${CULTURAL_CONDA_ENV:-opinion}"
 # 使用已安装 jieba 的 Python 环境，从仓库根目录提交。
 : "${SLURM_JOB_ID:?请通过 sbatch 提交此脚本}"
 cd "${SLURM_SUBMIT_DIR:?}"
@@ -15,6 +20,7 @@ if [[ ! "$run_name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
 fi
 output_dir="gender_norms/newspaper_data/cultural_participation/$run_name"
 mkdir -p gender_norms/newspaper_data/cultural_participation
+python -c 'import jieba; print("jieba", jieba.__version__)'
 mkdir "$output_dir"
 python -m cultural_participation collect --input-dir "$input_dir" --db "$output_dir/topics.sqlite"
 python -m cultural_participation extract --db "$output_dir/topics.sqlite"
