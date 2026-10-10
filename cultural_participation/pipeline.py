@@ -256,7 +256,7 @@ def main():
     prepare_parser.add_argument("--candidates", required=True)
     prepare_parser.add_argument("--output", required=True)
     prepare_parser.add_argument("--taxonomy", default=str(Path(__file__).with_name("taxonomy.json")))
-    prepare_parser.add_argument("--batch-size", type=int, default=30)
+    prepare_parser.add_argument("--batch-size", type=int, default=1)
     classify_parser = commands.add_parser("classify", help="独立调用 OpenRouter，会产生费用")
     classify_parser.add_argument("--jobs", required=True)
     classify_parser.add_argument("--output", required=True)

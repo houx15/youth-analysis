@@ -69,13 +69,21 @@ python -m cultural_participation prepare \
 
 ## OpenRouter 单模型运行与一致性比较
 
+2026-10-10 运行约定：联网分类直接运行，不使用 SLURM；默认每次一个词。
+两个模型选择 `deepseek/deepseek-v4.1-flash` 和 `qwen/qwen3.8-flash`，
+请求及运行记录明确设置 `reasoning.enabled=false`。
+旧的多词任务文件必须重新 prepare，默认值变化不会修改已有任务。
+两个模型共用同一个新任务文件；36,876 个词各需 36,876 次请求。
+先各运行 `--max-batches 1` 检查接口，再决定全量。
+原始语料处理、提词及其他资源密集分析仍使用 SLURM。
+
 同一份任务文件可以传给不同模型，避免词表、例句和说明变化干扰比较。`classify` 每次只接收一个 `--model`，无默认模型。运行环境通过 `OPENROUTER_API_KEY` 提供密钥，不写入源码或结果。
 
 接口采用 [OpenRouter Chat Completions](https://openrouter.ai/docs/api_reference/overview)，要求所选模型端点支持 [JSON Schema 结构化输出](https://openrouter.ai/docs/guides/features/structured-outputs)，并设置 `require_parameters=true`。模型返回后另行校验词条遗漏、重复、额外词、领域标签以及“都不是”互斥规则。
 
 ```bash
 # 在已配置密钥的环境执行；MODEL_ID 替换为明确选择的 OpenRouter 模型 ID。
-# 初次只跑一批，检查输出与 usage；完整任务仍须通过 SLURM。
+# 初次只跑一个词，检查输出与 usage；联网分类可直接运行。
 python -m cultural_participation classify \
   --jobs /path/to/classification_jobs.jsonl \
   --output gender_norms/newspaper_data/cultural_participation/model_runs \

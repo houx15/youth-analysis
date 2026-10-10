@@ -96,7 +96,8 @@ def classify(jobs, output, model, max_batches, max_tokens=6000):
     with Path(jobs).open(encoding="utf-8") as source:
         target.mkdir(parents=True, exist_ok=False)
         manifest = {"model": model, "started_at_utc": now.isoformat(), "jobs": str(Path(jobs).resolve()),
-                    "max_batches": max_batches, "max_tokens": max_tokens, "endpoint": ENDPOINT}
+                    "max_batches": max_batches, "max_tokens": max_tokens, "endpoint": ENDPOINT,
+                    "reasoning": {"enabled": False}}
         (target / "run.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         with (target / "responses.jsonl").open("x", encoding="utf-8") as stream:
             for batch_number, line in enumerate(source, 1):
@@ -109,6 +110,7 @@ def classify(jobs, output, model, max_batches, max_tokens=6000):
                     raise ValueError("分类体系缺少都不是（none）选项")
                 task_hash = hashlib.sha256(line.encode("utf-8")).hexdigest()
                 body = {"model": model, "messages": job["messages"], "max_tokens": max_tokens,
+                        "reasoning": {"enabled": False},
                         "response_format": response_format(domains), "provider": {"require_parameters": True}}
                 record = {"task_sha256": task_hash, "batch": batch_number, "requested_model": model,
                           "request": body, "job": job, "status": "error"}

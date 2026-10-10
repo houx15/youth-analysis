@@ -22,7 +22,7 @@ containing_phrases是原始标题中出现的完整词形，注意片段不可�
 
 
 
-def prepare(candidates, output, taxonomy, batch_size=30):
+def prepare(candidates, output, taxonomy, batch_size=1):
     """读取已确认或规则过滤后的 CSV，单独生成离线任务；不调用模型。"""
     if batch_size < 1:
         raise ValueError("batch_size 必须为正数")

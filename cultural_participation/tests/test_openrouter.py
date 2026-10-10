@@ -40,6 +40,10 @@ class OpenRouterTests(unittest.TestCase):
             a = classify(jobs, root / "out", "test/model-a", max_batches=1)
             b = classify(jobs, root / "out", "test/model-b", max_batches=1)
             self.assertEqual(call.call_count, 2)
+            for request in call.call_args_list:
+                self.assertEqual(request.args[0]["reasoning"], {"enabled": False})
+            manifest = json.loads((Path(a["output"]) / "run.json").read_text())
+            self.assertEqual(manifest["reasoning"], {"enabled": False})
             self.assertEqual(Path(a["output"]).parts[-3], "test%2Fmodel-a")
             self.assertNotEqual(a["output"], b["output"])
             files = [Path(run["output"]) / "responses.jsonl" for run in [a, b]]
