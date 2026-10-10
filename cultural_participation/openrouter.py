@@ -11,6 +11,8 @@ from urllib.request import Request, urlopen
 from urllib.parse import quote
 from uuid import uuid4
 
+from tqdm import tqdm
+
 
 ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 DECISIONS = ["standalone", "context_required", "exclude"]
@@ -94,12 +96,18 @@ def classify(jobs, output, model, max_batches, max_tokens=6000):
     target = Path(output) / quote(model, safe="") / now.strftime("%Y-%m-%d") / run_id
     counts = Counter()
     with Path(jobs).open(encoding="utf-8") as source:
+        total = min(max_batches, sum(1 for _ in source))
+    with Path(jobs).open(encoding="utf-8") as source:
         target.mkdir(parents=True, exist_ok=False)
         manifest = {"model": model, "started_at_utc": now.isoformat(), "jobs": str(Path(jobs).resolve()),
                     "max_batches": max_batches, "max_tokens": max_tokens, "endpoint": ENDPOINT,
                     "reasoning": {"enabled": False}}
         (target / "run.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-        with (target / "responses.jsonl").open("x", encoding="utf-8") as stream:
+        tqdm.write(f"结果目录：{target}")
+        # 单词任务每批就是一个词；保留“批”单位以兼容旧的多词任务文件。
+        with (target / "responses.jsonl").open("x", encoding="utf-8") as stream, tqdm(
+            total=total, desc=model, unit="批", dynamic_ncols=True
+        ) as progress:
             for batch_number, line in enumerate(source, 1):
                 if batch_number > max_batches:
                     break
@@ -124,6 +132,10 @@ def classify(jobs, output, model, max_batches, max_tokens=6000):
                 stream.write(json.dumps(record, ensure_ascii=False) + "\n")
                 stream.flush()
                 counts[record["status"]] += 1
+                progress.set_postfix(ok=counts["ok"], error=counts["error"], refresh=False)
+                progress.update(1)
+                if record["status"] == "error":
+                    tqdm.write(f"第 {batch_number} 批失败：{record['error']}")
     return {"output": str(target), "requests": dict(counts)}
 
 

@@ -77,6 +77,55 @@ python -m cultural_participation prepare \
 先各运行 `--max-batches 1` 检查接口，再决定全量。
 原始语料处理、提词及其他资源密集分析仍使用 SLURM。
 
+### tmux 直接运行（每次一个词）
+
+从服务器仓库根目录执行 `git pull --ff-only origin main` 和 `tmux new -s cultural`。
+以下步骤均在新 tmux 会话中执行。`RUN_DIR` 替换为新版 candidates.csv 的实际目录。
+
+```bash
+module load anaconda/3.11
+source ~/.bash_profile
+conda activate opinion
+python -m pip install tqdm
+
+read -rsp "OpenRouter API key: " OPENROUTER_API_KEY
+export OPENROUTER_API_KEY
+echo
+
+RUN_DIR="gender_norms/newspaper_data/cultural_participation/full_2020_v2_替换作业ID"
+JOBS="$RUN_DIR/classification_single_jobs.jsonl"
+OUTPUT="gender_norms/newspaper_data/cultural_participation/model_runs"
+
+python -m cultural_participation prepare \
+  --candidates "$RUN_DIR/candidates.csv" --output "$JOBS" --batch-size 1
+```
+
+prepare 只执行一次；已有同名任务不会被覆盖，两个模型复用此文件。
+先各测试一个词（产生费用）：
+
+```bash
+for MODEL in deepseek/deepseek-v4.1-flash qwen/qwen3.8-flash; do
+  python -u -m cultural_participation classify \
+    --jobs "$JOBS" --output "$OUTPUT" --model "$MODEL" --max-batches 1
+done
+```
+
+确认两个模型结果均为 `ok: 1`，再顺序执行全量：
+
+```bash
+TOTAL=$(wc -l < "$JOBS")
+for MODEL in deepseek/deepseek-v4.1-flash qwen/qwen3.8-flash; do
+  python -u -m cultural_participation classify \
+    --jobs "$JOBS" --output "$OUTPUT" --model "$MODEL" --max-batches "$TOTAL"
+done
+```
+
+tqdm 显示百分比、完成批数、速率、预计剩余时间和 ok/error 计数；单词任务一批就是一个词。
+每次响应落盘后更新进度；等待 API 返回期间进度数字不变，单请求超时为 180 秒。
+测试运行与全量运行分别保存；全量会重新请求测试过的第一个词。
+按 Ctrl-b 然后按 d 脱离会话；重新连接用 `tmux attach -t cultural`。
+tmux 断开不影响运行，但进程被终止后当前代码不能断点续跑；不要重复启动全量来恢复。
+
 同一份任务文件可以传给不同模型，避免词表、例句和说明变化干扰比较。`classify` 每次只接收一个 `--model`，无默认模型。运行环境通过 `OPENROUTER_API_KEY` 提供密钥，不写入源码或结果。
 
 接口采用 [OpenRouter Chat Completions](https://openrouter.ai/docs/api_reference/overview)，要求所选模型端点支持 [JSON Schema 结构化输出](https://openrouter.ai/docs/guides/features/structured-outputs)，并设置 `require_parameters=true`。模型返回后另行校验词条遗漏、重复、额外词、领域标签以及“都不是”互斥规则。

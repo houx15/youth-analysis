@@ -29,7 +29,8 @@ class OpenRouterTests(unittest.TestCase):
 
     @patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-not-a-real-key"})
     @patch("cultural_participation.openrouter.request_completion")
-    def test_single_model_storage_and_comparison(self, call):
+    @patch("cultural_participation.openrouter.tqdm")
+    def test_single_model_storage_and_comparison(self, progress, call):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload = {"taxonomy": {"domains": {"sports": "体育", "none": "都不是"}}, "candidates": [{"term": "足球"}, {"term": "未知"}]}
@@ -40,6 +41,8 @@ class OpenRouterTests(unittest.TestCase):
             a = classify(jobs, root / "out", "test/model-a", max_batches=1)
             b = classify(jobs, root / "out", "test/model-b", max_batches=1)
             self.assertEqual(call.call_count, 2)
+            self.assertEqual(progress.call_args.kwargs["total"], 1)
+            self.assertEqual(progress.return_value.__enter__.return_value.update.call_count, 2)
             for request in call.call_args_list:
                 self.assertEqual(request.args[0]["reasoning"], {"enabled": False})
             manifest = json.loads((Path(a["output"]) / "run.json").read_text())
