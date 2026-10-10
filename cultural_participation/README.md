@@ -204,3 +204,26 @@ sbatch run_cultural_analysis.sh link-behavior \
 ```
 
 只将行为词表的领域 ID 与语义对象 `object_id` 完全一致的项配对，输出行为差异／性别关联／声望得分的 `map.csv` 及描述相关；不将“体育”的参与差异复制给“足球”等多个子类。如果研究对象下沉到子类，行为词表也应先在相同层级上编码。正负方向由轴配置定义，一定先核对性别轴的正端是否为女性。小样本领域相关及低向量覆盖不能直接作为贬值结论。
+
+## 提词 v2：2026-10-10 全年词表检查后的修正
+
+用户确认第一版35,291词覆盖全年日期。v2保留原名词／动词候选、低频词和二字词，补充：
+
+- 英文缩写与数字字母组合，如 NBA、CBA、GDP、5G、iPhone12；NBA7人中的NBA也保留，纯数字和URL不作为此规则候选。组合和字母部分均为待审核线索，不宣称自动完成实体识别。
+- 书名号内的2–40字符短语。
+- `extraction_rules.json` 中从实际标题确认的少量完整词形（优衣库、华鼎奖、天问一号），仅当原标题实际包含它们时补入。可扩充该规则表；不自动拼接任意相邻词。仍不能保证完整修复中文分词。
+
+导出新增 `extraction_sources`、`review_flags`、`containing_phrases_json`。标记低频、纯动词、可能片段及已观察完整短语的组成部分，**只供审核，不自动删词**。例如保留“优衣”并提示其来源标题还出现“优衣库”。现有LLM prepare可直接读新版CSV，并把审核标记与完整词形提示传给模型；不同模型继续使用同一个prepare文件。
+
+每个词每个独立标题仍只计一次，同词被多条规则提取不会重复增加频次。新版规模报告包含各提取来源与审核标记的词数，类别可重叠。
+
+已完成全年收集时，直接使用新版重提词脚本：
+
+```bash
+git pull --ff-only origin main
+sbatch reextract_cultural_vocabulary.sh
+```
+
+脚本沿用已跑通的调度和Anaconda初始化方式。`reextract_cultural_vocabulary.py` 已将输入设为 `gender_norms/newspaper_data/cultural_participation/pilot_2020_17028/topics.sqlite`，输出为 `full_2020_v2_<作业ID>/`。如果旧数据库被移动，修改该Python文件顶部的 `SOURCE_DB`。
+
+此步骤只复制独立标题和来源元信息到新库、重新提词，不重扫305个原始文件，也不覆盖旧库。抓取明细仍保存在旧库，新manifest记录原库位置；新库的occurrences表不复制原抓取明细。新结果仍需对比分词覆盖和规模，不预先保证词数或精度。`prepare_cultural_vocabulary.sh` 全流程也已使用新版提词逻辑。

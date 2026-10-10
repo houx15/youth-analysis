@@ -15,6 +15,8 @@ PROMPT = """你在协助建立用于微博原始文本的领域识别词表。�
 返回 JSON 对象，含 results 数组；数组每项含 term, domains, decision, reason, suggested_domain。
 suggested_domain 无建议时使用空字符串。
 decision 只能为 standalone（可独立识别）、context_required（需要语境）、exclude（通用或无效）。
+review_flags仅为规则提示，不是结论；含低频、动词或片段提示的词也可能有效。
+containing_phrases是原始标题中出现的完整词形，注意片段不可直接冒充完整实体。
 不要创造未提供的候选词；不要遗漏词条。此结果仅用于后续人工审核，不是正式词表。
 """
 
@@ -60,7 +62,12 @@ def prepare(candidates, output, taxonomy, batch_size=30):
                 examples = json.loads(row["examples_json"])
                 if not isinstance(examples, list) or not all(isinstance(x, str) for x in examples):
                     raise ValueError("examples_json 必须为字符串列表")
-                batch.append({"term": row["term"], "distinct_title_count": int(row["distinct_title_count"]), "examples": examples})
+                candidate = {"term": row["term"], "distinct_title_count": int(row["distinct_title_count"]), "examples": examples}
+                if row.get("review_flags"):
+                    candidate["review_flags"] = row["review_flags"].split("|")
+                if row.get("containing_phrases_json"):
+                    candidate["containing_phrases"] = json.loads(row["containing_phrases_json"])
+                batch.append(candidate)
                 total += 1
                 if len(batch) == batch_size:
                     write_batch(batch)

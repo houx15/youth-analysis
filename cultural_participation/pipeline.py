@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 import sqlite3
 
+from cultural_participation.candidates import candidates, review_flags
 from cultural_participation.classification import prepare
 from cultural_participation.openrouter import classify, compare
 
@@ -128,10 +129,15 @@ def connect_existing(db):
     return sqlite3.connect(Path(db).resolve().as_uri() + "?mode=rw", uri=True)
 
 
-def extract(db, min_length=2, pos_prefixes=("n", "v"), tokenizer=None):
+def extract(db, min_length=2, pos_prefixes=("n", "v"), tokenizer=None, rules=None):
     """保留全部候选，不截断 top-N；每个完整标题对每个词只贡献一次。"""
     if min_length < 1 or not pos_prefixes:
         raise ValueError("需要正的 min_length 和非空词性前缀")
+    rules_path = Path(rules) if rules else Path(__file__).with_name("extraction_rules.json")
+    rules_data = json.loads(rules_path.read_text(encoding="utf-8"))
+    protected = rules_data["protected_terms"]
+    if not isinstance(protected, list) or not all(isinstance(t, str) and t.strip() == t and t for t in protected):
+        raise ValueError("protected_terms 必须为非空字符串的列表")
     version = "injected"
     if tokenizer is None:
         try:
@@ -143,13 +149,16 @@ def extract(db, min_length=2, pos_prefixes=("n", "v"), tokenizer=None):
         tokenizer = pseg.cut
         version = jieba.__version__
     with closing(connect_existing(db)) as conn, conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS term_evidence(term TEXT,topic_id INTEGER,source TEXT,PRIMARY KEY(term,topic_id,source))")
+        conn.execute("CREATE INDEX IF NOT EXISTS evidence_topic ON term_evidence(topic_id,source)")
         conn.execute("DELETE FROM terms")
+        conn.execute("DELETE FROM term_evidence")
         for topic_id, title in conn.execute("SELECT id, title FROM topics ORDER BY id"):
-            for word, pos in tokenizer(title):
-                word = word.strip()
-                if len(word) >= min_length and pos.startswith(tuple(pos_prefixes)):
-                    conn.execute("INSERT OR IGNORE INTO terms VALUES (?,?,?)", (word, topic_id, pos))
-        settings = {"min_length": min_length, "pos_prefixes": pos_prefixes, "jieba_version": version}
+            for word, pos, source in candidates(title, tokenizer, min_length, pos_prefixes, protected):
+                conn.execute("INSERT OR IGNORE INTO terms VALUES (?,?,?)", (word, topic_id, pos))
+                conn.execute("INSERT OR IGNORE INTO term_evidence VALUES (?,?,?)", (word, topic_id, source))
+        settings = {"min_length": min_length, "pos_prefixes": pos_prefixes, "jieba_version": version,
+                    "extractor_version": 2, "rules": rules_data}
         conn.execute("INSERT OR REPLACE INTO metadata VALUES ('extraction', ?)", (json.dumps(settings),))
         count = conn.execute("SELECT COUNT(DISTINCT term) FROM terms").fetchone()[0]
     return {"candidate_terms": count, "settings": settings}
@@ -171,13 +180,16 @@ def export(db, output, min_titles=1):
     all_terms = 0
     term_chars = 0
     context_chars = 0
+    flag_counts = Counter()
+    source_counts = Counter()
     with closing(connect_existing(db)) as conn:
         metadata = {k: json.loads(v) for k, v in conn.execute("SELECT key,value FROM metadata")}
         if "extraction" not in metadata:
             raise ValueError("请先执行 extract")
+        has_evidence = conn.execute("SELECT 1 FROM sqlite_master WHERE name='term_evidence'").fetchone() is not None
         with target.open("x", encoding="utf-8", newline="") as stream:
             writer = csv.writer(stream)
-            writer.writerow(["term", "distinct_title_count", "length", "pos_tags", "examples_json"])
+            writer.writerow(["term", "distinct_title_count", "length", "pos_tags", "examples_json", "extraction_sources", "review_flags", "containing_phrases_json"])
             for term, count in conn.execute(
                 "SELECT term,COUNT(*) AS n FROM terms GROUP BY term ORDER BY n DESC,term"
             ):
@@ -191,7 +203,17 @@ def export(db, output, min_titles=1):
                 examples = [r[0] for r in conn.execute(
                     "SELECT title FROM topics JOIN terms ON topics.id=terms.topic_id WHERE term=? ORDER BY title LIMIT 3", (term,)
                 )]
-                writer.writerow([term, count, len(term), "|".join(tags), json.dumps(examples, ensure_ascii=False)])
+                sources = [r[0] for r in conn.execute("SELECT DISTINCT source FROM term_evidence WHERE term=? ORDER BY source", (term,))] if has_evidence else ["legacy_jieba"]
+                longer = [r[0] for r in conn.execute(
+                    """SELECT DISTINCT e.term FROM terms t JOIN term_evidence e ON t.topic_id=e.topic_id
+                    WHERE t.term=? AND e.source IN ('protected_phrase','book_title_phrase')
+                    AND LENGTH(e.term)>LENGTH(?) AND INSTR(e.term,?)>0 ORDER BY e.term LIMIT 5""", (term, term, term)
+                )] if has_evidence else []
+                flags = review_flags(term, count, tags, longer)
+                flag_counts.update(flags)
+                source_counts.update(sources)
+                writer.writerow([term, count, len(term), "|".join(tags), json.dumps(examples, ensure_ascii=False),
+                                 "|".join(sources), "|".join(flags), json.dumps(longer, ensure_ascii=False)])
                 exported += 1
                 lengths[len(term)] += 1
                 term_chars += len(term)
@@ -203,6 +225,7 @@ def export(db, output, min_titles=1):
         "retained_terms_by_min_titles": thresholds,
         "exported_term_characters": term_chars, "exported_example_characters": context_chars,
         "csv_bytes": target.stat().st_size, "provenance": metadata,
+        "review_flag_counts": dict(flag_counts), "extraction_source_counts": dict(source_counts),
         "budget_note": "字符数不是 token 数或费用；选定模型、提示词及输出结构后再估算预算。",
     }
     with report_path.open("x", encoding="utf-8") as stream:
@@ -222,6 +245,7 @@ def main():
     collect_parser.add_argument("--max-lines", type=int)
     extract_parser = commands.add_parser("extract")
     extract_parser.add_argument("--db", required=True)
+    extract_parser.add_argument("--rules")
     extract_parser.add_argument("--min-length", type=int, default=2)
     extract_parser.add_argument("--pos-prefixes", nargs="+", default=["n", "v"])
     export_parser = commands.add_parser("export")
