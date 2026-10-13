@@ -1,0 +1,244 @@
+{
+  "version": "strict-v1-2026-10-13",
+  "unique_terms": 3972,
+  "selection_counts": {
+    "excluded_from_paired": 32374,
+    "dual_model_standalone_agreement": 2971,
+    "adjudicated_standalone": 1001
+  },
+  "domain_counts": {
+    "politics": 816,
+    "business": 695,
+    "technology": 311,
+    "sports": 706,
+    "arts": 1579
+  },
+  "multi_domain_terms": 134,
+  "domain_assignments": 4107,
+  "explicitly_tagged_person_terms": 713,
+  "frequency_bins": {
+    "50+": 83,
+    "10-49": 553,
+    "5-9": 536,
+    "2-4": 1247,
+    "1": 1553
+  },
+  "top_terms_by_domain": {
+    "politics": [
+      {
+        "term": "特朗普",
+        "distinct_title_count": 404
+      },
+      {
+        "term": "外交部",
+        "distinct_title_count": 246
+      },
+      {
+        "term": "世卫",
+        "distinct_title_count": 224
+      },
+      {
+        "term": "总统",
+        "distinct_title_count": 168
+      },
+      {
+        "term": "教育部",
+        "distinct_title_count": 96
+      },
+      {
+        "term": "拜登",
+        "distinct_title_count": 95
+      },
+      {
+        "term": "市长",
+        "distinct_title_count": 93
+      },
+      {
+        "term": "总理",
+        "distinct_title_count": 90
+      },
+      {
+        "term": "卫健委",
+        "distinct_title_count": 88
+      },
+      {
+        "term": "海军",
+        "distinct_title_count": 82
+      }
+    ],
+    "business": [
+      {
+        "term": "快递",
+        "distinct_title_count": 232
+      },
+      {
+        "term": "消费",
+        "distinct_title_count": 121
+      },
+      {
+        "term": "经济",
+        "distinct_title_count": 118
+      },
+      {
+        "term": "华为",
+        "distinct_title_count": 106
+      },
+      {
+        "term": "李佳琦",
+        "distinct_title_count": 82
+      },
+      {
+        "term": "破产",
+        "distinct_title_count": 75
+      },
+      {
+        "term": "瑞幸",
+        "distinct_title_count": 66
+      },
+      {
+        "term": "超市",
+        "distinct_title_count": 63
+      },
+      {
+        "term": "票房",
+        "distinct_title_count": 54
+      },
+      {
+        "term": "银行",
+        "distinct_title_count": 52
+      }
+    ],
+    "technology": [
+      {
+        "term": "钟南山",
+        "distinct_title_count": 262
+      },
+      {
+        "term": "5G",
+        "distinct_title_count": 119
+      },
+      {
+        "term": "华为",
+        "distinct_title_count": 106
+      },
+      {
+        "term": "北斗",
+        "distinct_title_count": 64
+      },
+      {
+        "term": "李兰娟",
+        "distinct_title_count": 55
+      },
+      {
+        "term": "SpaceX",
+        "distinct_title_count": 47
+      },
+      {
+        "term": "技术",
+        "distinct_title_count": 47
+      },
+      {
+        "term": "科技",
+        "distinct_title_count": 44
+      },
+      {
+        "term": "临床试验",
+        "distinct_title_count": 39
+      },
+      {
+        "term": "福奇",
+        "distinct_title_count": 38
+      }
+    ],
+    "sports": [
+      {
+        "term": "湖人",
+        "distinct_title_count": 143
+      },
+      {
+        "term": "球员",
+        "distinct_title_count": 109
+      },
+      {
+        "term": "FPX",
+        "distinct_title_count": 96
+      },
+      {
+        "term": "NBA",
+        "distinct_title_count": 96
+      },
+      {
+        "term": "EDG",
+        "distinct_title_count": 66
+      },
+      {
+        "term": "库里",
+        "distinct_title_count": 63
+      },
+      {
+        "term": "健身",
+        "distinct_title_count": 59
+      },
+      {
+        "term": "季后赛",
+        "distinct_title_count": 58
+      },
+      {
+        "term": "体育",
+        "distinct_title_count": 55
+      },
+      {
+        "term": "绝杀",
+        "distinct_title_count": 55
+      }
+    ],
+    "arts": [
+      {
+        "term": "综艺",
+        "distinct_title_count": 386
+      },
+      {
+        "term": "影视剧",
+        "distinct_title_count": 321
+      },
+      {
+        "term": "动漫",
+        "distinct_title_count": 247
+      },
+      {
+        "term": "演员",
+        "distinct_title_count": 195
+      },
+      {
+        "term": "易烊千玺",
+        "distinct_title_count": 163
+      },
+      {
+        "term": "爱豆",
+        "distinct_title_count": 157
+      },
+      {
+        "term": "演唱会",
+        "distinct_title_count": 152
+      },
+      {
+        "term": "郑爽",
+        "distinct_title_count": 136
+      },
+      {
+        "term": "张艺兴",
+        "distinct_title_count": 135
+      },
+      {
+        "term": "李宇春",
+        "distinct_title_count": 119
+      }
+    ]
+  },
+  "input_sha256": {
+    "paired_terms": "acae564c6e382d99cfaea85e1ca753f27b137f3b558151bd4bdc8105be800189",
+    "reviewed_terms": "3ec8b47615ac58b5d9dc798987396d3868f829e9898844f36aa6f445788fcf9b"
+  },
+  "frequency_definition": "Containing distinct hot-search titles; not Weibo token counts, users, reposts, or ranking appearances.",
+  "person_tag_caveat": "Only adjudicated explicit person tags are counted; consensus terms have not been exhaustively typed."
+}
