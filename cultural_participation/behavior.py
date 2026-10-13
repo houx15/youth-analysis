@@ -5,6 +5,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 import json
 import math
+from itertools import islice
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -74,7 +75,7 @@ def build_records(records, vocabulary, output, year, provenance=None):
     counts = Counter()
     with closing(sqlite3.connect(target / "behavior.sqlite")) as conn:
         conn.executescript(SCHEMA)
-        conn.executemany("INSERT INTO terms VALUES (?,?,?)", [(term, d, row.get("kind", "unspecified")) for term, row in vocab.rules.items() for d in row["domains"]])
+        conn.executemany("INSERT INTO terms VALUES (?,?,?)", [(term, d, row.get("kind", row.get("term_type", "unspecified"))) for term, row in vocab.rules.items() for d in row["domains"]])
         conn.commit()
         for row in records:
             counts["input_rows"] += 1
@@ -123,23 +124,41 @@ def build_records(records, vocabulary, output, year, provenance=None):
                 conn.commit()
         manifest = {"status": "complete", "year": year, "created_at_utc": datetime.now(timezone.utc).isoformat(),
                     "vocabulary_sha256": vocab.fingerprint, "counts": dict(counts), "provenance": provenance or {},
-                    "matching": "all overlapping literal terms; any-hit binary domain participation", "timezone": "Asia/Shanghai"}
+                    "matching": "case-sensitive overlapping literal terms with ASCII token boundaries; any-hit binary domain participation", "timezone": "Asia/Shanghai"}
         conn.execute("INSERT INTO metadata VALUES ('manifest',?)", (json.dumps(manifest, ensure_ascii=False),))
         conn.commit()
     (target / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return manifest
 
 
-def build(input_dir, vocabulary, output, year=2020, batch_size=5000, pattern="*.parquet"):
+def build(input_dir, vocabulary, output, year=2020, batch_size=5000, pattern="*.parquet", max_rows=None):
+    import pyarrow.parquet as pq
+    from tqdm import tqdm
+
     if batch_size < 1:
         raise ValueError("batch_size 必须为正数")
-    files = sorted(Path(input_dir).glob(pattern))
+    if max_rows is not None and max_rows < 1:
+        raise ValueError("max_rows 必须为正数；全量时不传此参数")
+    files = sorted(p for p in Path(input_dir).glob(pattern) if p.is_file())
     if not files:
         raise ValueError("没有匹配的 parquet 文件")
+    Vocabulary(vocabulary)
+    total_rows = 0
+    for file in files:
+        reader = pq.ParquetFile(file)
+        missing = set(COLUMNS) - set(reader.schema_arrow.names)
+        if missing:
+            raise ValueError(f"{file} 缺少必要字段：{sorted(missing)}")
+        total_rows += reader.metadata.num_rows
+    print(f"预检通过：{len(files)}个文件，{total_rows:,}行；年份{year}，试跑上限{max_rows or '全量'}", flush=True)
     try:
         revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     except (OSError, subprocess.CalledProcessError):
         revision = "unknown"
     dirty = subprocess.run(["git", "diff", "--quiet", "HEAD", "--", "cultural_participation"], check=False).returncode != 0 if revision != "unknown" else None
-    provenance = {"git_sha": revision, "module_tracked_dirty": dirty, "files": [{"path": str(p.resolve()), "bytes": p.stat().st_size, "mtime_ns": p.stat().st_mtime_ns} for p in files], "batch_size": batch_size, "python_reading": "pyarrow.iter_batches"}
-    return build_records(parquet_rows(files, batch_size), vocabulary, output, year, provenance)
+    provenance = {"git_sha": revision, "module_tracked_dirty": dirty, "files": [{"path": str(p.resolve()), "bytes": p.stat().st_size, "mtime_ns": p.stat().st_mtime_ns} for p in files], "batch_size": batch_size, "max_rows": max_rows, "source_rows": total_rows, "python_reading": "pyarrow.iter_batches"}
+    records = parquet_rows(files, batch_size)
+    if max_rows is not None:
+        records = islice(records, max_rows)
+    with tqdm(records, total=min(total_rows, max_rows) if max_rows else total_rows, desc="匹配微博", unit="条", mininterval=10) as progress:
+        return build_records(progress, vocabulary, output, year, provenance)

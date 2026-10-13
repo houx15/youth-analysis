@@ -18,6 +18,7 @@ def main():
     p.add_argument("--year", type=int, default=2020)
     p.add_argument("--batch-size", type=int, default=5000)
     p.add_argument("--pattern", default="*.parquet")
+    p.add_argument("--max-rows", type=int, help="仅用于工程试跑，前N输入行；省略则全量")
     p = sub.add_parser("summarize")
     p.add_argument("--db", required=True)
     p.add_argument("--output", required=True)

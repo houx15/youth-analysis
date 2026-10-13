@@ -181,7 +181,7 @@ python -m cultural_participation compare \
 
 每词一行对象：`term`、`domains`（多标签列表）、`decision`、`approved: true`；可加 `kind`（如 person/topic/organization），需要上下文的词必须配置 `context_any`。上下文条件为清理后同一正文中至少出现一个指定字符串，不是分类模型的自由文本理由。`none`、尚未审核和 exclude 词条不进入正式词表。领域体系可以包含细分领域，ID 不必限于最初五个草案标签。
 
-行为识别默认区分大小写、字面子串匹配，保留所有嵌套命中；每帖每领域只计一次，多领域可以同时命中。它不计算不重叠字数密度。词表子抽样可以精确保留短词命中，但仍需要抽查误匹配；上下文条件在删词时保持不变。
+行为识别默认区分大小写、字面匹配，保留中文嵌套命中；新增ASCII字母、数字及下划线边界检查，避免AI命中RAISE、NBA命中WNBA内部，中文相邻不阻断匹配。每帖每领域只计一次，多领域可以同时命中。它不计算不重叠字数密度。词表子抽样可以精确保留短词命中，但仍需要抽查误匹配；上下文条件在删词时保持不变。
 
 ### 北大服务器运行
 
@@ -196,7 +196,60 @@ sbatch prepare_cultural_vocabulary.sh
 # 改全量时，在配置中将 MAX_LINES 改为0、RUN_LABEL改为full_2020，然后仍用同一命令。
 ```
 
-后续内容行为分析（以下路径是占位示例；run 输出目录必须尚不存在）：
+### strict_v1在北大服务器启动
+
+2026-10-13已验证最终3,972词可加载并贯通构建、汇总和五领域输出；使用合成记录及小型真实Parquet文件测试，未在服务器全年语料上执行。原始输入为含文本和用户字段的清洗后Parquet，沿用旧分析的`cleaned_weibo_cov/2020`目录，不是热搜文件或模型输出。
+
+在仓库根目录拉取代码，检查环境依赖：
+
+```bash
+git pull --ff-only origin main
+module load anaconda/3.11
+source ~/.bash_profile
+conda activate opinion
+python -c "import numpy, pyarrow, tqdm; print('依赖齐全')"
+```
+
+若检查缺包，在该环境安装缺失的包即可（`python -m pip install numpy pyarrow tqdm`）。行为分析不调用LLM，不需要API key，也不需要jieba。
+
+编辑`cultural_participation/behavior_job.conf`：默认输入`cleaned_weibo_cov/2020`、最终词表`vocabularies/strict_v1/vocabulary.json`、年份2020、前100,000输入行试跑。目录如不同只改INPUT_DIR；子目录嵌套可将PATTERN改为`**/*.parquet`。先提交试跑：
+
+```bash
+sbatch run_cultural_behavior.sh
+# 将12345换成返回的作业ID；Ctrl-C停止看日志，不会停止作业。
+tail -f job.12345.cultural_behavior.out
+```
+
+脚本沿用已验证的分区、qos和ntasks-per-node=8及conda启动顺序。内部只运行一个Python进程，不启动8份重复分析。先检查所有匹配Parquet文件的8列schema，再分批读取和匹配，以tqdm显示进度；成功后自动顺序执行汇总。汇总阶段没有逐行进度条，日志会显示阶段切换。输出路径包含SLURM作业ID，避免覆盖。
+
+需要字段：`weibo_id`、`user_id`、`gender`、`is_retweet`、`weibo_content`、`r_weibo_content`、`time_stamp`、`r_time_stamp`。gender接受m/f或男/女；转发标记接受0/1和布尔值；时间戳接受Unix秒或毫秒。字段缺失直接报错；年份外记录、无效标记等在cache/manifest.json计数。八列schema通过不保证实际内容有效，应确认unique_posts、retweets_missing_source等统计及summary/coverage.csv。
+
+试跑仅按文件顺序取前100,000输入行，不是随机样本；不用其性别差异作论文结论。流程和覆盖正常后，将配置修改为：
+
+```bash
+RUN_LABEL="behavior_strict_v1_full"
+MAX_ROWS=0
+```
+
+再执行同一个`sbatch run_cultural_behavior.sh`即可全量运行。结果位于：
+
+```text
+gender_norms/newspaper_data/cultural_participation/behavior_strict_v1_full_<JOBID>/
+  cache/behavior.sqlite
+  cache/manifest.json
+  cache/vocabulary.json
+  summary/user_domain.csv
+  summary/descriptives.csv
+  summary/gender_gaps.csv
+  summary/cross_domain_contrasts.csv
+  summary/coverage.csv
+  summary/user_exclusions.csv
+  summary/manifest.json
+```
+
+若缓存成功而汇总失败，可用下面的summarize入口单独重跑，指定新的汇总输出目录，避免重新匹配。若构建中断，目前不支持续跑，重新提交会用新作业ID建新目录。子抽样另行提交，不默认附带100轮长任务。
+
+需要分开运行各阶段时（run 输出目录必须尚不存在）：
 
 ```bash
 sbatch run_cultural_analysis.sh build \

@@ -85,6 +85,29 @@ class ResearchTests(unittest.TestCase):
         pq.write_table(pa.Table.from_pylist(self.records), source / "fixture.parquet")
         result = build(source, self.vocab, self.root / "parquet_run", batch_size=1)
         self.assertEqual(result["counts"]["unique_posts"], 5)
+        pilot = build(source, self.vocab, self.root / "limited", batch_size=1, max_rows=2)
+        self.assertEqual(pilot["counts"]["input_rows"], 2)
+        self.assertEqual(pilot["provenance"]["max_rows"], 2)
+
+    def test_ascii_boundary_with_final_vocabulary(self):
+        path = Path(__file__).parents[1] / "vocabularies/strict_v1/vocabulary.json"
+        vocab = Vocabulary(path)
+        self.assertIn("AI", vocab.match("讨论AI技术"))
+        self.assertNotIn("AI", vocab.match("RAISE"))
+        self.assertNotIn("NBA", vocab.match("WNBA"))
+        self.assertIn("NBA", vocab.match("看NBA比赛"))
+
+    def test_final_vocabulary_end_to_end(self):
+        vocab = Path(__file__).parents[1] / "vocabularies/strict_v1/vocabulary.json"
+        run = self.root / "final_run"
+        records = [self.row("final1", "f", "f", "综艺", "NBA", True), self.row("final2", "m", "m", "芯片", "", False)]
+        build_records(records, vocab, run, 2020)
+        summarize(run / "behavior.sqlite", self.root / "final_summary")
+        with database(run / "behavior.sqlite") as conn:
+            materialize(conn, list(Vocabulary(vocab).rules))
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM domains").fetchone()[0], 5)
+            self.assertEqual(conn.execute("SELECT retweet_count,expression_count FROM user_domain WHERE user_id='f' AND domain='sports'").fetchone(), (1, 0))
+            self.assertEqual(conn.execute("SELECT expression_count FROM user_domain WHERE user_id='f' AND domain='arts'").fetchone()[0], 1)
 
     def test_semantic_axes_and_missing_anchors(self):
         vectors = self.root / "vectors.vec"

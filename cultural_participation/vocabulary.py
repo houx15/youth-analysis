@@ -11,6 +11,10 @@ URL = re.compile(r"https?://[^\s]+(?:\s*网页链接)?")
 PLACEHOLDERS = {"", "转发", "转发微博", "轉發微博", "repost"}
 
 
+def ascii_token(char):
+    return char.isascii() and (char.isalnum() or char == "_")
+
+
 def clean_text(value):
     if not isinstance(value, str):
         return ""
@@ -70,6 +74,11 @@ class Vocabulary:
                 if None in node:
                     term = node[None]
                     rule = self.rules[term]
+                    # ASCII词不能命中更长英文/数字标识内部；中文邻接不阻断。
+                    if (ascii_token(term[0]) and start and ascii_token(text[start - 1])) or (
+                        ascii_token(term[-1]) and index + 1 < len(text) and ascii_token(text[index + 1])
+                    ):
+                        continue
                     if rule["decision"] == "standalone" or any(x in text for x in rule["context_any"]):
                         found.add(term)
         return sorted(found)
