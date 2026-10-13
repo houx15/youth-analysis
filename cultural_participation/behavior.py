@@ -79,6 +79,8 @@ def build_records(records, vocabulary, output, year, provenance=None):
         conn.commit()
         for row in records:
             counts["input_rows"] += 1
+            if counts["input_rows"] % 100000 == 0:
+                print(f"已读取{counts['input_rows']:,}行；此前已保留{counts['unique_posts']:,}条去重微博", flush=True)
             uid, pid = normalize_id(row.get("user_id")), normalize_id(row.get("weibo_id"))
             if not uid or not pid:
                 counts["missing_id"] += 1
@@ -133,7 +135,6 @@ def build_records(records, vocabulary, output, year, provenance=None):
 
 def build(input_dir, vocabulary, output, year=2020, batch_size=5000, pattern="*.parquet", max_rows=None):
     import pyarrow.parquet as pq
-    from tqdm import tqdm
 
     if batch_size < 1:
         raise ValueError("batch_size 必须为正数")
@@ -160,5 +161,4 @@ def build(input_dir, vocabulary, output, year=2020, batch_size=5000, pattern="*.
     records = parquet_rows(files, batch_size)
     if max_rows is not None:
         records = islice(records, max_rows)
-    with tqdm(records, total=min(total_rows, max_rows) if max_rows else total_rows, desc="匹配微博", unit="条", mininterval=10) as progress:
-        return build_records(progress, vocabulary, output, year, provenance)
+    return build_records(records, vocabulary, output, year, provenance)

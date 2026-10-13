@@ -207,12 +207,12 @@ git pull --ff-only origin main
 module load anaconda/3.11
 source ~/.bash_profile
 conda activate opinion
-python -c "import numpy, pyarrow, tqdm; print('依赖齐全')"
+python -c "import numpy, pyarrow; print('依赖齐全')"
 ```
 
-若检查缺包，在该环境安装缺失的包即可（`python -m pip install numpy pyarrow tqdm`）。行为分析不调用LLM，不需要API key，也不需要jieba。
+若检查缺包，在该环境安装缺失的包即可（`python -m pip install numpy pyarrow`）。行为分析不调用LLM，不需要API key，也不需要jieba。
 
-编辑`cultural_participation/behavior_job.conf`：默认输入`cleaned_weibo_cov/2020`、最终词表`vocabularies/strict_v1/vocabulary.json`、年份2020、前100,000输入行试跑。目录如不同只改INPUT_DIR；子目录嵌套可将PATTERN改为`**/*.parquet`。先提交试跑：
+编辑`cultural_participation/behavior_job.conf`：默认输入`cleaned_weibo_cov/2020`、最终词表`vocabularies/strict_v1/vocabulary.json`、年份2020、MAX_ROWS=0全量运行。目录如不同只改INPUT_DIR；子目录嵌套可将PATTERN改为`**/*.parquet`。直接提交全量：
 
 ```bash
 sbatch run_cultural_behavior.sh
@@ -220,18 +220,11 @@ sbatch run_cultural_behavior.sh
 tail -f job.12345.cultural_behavior.out
 ```
 
-脚本沿用已验证的分区、qos和ntasks-per-node=8及conda启动顺序。内部只运行一个Python进程，不启动8份重复分析。先检查所有匹配Parquet文件的8列schema，再分批读取和匹配，以tqdm显示进度；成功后自动顺序执行汇总。汇总阶段没有逐行进度条，日志会显示阶段切换。输出路径包含SLURM作业ID，避免覆盖。
+脚本沿用已验证的分区、qos和ntasks-per-node=8及conda启动顺序。内部只运行一个Python进程，不启动8份重复分析。先检查所有匹配Parquet文件的8列schema，再分批读取和匹配，每100,000输入行写一条普通进度日志（不使用tqdm）；成功后自动顺序执行汇总。汇总阶段没有逐行进度条，日志会显示阶段切换。输出路径包含SLURM作业ID，避免覆盖。
 
 需要字段：`weibo_id`、`user_id`、`gender`、`is_retweet`、`weibo_content`、`r_weibo_content`、`time_stamp`、`r_time_stamp`。gender接受m/f或男/女；转发标记接受0/1和布尔值；时间戳接受Unix秒或毫秒。字段缺失直接报错；年份外记录、无效标记等在cache/manifest.json计数。八列schema通过不保证实际内容有效，应确认unique_posts、retweets_missing_source等统计及summary/coverage.csv。
 
-试跑仅按文件顺序取前100,000输入行，不是随机样本；不用其性别差异作论文结论。流程和覆盖正常后，将配置修改为：
-
-```bash
-RUN_LABEL="behavior_strict_v1_full"
-MAX_ROWS=0
-```
-
-再执行同一个`sbatch run_cultural_behavior.sh`即可全量运行。结果位于：
+当前默认RUN_LABEL="behavior_strict_v1_full"、MAX_ROWS=0，无需修改即可全量运行。如需工程试跑，可以另设RUN_LABEL并将MAX_ROWS改为正数；这种截取按文件顺序读取，不是随机样本。结果位于：
 
 ```text
 gender_norms/newspaper_data/cultural_participation/behavior_strict_v1_full_<JOBID>/

@@ -14,7 +14,7 @@ set -e
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
 source cultural_participation/behavior_job.conf
 [ "$MAX_ROWS" -ge 0 ]
-python -c "import numpy, pyarrow, tqdm"
+python -c "import numpy, pyarrow"
 RUN_DIR="$OUTPUT_ROOT/${RUN_LABEL}_${SLURM_JOB_ID:-local_$(date +%Y%m%d_%H%M%S)}"
 LIMIT_ARGS=()
 if [ "$MAX_ROWS" -gt 0 ]; then
