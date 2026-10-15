@@ -214,6 +214,10 @@ bash submit_cultural_behavior.sh
 
 配置在`cultural_participation/behavior_job.conf`，默认全量2020，无截取行数限制。输入路径不同只改INPUT_DIR；全新运行使用新的RUN_LABEL。提交脚本只调用sbatch，所有数据处理都在SLURM计算节点运行；保持用户验证过的分区、qos、ntasks-per-node=8和conda初始化顺序。每个作业运行一个Python进程。
 
+提交脚本同时识别Slurm的`Submitted batch job 123`和Crane的`Job id allocated: 123.`，不依赖`--parsable`。如果只有月度任务提交成功，用`bash submit_cultural_behavior.sh --month-job 123`接续；如果用户汇总已提交，用`--reduce-job 456`只补交最后一步。不要重新提交已经在运行的阶段。
+
+运行期间若仅需修复提交脚本，可`git fetch origin main`后用`git show origin/main:submit_cultural_behavior.sh > submit_cultural_behavior.sh`单独更新该文件。不要在月份运行期间切换HEAD或更新分析代码，以免月份manifest的代码版本不一致。
+
 三个阶段自动通过afterok依赖衔接：
 
 1. **12个月份任务，默认最多3个并行**。每批读取8个必要字段，默认50,000行。C实现的Aho-Corasick自动机保留大小写、ASCII边界和重叠词命中；有界缓存复用重复原文的匹配结果。写出每帖特征、命中词列表及用户分片，不逐条写数据库。
