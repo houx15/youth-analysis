@@ -196,41 +196,50 @@ sbatch prepare_cultural_vocabulary.sh
 # 改全量时，在配置中将 MAX_LINES 改为0、RUN_LABEL改为full_2020，然后仍用同一命令。
 ```
 
-### strict_v1在北大服务器启动
+### strict_v1在北大服务器启动（分月Parquet版）
 
-2026-10-13已验证最终3,972词可加载并贯通构建、汇总和五领域输出；使用合成记录及小型真实Parquet文件测试，未在服务器全年语料上执行。原始输入为含文本和用户字段的清洗后Parquet，沿用旧分析的`cleaned_weibo_cov/2020`目录，不是热搜文件或模型输出。
+2026-10-15改用旧分析的效率设计：按月独立处理、内存批量匹配、顺序写Parquet、年度分片汇总。取消旧任务后从原始文件重新开始；不读取旧SQLite缓存。五领域词表及行为指标保持不变。原始输入是`cleaned_weibo_cov/2020/YYYY-MM-DD.parquet`，月份按文件名调度，每条记录仍按北京时间戳过滤年份。
 
-在仓库根目录拉取代码，检查环境依赖：
+在仓库根目录运行：
 
 ```bash
 git pull --ff-only origin main
 module load anaconda/3.11
 source ~/.bash_profile
 conda activate opinion
-python -c "import numpy, pyarrow; print('依赖齐全')"
+python -c "import numpy, pandas, pyarrow, ahocorasick; print('依赖齐全')"
+# 如仅缺ahocorasick：python -m pip install pyahocorasick
+bash submit_cultural_behavior.sh
 ```
 
-若检查缺包，在该环境安装缺失的包即可（`python -m pip install numpy pyarrow`）。行为分析不调用LLM，不需要API key，也不需要jieba。
+配置在`cultural_participation/behavior_job.conf`，默认全量2020，无截取行数限制。输入路径不同只改INPUT_DIR；全新运行使用新的RUN_LABEL。提交脚本只调用sbatch，所有数据处理都在SLURM计算节点运行；保持用户验证过的分区、qos、ntasks-per-node=8和conda初始化顺序。每个作业运行一个Python进程。
 
-编辑`cultural_participation/behavior_job.conf`：默认输入`cleaned_weibo_cov/2020`、最终词表`vocabularies/strict_v1/vocabulary.json`、年份2020、MAX_ROWS=0全量运行。目录如不同只改INPUT_DIR；子目录嵌套可将PATTERN改为`**/*.parquet`。直接提交全量：
+三个阶段自动通过afterok依赖衔接：
+
+1. **12个月份任务，默认最多3个并行**。每批读取8个必要字段，默认50,000行。C实现的Aho-Corasick自动机保留大小写、ASCII边界和重叠词命中；有界缓存复用重复原文的匹配结果。写出每帖特征、命中词列表及用户分片，不逐条写数据库。
+2. **64个年度用户分片，默认最多4个并行**。同一用户全年落在同一分片，在内存中去重、检查性别冲突、汇总年度分子分母，再计算比例。只读取该分片的精简特征，不载入全年原始文本。另用轻量帖子ID分片检查同一帖子是否错误地归属多个用户。BUCKET_COUNT越大，单个汇总任务内存一般越少；分片数必须在首次运行前确定。
+3. **统计汇总任务**。分批读取用户表，输出描述统计、性别差异和跨领域差异；通过两遍批量充分统计量计算OLS与HC1标准误。每个用户等权。
+
+BATCH_SIZE控制原始文本处理的批大小，不控制模型或抽样；MONTH_CONCURRENCY/REDUCE_CONCURRENCY控制同时运行的任务数。日志使用普通文件开始/完成和阶段进度，不使用tqdm。示例：
 
 ```bash
-sbatch run_cultural_behavior.sh
-# 将12345换成返回的作业ID；Ctrl-C停止看日志，不会停止作业。
-tail -f job.12345.cultural_behavior.out
+# 将12345换成提交脚本显示的月度任务ID，1代表一月份。
+tail -f job.12345.1.cultural_month.out
+squeue -u "$USER"
 ```
 
-脚本沿用已验证的分区、qos和ntasks-per-node=8及conda启动顺序。内部只运行一个Python进程，不启动8份重复分析。先检查所有匹配Parquet文件的8列schema，再分批读取和匹配，每100,000输入行写一条普通进度日志（不使用tqdm）；成功后自动顺序执行汇总。汇总阶段没有逐行进度条，日志会显示阶段切换。输出路径包含SLURM作业ID，避免覆盖。
+不要在运行中修改代码、词表或配置。完成的月份/用户分片有manifest及输入版本信息；同配置再次提交会跳过这些分片。失败的临时目录不会作为成功结果读取。如任务失败，先取消旧依赖链中仍等待的汇总任务，再修正问题并重新提交；代码或输入发生变化时改RUN_LABEL从头运行，避免混合版本。月份没有文件会记录为空月；全年没有匹配文件则报错。若某月份失败，可以单独`sbatch --array=月份 run_cultural_behavior.sh`，之后再提交完整依赖链。磁盘需容纳特征和命中词Parquet；旧SQLite文件由用户自行清理。
 
-需要字段：`weibo_id`、`user_id`、`gender`、`is_retweet`、`weibo_content`、`r_weibo_content`、`time_stamp`、`r_time_stamp`。gender接受m/f或男/女；转发标记接受0/1和布尔值；时间戳接受Unix秒或毫秒。字段缺失直接报错；年份外记录、无效标记等在cache/manifest.json计数。八列schema通过不保证实际内容有效，应确认unique_posts、retweets_missing_source等统计及summary/coverage.csv。
-
-当前默认RUN_LABEL="behavior_strict_v1_full"、MAX_ROWS=0，无需修改即可全量运行。如需工程试跑，可以另设RUN_LABEL并将MAX_ROWS改为正数；这种截取按文件顺序读取，不是随机样本。结果位于：
+结果默认位于：
 
 ```text
-gender_norms/newspaper_data/cultural_participation/behavior_strict_v1_full_<JOBID>/
-  cache/behavior.sqlite
-  cache/manifest.json
-  cache/vocabulary.json
+gender_norms/newspaper_data/cultural_participation/behavior_parquet_v2_2020/
+  months/month=01/manifest.json
+  months/month=01/vocabulary.json
+  months/month=01/posts-000.parquet     # 精简帖子特征和命中词
+  months/month=01/owners-000.parquet    # 全局帖子归属检查
+  users/bucket=000/users.parquet
+  users/bucket=000/manifest.json
   summary/user_domain.csv
   summary/descriptives.csv
   summary/gender_gaps.csv
@@ -240,28 +249,9 @@ gender_norms/newspaper_data/cultural_participation/behavior_strict_v1_full_<JOBI
   summary/manifest.json
 ```
 
-若缓存成功而汇总失败，可用下面的summarize入口单独重跑，指定新的汇总输出目录，避免重新匹配。若构建中断，目前不支持续跑，重新提交会用新作业ID建新目录。子抽样另行提交，不默认附带100轮长任务。
+需要字段：weibo_id、user_id、gender、is_retweet、weibo_content、r_weibo_content、time_stamp、r_time_stamp。字段缺失报错；年份外、缺ID、无效转发标记的行数记入月度manifest；去重和性别排除记入用户分片manifest。coverage中的total_posts、total_retweets、total_expression分别对应旧输出posts、retweets、expressive_posts。汇总目录已存在则拒绝重复提交，防止覆盖结果。
 
-需要分开运行各阶段时（run 输出目录必须尚不存在）：
-
-```bash
-sbatch run_cultural_analysis.sh build \
-  --input-dir cleaned_weibo_cov/2020 \
-  --vocabulary /path/to/reviewed_vocabulary.json \
-  --output gender_norms/newspaper_data/cultural_participation/behavior_v1 --year 2020
-
-# build 完成后单独提交，不能与前一步无依赖并发运行。
-sbatch run_cultural_analysis.sh summarize \
-  --db gender_norms/newspaper_data/cultural_participation/behavior_v1/behavior.sqlite \
-  --output gender_norms/newspaper_data/cultural_participation/summary_v1
-
-sbatch run_cultural_analysis.sh subsample \
-  --db gender_norms/newspaper_data/cultural_participation/behavior_v1/behavior.sqlite \
-  --output gender_norms/newspaper_data/cultural_participation/subsample_v1 \
-  --fractions 0.5 0.8 0.9 --repeats 100 --seed 2020
-```
-
-输入从 parquet 每次只读八个必要字段、默认5000行，不能用 pandas 整年载入。SQLite 在磁盘保存全局去重帖子及命中关系，汇总使用磁盘临时表。全量运行需要足够磁盘空间；当前单作业无断点续跑，失败输出不具备 complete 标记，不能继续汇总。不要用月度数组后直接加总用户比例；不同月份用户重叠，必须统一分母。
+合成数据测试比较新旧用户指标、性别差异、跨领域差异和HC1标准误，并检查跨月重复、性别冲突及帖子归属冲突。尚未在北大全年数据上验证速度和峰值内存，不承诺具体完成时间。原SQLite版`research build/summarize/subsample`保留供旧结果兼容，不用于这次全量运行。新Parquet保存逐词命中，但**删词重采样入口尚未迁移**，不能将新分片传给旧的`subsample --db`。
 
 ### 行为口径与输出
 
