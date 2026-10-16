@@ -389,3 +389,47 @@ python -m cultural_participation.behavior_semantic_link \
 生成器：`python -m cultural_participation.derive_vocabularies`，已有目录时拒绝覆盖。已核对接口兼容、互斥、数量、子集关系和排序。原词表保留，新词表行为结果尚未重算；当前运行配置不修改，避免影响已有任务。两版本必须分开存储结果，不能混用旧词表哈希或旧领域统计。复用逐帖命中词重聚合时，同帖同域多个词仍只计一次。
 
 等规模版本用于检验对词表规模及高频词选择的敏感性，不能预先称已确认词数不影响结果。词项互斥不要求微博内容只涉及单一领域。
+
+### 两版原始微博重跑：月度频次、分布、活动量匹配、年龄／地区
+
+本轮按用户要求从`cleaned_weibo_cov/2020`重新扫描，两套词表独立匹配，不读取旧运行的逐帖命中结果。配置为`cultural_participation/extended_job.conf`，新输出根目录为`gender_norms/newspaper_data/cultural_participation/exclusive_behavior_v1_2020/`。原始月度处理沿用已验证的批读取和64用户桶架构，不使用数据库，不使用tqdm。3个月为一个提交任务，每月顺序处理两版词表。
+
+先核对配置中的原始数据、画像CSV和ID映射路径。画像默认沿用旧`user_profile_analysis.py`的`/gpfs/share/home/2401111059/cov-weibo-2/COV-Weibo2.0/user.csv`及`data/weibo_cov_user_to_original_id.json`。读取CSV的user_id、birthday、province三列，分块过滤到本轮用户；先用映射恢复原始微博ID。如果使用已是原始微博ID的CSV，将ID_MAPPING设为空字符串。不会根据年龄预先删除主样本。
+
+在仓库根目录依次执行：
+
+```bash
+git pull --ff-only origin main
+sbatch run_cultural_exclusive_months.sh 1 2 3
+sbatch run_cultural_exclusive_months.sh 4 5 6
+sbatch run_cultural_exclusive_months.sh 7 8 9
+sbatch run_cultural_exclusive_months.sh 10 11 12
+```
+
+等四个任务全部成功（两版各12个月）后：
+
+```bash
+sbatch reduce_cultural_exclusive.sh
+```
+
+等64个数组分片全部成功后：
+
+```bash
+sbatch summarize_cultural_exclusive.sh
+```
+
+不使用自动依赖或`--parsable`。整个运行期间不修改代码、配置和词表，避免月份来源版本不一致。失败任务可原命令重提，完成且版本一致的月份、分桶、匹配与汇总可跳过；不删除已成功结果。请勿将新任务指向旧输出目录。配置BUCKET_COUNT固定64，与分桶提交脚本一致；改动时必须同步调整数组范围。
+
+**输出口径：**
+
+- `monthly_users/`：每个年度有效用户补齐12个月。每月领域表达、转发次数；不参与记零；无分母的份额和无有效间隔的时间指标记缺失。跨月重复帖先全年去重，再按真实发帖月份归属。
+- `extended_summary/descriptives.csv`：各月及年度用户统计的均值、标准差、标准误、零值比例、有效用户数。`annual_user`下表达／转发次数为每用户全年次数除12；时间指标为用户全年有效转发间隔均值，不按12除。秒数与log(1+秒)均输出；秒数由逐帖缓存log间隔还原。
+- `extended_summary/distributions.csv`：固定区间频数、比例、累计比例，覆盖零值和长尾，区间为左闭右开。不把直方图近似当作精确中位数／分位数。
+- `extended_summary/gender_gaps.csv`：相应分组女性均值减男性均值；当前匹配与分层比较报告描述性均值差，不输出未经配对处理的差异置信区间。描述表中的标准误是单个性别的均值标准误，不是配对差异的标准误。
+- `annual_summary/`：继续输出原来的年度进入、份额、时间、同域附言，以及未调整／活动量调整OLS和跨领域比较。该结果覆盖全体样本，不是匹配样本回归。
+
+**匹配：**使用全年总发帖、总转发、活跃天数的log1p值，以0.25为固定宽度分箱；在三维分箱完全一致的格内按固定随机种子20261016男女1:1无放回抽取。它是粗化精确匹配，不是倾向得分匹配；领域行为不进入匹配变量。两版年度用户及活动量须完全相同，否则中止；两版共用同一匹配名单。`sample/matching_balance.csv`提供原始尺度与log尺度的均值及SMD，SMD使用匹配前合并组内标准差作为固定分母。必须检查实际保留人数及平衡，不能因运行成功就宣称匹配充分。`stratified_balance.csv`另列年龄／地区内的log活动量平衡；全局匹配不保证各分层内部也平衡。
+
+**画像：**年龄=2020减出生年，分为0–13、14–15、16–17、18–20、21–30、31+，同时输出单岁年龄分布。无效生日、未知地区单列Unknown；冲突生日或冲突大区设缺失。地区采用旧项目东部／中部／西部／东北四大区，接受省份名称和两位代码。无画像者仍进入总体结果。`profile_coverage.csv`与`sample_coverage.csv`报告分性别有效率、匹配保留及分层人数。画像无任何ID交集时直接报错，提醒修正路径／ID映射。
+
+最终下载新根目录下`exclusive_review.tar.gz`，其中有两版小型年度和扩展结果，以及匹配、画像诊断；不含用户明细和原始数据。本地还没有本轮真实结果，服务器运行后再作比较和日期前缀PDF绘图。不要把前一轮多领域词表的结果称作本轮结果。
