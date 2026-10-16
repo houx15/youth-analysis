@@ -364,3 +364,13 @@ sbatch summarize_cultural_terms.sh
 汇总程序会检查所有分桶、来源及词表一致性。它输出全部词项的描述统计，以及转发参与、表达参与、份额、转发时间和附言指标的未调整／活动量调整性别差异。无可估计结果保留状态，不以零替代。程序逐桶读入，避免全年用户×词项矩阵。原始年度行为结果不覆盖。
 
 完成后下载日志末尾显示的`term_summary_review.tar.gz`，放到本地`cultural_participation/outputs/`。其中包含`term_descriptives.csv`、`term_gender_gaps.csv`、`term_coverage.csv`和`manifest.json`。这一步尚未在服务器执行；本地合成数据已检验与既有单词行为分析结果一致。只有拿到这些词项结果后，才能联结行为与语义，不能把五领域系数复制给各词。
+
+词项汇总包返回后，将四个文件解压到独立目录（例如`outputs/term_summary_v1/`），运行：
+
+```bash
+python -m cultural_participation.behavior_semantic_link \
+  --behavior cultural_participation/outputs/term_summary_v1 \
+  --date 20261016
+```
+
+日期改为实际分析日期。该入口核对行为／语义词表哈希、词项集合及指标完整性，生成词项联结审计表、总体与领域内Pearson/Spearman描述、稀疏度／已标记人物排除检验，以及8页PDF。20和100名参与用户只是稀疏度敏感性阈值，主分析保留全部有向量且可估计词项。它不把跨词系数当作独立观测做常规显著性检验。当前只完成程序验证，尚无真实词项行为联结结果。
