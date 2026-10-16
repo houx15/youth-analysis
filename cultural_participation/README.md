@@ -334,3 +334,9 @@ sbatch reextract_cultural_vocabulary.sh
 脚本沿用已跑通的调度和Anaconda初始化方式。`reextract_cultural_vocabulary.py` 已将输入设为 `gender_norms/newspaper_data/cultural_participation/pilot_2020_17028/topics.sqlite`，输出为 `full_2020_v2_<作业ID>/`。如果旧数据库被移动，修改该Python文件顶部的 `SOURCE_DB`。
 
 此步骤只复制独立标题和来源元信息到新库、重新提词，不重扫305个原始文件，也不覆盖旧库。抓取明细仍保存在旧库，新manifest记录原库位置；新库的occurrences表不复制原抓取明细。新结果仍需对比分词覆盖和规模，不预先保证词数或精度。`prepare_cultural_vocabulary.sh` 全流程也已使用新版提词逻辑。
+
+### 2026-10-16 行为结果与论文图
+
+已基于服务器汇总包完成五领域的描述、活动量调整前后对比、转发时间与同域附言、跨领域份额差异分析。详见[阶段报告](reports/20261016_behavior_analysis.md)和[四页PDF图集](reports/20261016_cultural_participation_figures.pdf)。图沿用既有性别配色、标记、字体与日期前缀；所有图中的估计和区间来自服务器结果，没有在本地重新拟合模型。
+
+复现：`python3 -m cultural_participation.result_report --date 20261016`。输入是`outputs/summary_review.tar.gz`；小型结果表、PDF和报告入库，原始大数据不入库。阶段报告包含针对本轮数据的解释，生成器用输入哈希防止新数据误用旧叙述。
