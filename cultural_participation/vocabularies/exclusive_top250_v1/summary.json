@@ -1,0 +1,960 @@
+{
+  "source": "cultural_participation/vocabularies/strict_v1/vocabulary.json",
+  "source_version": "strict-v1-2026-10-13",
+  "source_sha256": "c18b17eac84fd87717844f2a898702144be6d5cf4406e01f756c2e8059216fe6",
+  "analysis_role": "vocabulary-size robustness",
+  "cross_domain_policy": "Remove every multi-domain term; no reassignment.",
+  "frequency_definition": "Number of distinct hot-search titles containing a term; not Weibo occurrence frequency.",
+  "selection_order": "descending distinct_title_count, then ascending Unicode term",
+  "top_n_per_domain": 250,
+  "terms": 1250,
+  "domain_counts": {
+    "politics": 250,
+    "business": 250,
+    "technology": 250,
+    "sports": 250,
+    "arts": 250
+  },
+  "excluded_multi_domain_terms": 134,
+  "excluded_multi_domain": [
+    {
+      "term": "华为",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "票房",
+      "domains": [
+        "arts",
+        "business"
+      ]
+    },
+    {
+      "term": "SpaceX",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "福奇",
+      "domains": [
+        "politics",
+        "technology"
+      ]
+    },
+    {
+      "term": "爱奇艺",
+      "domains": [
+        "arts",
+        "business"
+      ]
+    },
+    {
+      "term": "芯片",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "TikTok",
+      "domains": [
+        "business",
+        "politics",
+        "technology"
+      ]
+    },
+    {
+      "term": "亚马逊",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "公积金",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "谷歌",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "反垄断",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "关税",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "弹幕",
+      "domains": [
+        "arts",
+        "technology"
+      ]
+    },
+    {
+      "term": "时装",
+      "domains": [
+        "arts",
+        "business"
+      ]
+    },
+    {
+      "term": "养老金",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "阅文",
+      "domains": [
+        "arts",
+        "business"
+      ]
+    },
+    {
+      "term": "支付宝",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "走私",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "Facebook",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "市场监管",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "iPad",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "智能手机",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "国债",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "手游",
+      "domains": [
+        "arts",
+        "technology"
+      ]
+    },
+    {
+      "term": "纳税",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "OPPO",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "RCEP",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "中国移动",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "电动汽车",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "IMF",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "iPhoneSE",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "中兴通讯",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "任正非",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "熔喷布",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "科技部",
+      "domains": [
+        "politics",
+        "technology"
+      ]
+    },
+    {
+      "term": "舞狮",
+      "domains": [
+        "arts",
+        "sports"
+      ]
+    },
+    {
+      "term": "高通",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "C919",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "世贸组织",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "个税",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "电子竞技",
+      "domains": [
+        "sports",
+        "technology"
+      ]
+    },
+    {
+      "term": "美国商务部",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "IT",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "自贸港",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "737MAX",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "APEC",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "Uber",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "两弹一星",
+      "domains": [
+        "politics",
+        "technology"
+      ]
+    },
+    {
+      "term": "人造肉",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "优步",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "储备粮",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "半导体",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "反倾销税",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "增值税",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "带薪休假",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "所得税",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "搜狗",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "施瓦辛格",
+      "domains": [
+        "arts",
+        "politics"
+      ]
+    },
+    {
+      "term": "榫卯",
+      "domains": [
+        "arts",
+        "technology"
+      ]
+    },
+    {
+      "term": "流媒体",
+      "domains": [
+        "arts",
+        "technology"
+      ]
+    },
+    {
+      "term": "硅谷",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "福彩",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "网约车",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "韩寒",
+      "domains": [
+        "arts",
+        "sports"
+      ]
+    },
+    {
+      "term": "CPTPP",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "IBM",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "Nike",
+      "domains": [
+        "business",
+        "sports"
+      ]
+    },
+    {
+      "term": "WTO",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "世界银行",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "中央财政",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "亚投行",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "体彩",
+      "domains": [
+        "business",
+        "sports"
+      ]
+    },
+    {
+      "term": "加税",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "印花税",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "反倾销",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "品玩",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "国家统计局",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "最低工资",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "电信业务",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "电影院线",
+      "domains": [
+        "arts",
+        "business"
+      ]
+    },
+    {
+      "term": "科兴",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "科技股",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "税务总局",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "税收",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "纳税人",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "联发科",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "英特尔",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "补税",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "风电",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "12306APP",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "F35A",
+      "domains": [
+        "politics",
+        "technology"
+      ]
+    },
+    {
+      "term": "FF91",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "GoPro",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "Google",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "Moderna",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "chinajoy",
+      "domains": [
+        "arts",
+        "technology"
+      ]
+    },
+    {
+      "term": "亚太经济合作组织",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "价格政策",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "佳能",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "公有化",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "动力电池",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "医疗保险",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "国有企业",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "国资",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "国资委",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "国际货币基金组织",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "契税",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "小红书",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "币圈",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "改革开放",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "最惠国",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "李小龙",
+      "domains": [
+        "arts",
+        "sports"
+      ]
+    },
+    {
+      "term": "欧洲央行",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "法国文化部",
+      "domains": [
+        "arts",
+        "politics"
+      ]
+    },
+    {
+      "term": "深圳经济特区",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "王安石",
+      "domains": [
+        "arts",
+        "politics"
+      ]
+    },
+    {
+      "term": "生物战",
+      "domains": [
+        "politics",
+        "technology"
+      ]
+    },
+    {
+      "term": "电子政务",
+      "domains": [
+        "politics",
+        "technology"
+      ]
+    },
+    {
+      "term": "矿业权",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "稀土矿",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "税率",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "米高梅",
+      "domains": [
+        "arts",
+        "business"
+      ]
+    },
+    {
+      "term": "经济制裁",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "经济特区",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "统收统支",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "缴税",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "网上药店",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "苏轼",
+      "domains": [
+        "arts",
+        "politics"
+      ]
+    },
+    {
+      "term": "范仲淹",
+      "domains": [
+        "arts",
+        "politics"
+      ]
+    },
+    {
+      "term": "财政收入",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "进口关税",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "退税",
+      "domains": [
+        "business",
+        "politics"
+      ]
+    },
+    {
+      "term": "酷派",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    },
+    {
+      "term": "金立",
+      "domains": [
+        "business",
+        "technology"
+      ]
+    }
+  ]
+}
