@@ -400,10 +400,10 @@ python -m cultural_participation.behavior_semantic_link \
 
 ```bash
 git pull --ff-only origin main
-sbatch run_cultural_exclusive_months.sh 1 2 3
-sbatch run_cultural_exclusive_months.sh 4 5 6
-sbatch run_cultural_exclusive_months.sh 7 8 9
-sbatch run_cultural_exclusive_months.sh 10 11 12
+sbatch run_cultural_exclusive_q1.sh
+sbatch run_cultural_exclusive_q2.sh
+sbatch run_cultural_exclusive_q3.sh
+sbatch run_cultural_exclusive_q4.sh
 ```
 
 等四个任务全部成功（两版各12个月）后：
@@ -433,3 +433,5 @@ sbatch summarize_cultural_exclusive.sh
 **画像：**年龄=2020减出生年，分为0–13、14–15、16–17、18–20、21–30、31+，同时输出单岁年龄分布。无效生日、未知地区单列Unknown；冲突生日或冲突大区设缺失。地区采用旧项目东部／中部／西部／东北四大区，接受省份名称和两位代码。无画像者仍进入总体结果。`profile_coverage.csv`与`sample_coverage.csv`报告分性别有效率、匹配保留及分层人数。画像无任何ID交集时直接报错，提醒修正路径／ID映射。
 
 最终下载新根目录下`exclusive_review.tar.gz`，其中有两版小型年度和扩展结果，以及匹配、画像诊断；不含用户明细和原始数据。本地还没有本轮真实结果，服务器运行后再作比较和日期前缀PDF绘图。不要把前一轮多领域词表的结果称作本轮结果。
+
+服务器Crane包装器拒绝在sbatch脚本名后附多个参数，因此月份固定在q1–q4四个提交脚本内。请先进入仓库根目录，再无参数提交；q1为1–3月、q2为4–6月、q3为7–9月、q4为10–12月。输出路径与原设计完全相同。

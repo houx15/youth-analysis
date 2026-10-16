@@ -15,7 +15,7 @@ test -d "$INPUT_DIR" || { echo "原始数据目录不存在：$INPUT_DIR"; exit 
 test -f "$PROFILE_CSV" || { echo "画像CSV不存在：$PROFILE_CSV"; exit 1; }
 if [ -n "$ID_MAPPING" ]; then test -f "$ID_MAPPING" || { echo "ID映射不存在：$ID_MAPPING"; exit 1; }; fi
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
-if [ "$#" -eq 0 ]; then echo '请指定月份，例如 sbatch run_cultural_exclusive_months.sh 1 2 3'; exit 1; fi
+if [ "$#" -eq 0 ]; then echo '请改用无参数脚本：sbatch run_cultural_exclusive_q1.sh（另有q2、q3、q4）'; exit 1; fi
 for month in "$@"; do
     for version in exclusive_full_v1 exclusive_top250_v1; do
         python -u -m cultural_participation.parquet_behavior month \
