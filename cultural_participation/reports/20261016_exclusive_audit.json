@@ -1,0 +1,51 @@
+{
+  "exclusive_full_v1_month_files": {
+    "1": 31,
+    "2": 29,
+    "3": 31,
+    "4": 30,
+    "5": 31,
+    "6": 29,
+    "7": 31,
+    "8": 31,
+    "9": 5,
+    "10": 0,
+    "11": 24,
+    "12": 31
+  },
+  "exclusive_full_v1": {
+    "vocabulary_sha256": "f9ad303f162837e34b83050c28d5bc37edb652ba45d4ceb6b89baad0166e24c9",
+    "source_git": "857ec43130a2acf6b03964cd1a56775c1ce062e7",
+    "unique_posts": 144934465,
+    "sample_sha256": "7a1cd93a867f4dc5e37278ffb1776f906f9e72000befad143168a3363b2cf6e0"
+  },
+  "exclusive_top250_v1_month_files": {
+    "1": 31,
+    "2": 29,
+    "3": 31,
+    "4": 30,
+    "5": 31,
+    "6": 29,
+    "7": 31,
+    "8": 31,
+    "9": 5,
+    "10": 0,
+    "11": 24,
+    "12": 31
+  },
+  "exclusive_top250_v1": {
+    "vocabulary_sha256": "d7d26486f3da20bc1d49e872238dbd76022b5ee40dcb9b04a14309fa1f05900e",
+    "source_git": "857ec43130a2acf6b03964cd1a56775c1ce062e7",
+    "unique_posts": 144934465,
+    "sample_sha256": "7a1cd93a867f4dc5e37278ffb1776f906f9e72000befad143168a3363b2cf6e0"
+  },
+  "input_sha256": "239c11861627840a6478cb837c74e45e693c69c4825e99aa15dad314f204744a",
+  "checks": [
+    "vocabulary hashes",
+    "12 complete month manifests",
+    "same matching sample",
+    "female-minus-male identity",
+    "monthly frequency annual identity",
+    "histogram count conservation"
+  ]
+}
