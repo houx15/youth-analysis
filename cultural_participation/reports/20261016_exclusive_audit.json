@@ -47,5 +47,7 @@
     "female-minus-male identity",
     "monthly frequency annual identity",
     "histogram count conservation"
-  ]
+  ],
+  "interpretation_status": "historical_sample_population_unverified",
+  "scope_note": "全部225339用户按外接生日为0–16岁；样本来源待核实，全部结果不得外推为全量用户结论。"
 }

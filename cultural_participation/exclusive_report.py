@@ -75,7 +75,9 @@ def style(ax):
 
 def finish(fig,title,note):
     fig.suptitle(title,fontsize=13);fig.text(.5,.015,note,ha='center',fontsize=8)
-    fig.tight_layout(rect=(0,.045,1,.94));return fig
+    fig.text(.5,.925,'HISTORICAL SAMPLE | Source population unverified; no population-wide inference',
+             ha='center',fontsize=9,color='#9b3333')
+    fig.tight_layout(rect=(0,.045,1,.90));return fig
 
 
 def annual(data,version,sample='matched',stratum='all'):
@@ -165,7 +167,7 @@ def figures(data,sample):
     b=sample['stratified_balance'];b=b[(b.stratum=='age_group')&(b['sample']=='matched')]
     for variable,g in b.groupby('variable'):axes[1].plot(g.level,g.smd,marker='o',label=variable)
     axes[1].axhline(.1,color='gray',ls='--');axes[1].axhline(-.1,color='gray',ls='--');axes[1].set_ylabel('Within-group log-activity SMD');axes[1].legend(fontsize=8);style(axes[1])
-    yield '08_age_diagnostic',finish(fig,'Age diagnostics | Substantive age interpretation withheld','Recorded age includes many values 0-9; verify birthday semantics. Global matching does not balance all age strata.')
+    yield '08_age_diagnostic',finish(fig,'Age diagnostics | Sample provenance unresolved','All 225,339 users have recorded ages 0-16. Verify upstream selection and birthday semantics before generalizing any result.')
 
 
 def md(df):
@@ -178,6 +180,14 @@ def main():
     table_dir=out/f'{a.date}_exclusive_tables';table_dir.mkdir(exist_ok=True)
     for name,table in sample.items():table.to_csv(table_dir/f'{name}.csv',index=False)
     for v,tables in data.items():
+        monthly=tables['d']
+        monthly=monthly[(monthly.period!='annual_user')&(monthly.stratum=='all')].copy()
+        month_numbers=monthly.period.str[-2:].astype(int)
+        monthly['source_file_count']=month_numbers.map(audit[v+'_month_files'])
+        monthly['observation_status']=np.select(
+            [month_numbers.eq(10),month_numbers.isin([6,9,11])],
+            ['no_observation','partial_coverage'],default='complete_by_manifest')
+        monthly.to_csv(table_dir/f'{v}_monthly.csv',index=False)
         for name,t in tables.items():
             if name in ['d','gaps']:t=t[t.period=='annual_user']
             if name=='dist':t=t[t.stratum=='all']
@@ -202,9 +212,15 @@ def main():
     expected_hash='239c11861627840a6478cb837c74e45e693c69c4825e99aa15dad314f204744a'
     # 本阶段解释对应当前结果包，换数据时必须重新审阅叙述。
     if audit['input_sha256']!=expected_hash:raise ValueError('结果包变更，请复核本阶段文字解释后更新输入哈希')
-    report=f'''# 互斥词表两版本：行为分析阶段报告
+    audit['interpretation_status']='historical_sample_population_unverified'
+    audit['scope_note']='全部225339用户按外接生日为0–16岁；样本来源待核实，全部结果不得外推为全量用户结论。'
+    report=f'''# 互斥词表两版本：历史样本行为分析阶段报告
+
+> 归档状态：样本范围待核实。全部225,339用户按外接生日计算均为0–16岁。这关系到整批用户的来源与选择机制，影响所有总体、匹配、地区及时间结果的外推资格，不能仅作为年龄字段问题处理。本文“全量词表”仅指3,838词，“全部样本”仅指本包用户，均不表示全量微博用户。
 
 日期：{a.date}。数据为2020年观测微博。全量互斥词表3,838词；稳健性词表各域250词，共1,250词。词频为独立热搜标题数。两版均从原始微博重新匹配。
+
+清单确认实际输入为`/gpfs/share/home/2401111059/youth_analysis/cleaned_weibo_cov/2020`。本地旧上游代码指向youth筛选链，但尚不能证明服务器实际文件如何生成。用户说明后来已改为全量；这项说明尚未与本包输入建立可核验的生成链。另行计划从`/gpfs/share/home/2401111059/cleaned_weibo_data`重建2020—2025年数据，先做2020；本归档没有执行该重建。
 
 ## 已核验的数据与匹配
 
@@ -236,20 +252,21 @@ def main():
 
 男性地区可用率{profile.loc['m','n_region_known']/profile.loc['m','n_users']:.2%}，女性{profile.loc['f','n_region_known']/profile.loc['f','n_users']:.2%}；Unknown组单列。已知四大区的匹配后log活动量SMD绝对值均低于0.10，但Unknown组总转发约-0.121，仍有残余差异。
 
-## 年龄结果暂不作实质解释
+## 年龄诊断揭示样本来源问题
 
-按birthday取2020减出生年后，{invalid_fraction:.2%}用户为0–9岁，85.19%为0–13岁，记录年龄最大16岁。这里有明显的字段含义／有效性疑问，尚不能把这些记录直接当成真实年龄。需确认生日是否匿名化或有特殊编码；本报告保留单岁分布和分组表，但暂不报告年龄差异的社会学结论。
+按外接birthday取2020减出生年后，全部225,339用户的记录年龄为0–16岁，其中{invalid_fraction:.2%}为0–9岁，85.19%为0–13岁。需要同时核实样本筛选链、生日字段含义及连接过程；目前既不能确认这些是真实年龄，也不能确认样本代表全量用户或真实未成年人总体。本报告保留单岁分布和分组表供来源诊断，暂不解释年龄组的社会学差异。
 
 此外，全局匹配不保证年龄组内匹配：14–15、16–17记录组的log转发量SMD仍约0.282、0.315；年龄组内最大活动量SMD为{young_balance:.3f}。即使生日含义得到确认，也不能将目前这些组称为活动量已充分平衡的年龄组。
 
 ## 当前结论与后续边界
 
-本轮直接支持：在互斥词表、等规模高频词表及总体活动量匹配下，男女的领域表达／转发配置方向保持一致；已知地区分层也重复这一方向。它比第一轮更充分回应了词表重叠、词数不等和总体活动量差异的担忧。强度并非完全不变，时间间隔也没有同样整齐的模式。年龄字段问题不影响不使用年龄的总体匹配与领域统计，但阻止年龄分层解释。
+本轮仅支持对这批来源待核实用户的描述：在互斥词表、等规模高频词表及总体活动量匹配下，男女的领域表达／转发配置方向保持一致；已知地区分层也重复这一方向。强度并非完全不变，时间间隔也没有同样整齐的模式。词表检验与活动量平衡不能修复样本选择偏差。数值计算可留作历史记录，但全部结果的总体适用范围均未确立，不得表述为2020年全量微博用户、中国青年或真实未成年人总体的结论。
 
 语义、声望与性别观念的测量不在本包内；本报告不将行为差异转换为价值贬抑结论。匹配／地区频次图是描述性均值，不含未经配对估计的差异区间。
 
 ## 产物
 
+- [中文阶段归档总结]({a.date}_exclusive_stage_summary.md)
 - [八页PDF图集]({a.date}_exclusive_figures.pdf)
 - [小型结果与诊断表]({a.date}_exclusive_tables/)
 - [输入与一致性核验]({a.date}_exclusive_audit.json)
