@@ -1,0 +1,215 @@
+{
+  "version": "zh-cultural-axes-pilot-20261016",
+  "status": "researcher-proposed Chinese anchors; not survey-validated",
+  "method": "normalize word vectors; average positive-negative paired differences; normalize axis; cosine projection",
+  "selection_policy": "defined before scores; no selection on expected gender-prestige correlation",
+  "sources": [
+    "https://github.com/KnowledgeLab/GeometryofCulture",
+    "https://wenhaojiangsoc.github.io/assets/pdf/PAPER%20Jiang%202025.pdf"
+  ],
+  "axes": {
+    "gender": {
+      "label": "Female association",
+      "positive_meaning": "female",
+      "negative_meaning": "male",
+      "pairs": [
+        [
+          "女性",
+          "男性"
+        ],
+        [
+          "女人",
+          "男人"
+        ],
+        [
+          "女子",
+          "男子"
+        ],
+        [
+          "女士",
+          "男士"
+        ]
+      ]
+    },
+    "prestige": {
+      "label": "Esteem (candidate prestige)",
+      "positive_meaning": "social respect",
+      "negative_meaning": "social contempt",
+      "pairs": [
+        [
+          "尊敬",
+          "轻视"
+        ],
+        [
+          "敬重",
+          "鄙视"
+        ],
+        [
+          "尊重",
+          "蔑视"
+        ],
+        [
+          "尊崇",
+          "鄙夷"
+        ]
+      ]
+    },
+    "status": {
+      "label": "Status hierarchy",
+      "positive_meaning": "high social standing",
+      "negative_meaning": "low social standing",
+      "pairs": [
+        [
+          "高贵",
+          "卑贱"
+        ],
+        [
+          "尊贵",
+          "低贱"
+        ],
+        [
+          "显赫",
+          "卑微"
+        ]
+      ]
+    },
+    "cultivation": {
+      "label": "Cultivation",
+      "positive_meaning": "cultivated",
+      "negative_meaning": "uncultivated",
+      "pairs": [
+        [
+          "文雅",
+          "粗俗"
+        ],
+        [
+          "高雅",
+          "庸俗"
+        ],
+        [
+          "优雅",
+          "粗鄙"
+        ],
+        [
+          "博学",
+          "无知"
+        ]
+      ]
+    },
+    "potency": {
+      "label": "Potency",
+      "positive_meaning": "powerful",
+      "negative_meaning": "weak",
+      "pairs": [
+        [
+          "强大",
+          "弱小"
+        ],
+        [
+          "强势",
+          "弱势"
+        ],
+        [
+          "强劲",
+          "软弱"
+        ],
+        [
+          "有力",
+          "无力"
+        ]
+      ]
+    },
+    "morality": {
+      "label": "Moral evaluation",
+      "positive_meaning": "moral worth",
+      "negative_meaning": "moral disapproval",
+      "pairs": [
+        [
+          "善良",
+          "邪恶"
+        ],
+        [
+          "诚实",
+          "虚伪"
+        ],
+        [
+          "正直",
+          "奸诈"
+        ],
+        [
+          "公正",
+          "不公"
+        ]
+      ]
+    },
+    "affluence": {
+      "label": "Affluence",
+      "positive_meaning": "wealthy",
+      "negative_meaning": "poor",
+      "pairs": [
+        [
+          "富裕",
+          "贫穷"
+        ],
+        [
+          "富有",
+          "贫困"
+        ],
+        [
+          "富足",
+          "贫乏"
+        ],
+        [
+          "富贵",
+          "贫贱"
+        ]
+      ]
+    },
+    "gender_kinship": {
+      "label": "Gender: kinship sensitivity",
+      "positive_meaning": "female kin",
+      "negative_meaning": "male kin",
+      "pairs": [
+        [
+          "母亲",
+          "父亲"
+        ],
+        [
+          "女儿",
+          "儿子"
+        ],
+        [
+          "妻子",
+          "丈夫"
+        ],
+        [
+          "姐妹",
+          "兄弟"
+        ],
+        [
+          "姐姐",
+          "哥哥"
+        ],
+        [
+          "妹妹",
+          "弟弟"
+        ]
+      ]
+    },
+    "gender_pronoun": {
+      "label": "Gender: pronoun sensitivity",
+      "positive_meaning": "female pronouns",
+      "negative_meaning": "male pronouns",
+      "pairs": [
+        [
+          "她",
+          "他"
+        ],
+        [
+          "她们",
+          "他们"
+        ]
+      ]
+    }
+  }
+}

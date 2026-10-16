@@ -1,0 +1,10 @@
+axis,status,n_pairs,available_pairs,missing_pairs
+gender,complete,4,4,[]
+prestige,complete,4,4,[]
+status,complete,3,3,[]
+cultivation,complete,4,4,[]
+potency,complete,4,4,[]
+morality,complete,4,4,[]
+affluence,complete,4,4,[]
+gender_kinship,complete,6,6,[]
+gender_pronoun,complete,2,2,[]

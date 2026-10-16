@@ -340,3 +340,27 @@ sbatch reextract_cultural_vocabulary.sh
 已基于服务器汇总包完成五领域的描述、活动量调整前后对比、转发时间与同域附言、跨领域份额差异分析。详见[阶段报告](reports/20261016_behavior_analysis.md)和[四页PDF图集](reports/20261016_cultural_participation_figures.pdf)。图沿用既有性别配色、标记、字体与日期前缀；所有图中的估计和区间来自服务器结果，没有在本地重新拟合模型。
 
 复现：`python3 -m cultural_participation.result_report --date 20261016`。输入是`outputs/summary_review.tar.gz`；小型结果表、PDF和报告入库，原始大数据不入库。阶段报告包含针对本轮数据的解释，生成器用输入哈希防止新数据误用旧叙述。
+
+
+### 2026-10-16 全词表语义测量与词项行为联结
+
+首轮使用SGNS Mixed-large及fastText CC+Wiki的显式词向量，全部3,972词进入审计，缺失不填零。中文候选轴见`semantic_specs/axes_zh_v1.json`；报告见[语义阶段报告](reports/20261016_semantic_analysis.md)及[六页PDF](reports/20261016_semantic_figures.pdf)。人物保留，排除检验只针对已有明确标记，不代表完成全词表实体分类。
+
+词项行为分析复用原月度Parquet中的`retweet_terms`和`expression_terms`，无需重扫原始文本或使用SQLite。先确认`behavior_job.conf`的`OUTPUT_ROOT`与`RUN_LABEL`指向已有完整月度及用户分桶结果。当前提交脚本对应64个用户桶，同时运行4个任务。不要在运行过程中更新代码或修改词表。
+
+在服务器仓库根目录执行：
+
+```bash
+git pull --ff-only origin main
+sbatch run_cultural_term_behavior.sh
+```
+
+等64个数组任务全部成功后，再手动提交：
+
+```bash
+sbatch summarize_cultural_terms.sh
+```
+
+汇总程序会检查所有分桶、来源及词表一致性。它输出全部词项的描述统计，以及转发参与、表达参与、份额、转发时间和附言指标的未调整／活动量调整性别差异。无可估计结果保留状态，不以零替代。程序逐桶读入，避免全年用户×词项矩阵。原始年度行为结果不覆盖。
+
+完成后下载日志末尾显示的`term_summary_review.tar.gz`，放到本地`cultural_participation/outputs/`。其中包含`term_descriptives.csv`、`term_gender_gaps.csv`、`term_coverage.csv`和`manifest.json`。这一步尚未在服务器执行；本地合成数据已检验与既有单词行为分析结果一致。只有拿到这些词项结果后，才能联结行为与语义，不能把五领域系数复制给各词。
